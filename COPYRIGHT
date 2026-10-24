@@ -1,0 +1,26 @@
+Reckless Technology toolkit
+
+Copyright (C) 2026 Jonny Reckless.
+
+Reckless Technology is the name under which Jonny Reckless publishes this software.
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
+License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
+warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+details. You should have received a copy of the GNU General Public License along with this program. If not, see
+<https://www.gnu.org/licenses/>.
+
+The full text of that licence is in LICENSE, which holds nothing else: it is the Free Software Foundation's text
+byte for byte, so that it is recognised for what it is.
+
+Not everything here is Jonny Reckless's to license this way, and the GNU General Public License does not cover it.
+NOTICE names each part and the terms it is used under; in short:
+
+  - the fonts in assets/fonts, under the SIL Open Font License 1.1, whose text travels with every copy of them;
+  - assets/logos/AsioCompatibleLogo.png, Steinberg Media Technologies GmbH's artwork, used as Steinberg's usage
+    guidelines ask and under those guidelines alone;
+  - the Reckless Technology name, the company's mark and the products' icons, which are trademarks and brand
+    artwork: the GNU General Public License grants no right to use them to pass work off as Reckless Technology's.
