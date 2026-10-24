@@ -34,6 +34,10 @@ on:
         description: "Delete the build trees kept on the runners and build from nothing"
         type: boolean
         default: false
+      verbose_devices:
+        description: "Run the audio device suite verbose, so its heartbeat and phase timings come through as it goes"
+        type: boolean
+        default: false
 
 # The token reads the repository and nothing else: every job runs on the organisation's own machines, where an action is
 # code run with the runner's credentials on a kept workspace. .github/dependabot.yml opens a pull request when a pinned
@@ -142,21 +146,38 @@ jobs:
           "-DFETCHCONTENT_BASE_DIR=${{ steps.cpp.outputs.deps }}"
       - name: Build
         run: cmake --build build/ci-toolkit -j ${{ steps.cpp.outputs.jobs }}
-      # Every suite but the window suites, the device suite among them, run alone (RUN_SERIAL) with ALSA and JACK
-      # required, so a missing test device fails rather than skips.
-      # Everything but the window suites. Where the machine has test devices the APIs are required, so a missing
-      # one fails rather than skips; where the kernel has no sound at all (a hosted runner: the step above says so
-      # and sets RECKLESS_AUDIO_DEVICES) the device suites are left out and the rest runs, which is every other
-      # suite this job has - Skia, the views, the look, the net and update code.
+      # Everything but the window suites and the device suite. Where the machine has test devices the APIs are
+      # required, so a missing one fails rather than skips; where the kernel has no sound at all (a hosted runner:
+      # the step above says so and sets RECKLESS_AUDIO_DEVICES) the device suites are left out and the rest runs,
+      # which is every other suite this job has - Skia, the views, the look, the net and update code.
       - name: Test
         run: |
           if [ "${RECKLESS_AUDIO_DEVICES:-}" = none ]; then
             echo "no sound in this kernel: the audio device suites are left out of this run"
-            ctest --test-dir build/ci-toolkit --output-on-failure -j "$(nproc)" -LE '^window$' \
-                -E '^(audio_devices|loopback)$'
+            ctest --test-dir build/ci-toolkit --output-on-failure -j "$(nproc)" -LE '^window$'                 -E '^(audio_devices|loopback)$'
           else
-            RECKLESS_AUDIO_REQUIRE=ALSA,JACK \
-                ctest --test-dir build/ci-toolkit --output-on-failure -j "$(nproc)" -LE '^window$'
+            RECKLESS_AUDIO_REQUIRE=ALSA,JACK                 ctest --test-dir build/ci-toolkit --output-on-failure -j "$(nproc)" -LE '^window$'                 -E '^audio_devices$'
+          fi
+      # The device suite on its own, because it opens real devices and runs real streams: a case takes tens of
+      # seconds and the suite minutes, and it is RUN_SERIAL, so nothing shares the run with it. Skipped entirely
+      # where the kernel has no sound, as above.
+      #
+      # `-V` only when asked for. ctest shows a passing test's output only when asked, so without it the log holds
+      # one line for the whole suite and a working run reads exactly like a hung one - which is what the
+      # instrumentation in tests/devices/DeviceSuite.h was written for (its heartbeat every few seconds, and a
+      # phase's duration where a phase was slow enough to be worth a line). Run the workflow by hand with
+      # `verbose_devices` to see it as it goes: `gh workflow run build.yml -f verbose_devices=true`. A FAILING run
+      # needs no flag - `--output-on-failure` prints the same lines - so the default stays quiet and loses nothing.
+      - name: The audio devices suite (real streams, minutes)
+        if: ${{ env.RECKLESS_AUDIO_DEVICES != 'none' }}
+        env:
+          RECKLESS_AUDIO_REQUIRE: ALSA,JACK
+          VERBOSE_DEVICES: ${{ inputs.verbose_devices }}
+        run: |
+          if [ "${VERBOSE_DEVICES:-}" = true ]; then
+            ctest --test-dir build/ci-toolkit -V -R '^audio_devices$'
+          else
+            ctest --test-dir build/ci-toolkit --output-on-failure -R '^audio_devices$'
           fi
       # The window suites (the CTest label `window`: child_window) on a 24-bit display Xvfb provides - the child window
       # draws into BGRA and refuses a parent with any other visual - and RECKLESS_REQUIRE_WINDOW set, so a display that
