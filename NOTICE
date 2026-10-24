@@ -37,7 +37,16 @@ Committed in this repository:
   (assets/logos/AsioCompatibleLogo.png)
 
 Everything else here is Jonny Reckless's, free software under the GNU General Public License version 3 or later
-(LICENSE). A new dependency, or a pin that moves, is added to the pins and to this list, and needs a licence that
+for everyone who receives it: COPYRIGHT is the grant and the warranty disclaimer, LICENSE the licence's own text.
+
+He holds the copyright on all of it, so he also licenses it to himself on other terms for his own closed products:
+the Reckless plugins and Reckless IR Capture (reckless-technology/vst-plugins, private) are built on this toolkit
+and are not free software. That is the ordinary position of a copyright holder who publishes his own work under the
+GPL, and it changes nothing for anyone else - what you received under the GPL stays under the GPL, with every right
+it gives you. The three apps built on this toolkit - Reckless Amphitheater, Knect 4 and Reckless Sudoku - are GPL
+themselves, and their corresponding source is this repository and their own.
+
+A new dependency, or a pin that moves, is added to the pins and to this list, and needs a licence that
 the GPL can be combined with - and, since the toolkit is also built into closed products, one a closed product may
 use as well. Steinberg's ASIO SDK is both: it is dual-licensed, its own proprietary licence or GPLv3, and a GPL
 product takes the GPL one. The three GPL apps on this toolkit build with RECKLESS_ASIO off in any case.
