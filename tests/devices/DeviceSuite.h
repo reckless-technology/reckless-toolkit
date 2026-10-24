@@ -35,6 +35,93 @@
 
 namespace reckless::audio::test::suite
 {
+
+/** A line every few seconds naming the case it is in and how long it has been there, for as long as it is alive.
+    The device suite opens real devices and runs real streams, so a case takes tens of seconds and ctest, which
+    shows a test's output only once it ends, would otherwise print nothing at all between one case and the next -
+    a working run and a hung one look the same. One of these in a fixture's SetUp makes the difference visible.
+    It writes to stderr, unbuffered and never interleaved with a partial line, and stops in its destructor. */
+class Heartbeat
+{
+  public:
+    /** @param what  the case's name, printed on every beat
+        @param every the gap between beats */
+    explicit Heartbeat(std::string what, std::chrono::seconds every = std::chrono::seconds(5))
+        : what_(std::move(what)), every_(every), thread_([this] {
+              const auto                   started = std::chrono::steady_clock::now();
+              std::unique_lock<std::mutex> lock(mutex_);
+              while (!stopping_)
+              {
+                  if (wake_.wait_for(lock, every_, [this] { return stopping_; }))
+                  {
+                      return;
+                  }
+                  const auto seconds =
+                      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started);
+                  std::fprintf(stderr, "[ RUNNING  ] %s, %llds so far\n", what_.c_str(),
+                               static_cast<long long>(seconds.count()));
+                  std::fflush(stderr);
+              }
+          })
+    {
+    }
+
+    ~Heartbeat()
+    {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        wake_.notify_all();
+        thread_.join();
+    }
+
+    Heartbeat(const Heartbeat &)            = delete;
+    Heartbeat &operator=(const Heartbeat &) = delete;
+
+  private:
+    std::string             what_;            ///< the case's name
+    std::chrono::seconds    every_;           ///< the gap between beats
+    std::mutex              mutex_;           ///< guards stopping_
+    std::condition_variable wake_;            ///< ends the wait at once when the case does
+    bool                    stopping_{false}; ///< set in the destructor
+    std::thread             thread_;          ///< beats until stopping_
+};
+
+/** How long a phase of a case took, printed as it ends. The heartbeat says a case is still alive; this says
+    what it was doing and for how long, which is what a slow case needs: the suite's own measurements cover the
+    stream, and a case whose stream is a healthy second can still take a minute around it - opening a device,
+    closing one, or waiting for a sound server to let go. Written to stderr beside the heartbeat's lines, and only
+    where it took long enough to be worth a line (`kQuiet`), so a fast machine's log stays readable. */
+class Phase
+{
+  public:
+    /** The gap below which a phase says nothing: a phase of a few milliseconds is not what anyone is looking for. */
+    static constexpr std::chrono::milliseconds kQuiet{250};
+
+    /** @param what  what is being timed, named as it would be said */
+    explicit Phase(std::string what) : what_(std::move(what)), started_(std::chrono::steady_clock::now()) {}
+
+    ~Phase()
+    {
+        const auto took =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_);
+        if (took >= kQuiet)
+        {
+            std::fprintf(stderr, "[ PHASE    ] %s took %.1f s\n", what_.c_str(),
+                         static_cast<double>(took.count()) / 1000.0);
+            std::fflush(stderr);
+        }
+    }
+
+    Phase(const Phase &)            = delete;
+    Phase &operator=(const Phase &) = delete;
+
+  private:
+    std::string                           what_;    ///< what is being timed
+    std::chrono::steady_clock::time_point started_; ///< when it began
+};
+
 using reckless::audio::AudioCallback;
 using reckless::audio::AudioSettings;
 using reckless::audio::AudioSystem;
@@ -610,27 +697,32 @@ class CountingAudioSystem final : public AudioSystem, private AudioCallback
 
     std::vector<DeviceInfo> Devices() override
     {
+        const Phase listing("listing the devices");
         return inner_->Devices();
     }
 
     bool Open(const StreamRequest &request, AudioCallback &callback) override
     {
+        const Phase opening("opening the stream");
         callback_ = &callback;
         return inner_->Open(request, *this);
     }
 
     bool Start() override
     {
+        const Phase starting("starting the stream");
         return inner_->Start();
     }
 
     void Stop() override
     {
+        const Phase stopping("stopping the stream");
         inner_->Stop();
     }
 
     void Close() override
     {
+        const Phase closing("closing the stream");
         inner_->Close();
     }
 
@@ -831,92 +923,6 @@ std::vector<std::vector<float>> reckless::audio::test::AsioTestDriverWaves()
 namespace reckless::audio::test::suite
 {
 // ---- Running and measuring a stream --------------------------------------------------------------------------------
-
-/** A line every few seconds naming the case it is in and how long it has been there, for as long as it is alive.
-    The device suite opens real devices and runs real streams, so a case takes tens of seconds and ctest, which
-    shows a test's output only once it ends, would otherwise print nothing at all between one case and the next -
-    a working run and a hung one look the same. One of these in a fixture's SetUp makes the difference visible.
-    It writes to stderr, unbuffered and never interleaved with a partial line, and stops in its destructor. */
-class Heartbeat
-{
-  public:
-    /** @param what  the case's name, printed on every beat
-        @param every the gap between beats */
-    explicit Heartbeat(std::string what, std::chrono::seconds every = std::chrono::seconds(5))
-        : what_(std::move(what)), every_(every), thread_([this] {
-              const auto                   started = std::chrono::steady_clock::now();
-              std::unique_lock<std::mutex> lock(mutex_);
-              while (!stopping_)
-              {
-                  if (wake_.wait_for(lock, every_, [this] { return stopping_; }))
-                  {
-                      return;
-                  }
-                  const auto seconds =
-                      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started);
-                  std::fprintf(stderr, "[ RUNNING  ] %s, %llds so far\n", what_.c_str(),
-                               static_cast<long long>(seconds.count()));
-                  std::fflush(stderr);
-              }
-          })
-    {
-    }
-
-    ~Heartbeat()
-    {
-        {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            stopping_ = true;
-        }
-        wake_.notify_all();
-        thread_.join();
-    }
-
-    Heartbeat(const Heartbeat &)            = delete;
-    Heartbeat &operator=(const Heartbeat &) = delete;
-
-  private:
-    std::string             what_;            ///< the case's name
-    std::chrono::seconds    every_;           ///< the gap between beats
-    std::mutex              mutex_;           ///< guards stopping_
-    std::condition_variable wake_;            ///< ends the wait at once when the case does
-    bool                    stopping_{false}; ///< set in the destructor
-    std::thread             thread_;          ///< beats until stopping_
-};
-
-/** How long a phase of a case took, printed as it ends. The heartbeat says a case is still alive; this says
-    what it was doing and for how long, which is what a slow case needs: the suite's own measurements cover the
-    stream, and a case whose stream is a healthy second can still take a minute around it - opening a device,
-    closing one, or waiting for a sound server to let go. Written to stderr beside the heartbeat's lines, and only
-    where it took long enough to be worth a line (`kQuiet`), so a fast machine's log stays readable. */
-class Phase
-{
-  public:
-    /** The gap below which a phase says nothing: a phase of a few milliseconds is not what anyone is looking for. */
-    static constexpr std::chrono::milliseconds kQuiet{250};
-
-    /** @param what  what is being timed, named as it would be said */
-    explicit Phase(std::string what) : what_(std::move(what)), started_(std::chrono::steady_clock::now()) {}
-
-    ~Phase()
-    {
-        const auto took =
-            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_);
-        if (took >= kQuiet)
-        {
-            std::fprintf(stderr, "[ PHASE    ] %s took %.1f s\n", what_.c_str(),
-                         static_cast<double>(took.count()) / 1000.0);
-            std::fflush(stderr);
-        }
-    }
-
-    Phase(const Phase &)            = delete;
-    Phase &operator=(const Phase &) = delete;
-
-  private:
-    std::string                           what_;    ///< what is being timed
-    std::chrono::steady_clock::time_point started_; ///< when it began
-};
 
 /** The message thread's wait while a stream runs: `seconds` in 10 ms steps, `each` called at every step. */
 template <typename Each> void RunFor(double seconds, Each each)
