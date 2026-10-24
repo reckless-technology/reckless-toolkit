@@ -199,19 +199,31 @@ TEST_P(AudioDevices, RunsAStreamAtTheRateAndTheBlockItOpenedAt)
     const bool          with_input = !device.input.empty();
     const StreamRequest request    = RequestFor(device, with_input);
     Recorder            recorder(with_input ? device.channels : 0, device.channels, Recorder::Play::kSilence);
-    ASSERT_TRUE(system_->Open(request, recorder)) << system_->LastError();
+    {
+        const Phase opening("system_->Open");
+        ASSERT_TRUE(system_->Open(request, recorder)) << system_->LastError();
+    }
     ASSERT_TRUE(system_->IsOpen());
     const StreamFormat format = system_->Format();
 
     const std::int64_t started = NowNanoseconds();
-    ASSERT_TRUE(system_->Start()) << system_->LastError();
+    {
+        const Phase starting("system_->Start");
+        ASSERT_TRUE(system_->Start()) << system_->LastError();
+    }
     RunFor(1.2);
     const std::int64_t stopped = NowNanoseconds();
-    system_->Stop();
+    {
+        const Phase stopping("system_->Stop");
+        system_->Stop();
+    }
     const std::int64_t after_stop = recorder.callbacks();
     RunFor(0.1);
     const std::int64_t later = recorder.callbacks();
-    system_->Close();
+    {
+        const Phase closing("system_->Close");
+        system_->Close();
+    }
 
     const Timing       timing    = Measure(recorder, started, stopped, format.sample_rate, format.block_size);
     const double       slack     = device.rate_tolerance * timing.predicted + 2.0;
