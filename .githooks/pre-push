@@ -1,0 +1,48 @@
+#!/bin/sh
+# Refuse a push to main, and a push of any commit that is not Jonny Reckless <jonny@recklesstechnology.com>.
+#
+# main takes pull requests only: push a branch, open the pull request, merge it by rebase once the CI check is green.
+# The ruleset on GitHub ("main takes pull requests") refuses the push as well; this hook says so before the round trip,
+# with the commands to use instead. Tags pass.
+#
+# Every commit in the organisation is authored and committed as jonny@recklesstechnology.com. The pre-commit hook
+# checks the identity a new commit is made under; this checks the commits themselves - a rebase, a cherry-pick or an
+# amend keeps an author and stamps a committer without running pre-commit - so nothing under another identity leaves
+# the clone. The commits checked are those the remote's tracking refs do not hold already. CI holds every pull request
+# to the same rule (build.yml, the changes job).
+#
+# Install once per clone:  git config core.hooksPath .githooks
+# There is no bypass here on purpose: the server has none either.
+set -u
+
+identity="jonny@recklesstechnology.com"
+zero=0000000000000000000000000000000000000000
+
+remote="$1"
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$remote_ref" in
+        refs/heads/main)
+            echo "pre-push: refusing to push $local_ref to $remote_ref on $remote: main takes pull requests only." >&2
+            echo "pre-push: push the branch and open one instead -" >&2
+            echo "pre-push:   git push -u $remote HEAD && gh pr create --fill" >&2
+            echo "pre-push: then  gh pr checks --watch  and  gh pr merge --rebase  once CI is green." >&2
+            status=1
+            ;;
+    esac
+    if [ "$local_sha" = "$zero" ]; then
+        continue # a deletion pushes no commit
+    fi
+    foreign=$(git log --format='%h %ae %ce %s' "$local_sha" --not --remotes="$remote" |
+        awk -v want="$identity" '$2 != want || $3 != want')
+    if [ -n "$foreign" ]; then
+        echo "pre-push: refusing to push $local_ref: every commit here is authored and committed as <$identity>," >&2
+        echo "pre-push: and these are not (hash, author, committer, subject):" >&2
+        printf '%s\n' "$foreign" | sed 's/^/pre-push:   /' >&2
+        echo "pre-push: set the identity, then make the branch's commits again under it -" >&2
+        echo "pre-push:   git config user.name 'Jonny Reckless' && git config user.email $identity" >&2
+        echo "pre-push:   git rebase --exec 'git commit --amend --no-edit --reset-author' origin/main" >&2
+        status=1
+    fi
+done
+exit $status

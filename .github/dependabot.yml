@@ -1,0 +1,14 @@
+# The actions the workflow uses are pinned by major (actions/checkout@v7); every job runs on the organisation's own
+# machines, so an action is code run there with the runner's credentials, and a major that moves should arrive as a
+# pull request to read, not be discovered when a job breaks. Its commit is Dependabot's, and every commit here is
+# Jonny Reckless <jonny@recklesstechnology.com>, so the build workflow's first check stops it: read it, then make it
+# again under that identity on its branch (the check prints the rebase) and push before it can merge. The C++
+# dependencies are pinned by tag or commit in cmake/ToolkitPins.cmake and by hash beside their fetches.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "Bump"

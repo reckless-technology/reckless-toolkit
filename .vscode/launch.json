@@ -1,0 +1,72 @@
+{
+    // Run > Start Debugging (F5) with one of these selected: a suite of the debugger's tree (build/debug, built
+    // first), under CodeLLDB on macOS and Linux and the Visual Studio debugger on Windows. Add --gtest_filter=... to
+    // "args" to stop in one case.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Suite: core",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/debug/reckless_core_test",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Build: debug"
+        },
+        {
+            "name": "Suite: view",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/debug/reckless_view_test",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Build: debug"
+        },
+        {
+            "name": "Suite: net",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/debug/reckless_net_test",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Build: debug"
+        },
+        {
+            "name": "Suite: audio devices",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/debug/reckless_audio_device_test",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Build: debug"
+        },
+        {
+            "name": "Windows suite: core",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/debug/reckless_core_test.exe",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Build: debug"
+        },
+        {
+            "name": "Windows suite: view",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/debug/reckless_view_test.exe",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Build: debug"
+        },
+        {
+            "name": "Windows suite: net",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/debug/reckless_net_test.exe",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Build: debug"
+        },
+        {
+            "name": "Windows suite: audio devices",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/debug/reckless_audio_device_test.exe",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Build: debug"
+        }
+    ]
+}

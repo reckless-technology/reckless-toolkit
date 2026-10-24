@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- An app that hears an audio interface's inputs: under the hardened runtime the system refuses an app the
+	     microphone unless its signature carries this, whatever its Info.plist's usage text says (tools/sign-mac.sh
+	     signs every .app it is handed with it). -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

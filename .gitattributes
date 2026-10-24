@@ -1,0 +1,18 @@
+# The toolkit's own, so it holds wherever the toolkit sits.
+#
+# The shell scripts run under bash on macOS and Linux, which a CR would break; keep them LF wherever the clone is. The
+# git hooks are shell scripts with no extension, which sh runs on every platform, Git for Windows' included.
+*.sh text eol=lf
+.githooks/* text eol=lf
+
+# The carried test audio (tests/audio) is bytes the suites decode, never text: no clone's line-ending setting may touch
+# it.
+*.mp3 binary
+*.flac binary
+*.ogg binary
+*.f32 binary
+
+# The chicken-head knob's CAD models (assets/knobs), as SolidWorks wrote them. A STEP is text, and no clone's
+# line-ending setting may rewrite a CAD file; a diff of one says nothing.
+*.sldprt binary
+*.step binary

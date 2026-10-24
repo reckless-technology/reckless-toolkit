@@ -1,0 +1,63 @@
+Reckless Technology toolkit - its licence, and the third-party parts
+
+Copyright (C) 2026 Jonny Reckless. Reckless Technology is the name under which Jonny Reckless publishes this
+software.
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
+License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
+version. It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
+warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License (LICENSE) for
+more details; if you did not receive a copy, see <https://www.gnu.org/licenses/>.
+
+Three things here are not Jonny Reckless's to license that way, and the GPL does not cover them:
+
+  - the fonts in assets/fonts, under the SIL Open Font License 1.1, whose text travels with every copy of them
+    (assets/fonts/OFL.txt, assets/fonts/monaspace/OFL.txt);
+  - assets/logos/AsioCompatibleLogo.png, Steinberg Media Technologies GmbH's artwork, used as Steinberg's usage
+    guidelines ask and under those guidelines alone;
+  - the Reckless Technology name, the company's mark and the products' icons, which are trademarks and brand
+    artwork: nothing in the GPL grants the right to use them to pass work off as Reckless Technology's.
+
+The toolkit ships no binary of its own: it is source, built into the company's products, and each product's release
+carries the full third-party notices of everything in its binaries (vst-plugins' THIRD-PARTY-NOTICES.txt, written by
+its tools/third_party_notices.py from the trees its build fetched and the pins below). This file says what of the
+toolkit is another's, so a product's notices can name all of it.
+
+Fetched at configure time, never committed, each pinned by a tag, version or commit in cmake/ToolkitPins.cmake (which
+the toolkit hands up to a product as RECKLESS_TOOLKIT_PINS) and by its archive's hash where it is fetched:
+
+  Skia, with skcms (skia-pack's prebuilt release)  BSD 3-clause         the GUI's canvas (skia/, gfx/skia/)
+  libpng, zlib (from the skia-pack release)        libpng, zlib         Skia's PNG codec and encoder
+  zlib's SIMD routines (the Chromium source tree)  BSD 3-clause         inside the skia-pack's zlib
+  FreeType (from the skia-pack release, Linux)     FreeType Licence     Skia's fonts on Linux
+  RtAudio, RtMidi                                  RtAudio's MIT-style  the audio device layer (audio/)
+  Steinberg ASIO SDK (Windows)                     Steinberg's ASIO     ASIO devices (audio/), compiled against and
+                                                   licence              never distributed in part or whole
+  Monocypher                                       BSD 2-clause or CC0  a licence's Ed25519 check (licence/)
+  dr_flac, dr_mp3 (dr_libs)                        public domain or     audio files (core/AudioFiles.h)
+                                                   MIT No Attribution
+  stb_vorbis (stb)                                 public domain or MIT audio files (core/AudioFiles.h)
+  GoogleTest                                       BSD 3-clause         the suites alone, in no product binary
+
+Committed in this repository:
+
+  Noto Serif (assets/fonts)          SIL Open Font License 1.1, its text in assets/fonts/OFL.txt, which every copy
+                                     of the fonts carries
+  Monaspace Xenon, regular and bold  SIL Open Font License 1.1, with the Reserved Font Name "Monaspace" and its
+  (assets/fonts/monaspace)           subfamilies' ("Xenon" among them); its text, with the copyright line, in
+                                     assets/fonts/monaspace/OFL.txt, which every copy of the fonts carries. The
+                                     static MonaspaceXenon-Regular.otf and MonaspaceXenon-Bold.otf of the release
+                                     v1.400 (monaspace-static-v1.400.zip, SHA-256
+                                     ab66d71be751495f679727332a3345597943bd4d7beebca03f5cde04bf994de7), unmodified -
+                                     a modified copy may not keep the reserved names. Embedded only in a binary
+                                     whose product asks for it (reckless_monospace_font_files).
+  The ASIO-compatible logo           Steinberg's artwork, used as its usage guidelines ask where ASIO is offered
+  (assets/logos/AsioCompatibleLogo.png)
+
+Everything else here is Jonny Reckless's, free software under the GNU General Public License version 3 or later
+(LICENSE). A new dependency, or a pin that moves, is added to the pins and to this list, and needs a licence that
+the GPL can be combined with - and, since the toolkit is also built into closed products, one a closed product may
+use as well. Steinberg's ASIO SDK is both: it is dual-licensed, its own proprietary licence or GPLv3, and a GPL
+product takes the GPL one. The three GPL apps on this toolkit build with RECKLESS_ASIO off in any case.
+
+ASIO is a registered trademark of Steinberg Media Technologies GmbH.

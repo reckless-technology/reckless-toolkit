@@ -1,0 +1,190 @@
+{
+  "comment": "Written by tools/licence.py vectors from two fixed test keys that no build accepts. Every implementation of the licence format is held to these bytes: docs/licence/licence-format.md.",
+  "format": "RTL1",
+  "keys": [
+    {
+      "kid": "test-1",
+      "seed": "05e1195c4ebf7a1362369eb357afe7344b4a8ef3c5cd84bb1d630bd4ff5a848e",
+      "public": "8e154474932f033ac4b922e0abacdbaaf36b154050de3158618b46228adc91d8"
+    },
+    {
+      "kid": "test-2",
+      "seed": "14b5e396f9e2a6f5d322d706beec2ab689bbe752cdc391da5a74740d56a8e814",
+      "public": "c53fcd5bb8252cc6fe3dd6c6501b421f313089303d90c562944429025a1d6f51"
+    }
+  ],
+  "rules": {
+    "keys": [
+      "test-1"
+    ],
+    "revoked": [
+      "RT-0000-0000-REVK"
+    ],
+    "suite_major": 1,
+    "product": "suite"
+  },
+  "signing": [
+    {
+      "kid": "test-1",
+      "payload": "{\"v\":1,\"kid\":\"test-1\",\"serial\":\"RT-HQZ4-AC4X-2GFJ\",\"name\":\"Jo Buyer\",\"email\":\"jo.buyer@example.com\",\"product\":\"suite\",\"major\":1,\"issued\":\"2026-11-02\",\"source\":\"store\"}",
+      "licence": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.iaN8vnIzhLqrtz7-sWPRTXfBB2wW3rJjz7uI50yHWKnXovdZDG0yMW_M250DI6UdFkovTcCNrSTCE_aepZWDBw"
+    },
+    {
+      "kid": "test-1",
+      "payload": "{\"v\":1,\"kid\":\"test-1\",\"serial\":\"RT-HQZ4-AC4X-2GFJ\",\"name\":\"Zoë Ångström-Łukasiewicz\",\"email\":\"zoë+plugins@exämple.de\",\"product\":\"suite\",\"major\":1,\"issued\":\"2026-11-02\",\"source\":\"store\"}",
+      "licence": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJab8OrIMOFbmdzdHLDtm0txYF1a2FzaWV3aWN6IiwiZW1haWwiOiJ6b8OrK3BsdWdpbnNAZXjDpG1wbGUuZGUiLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.yZ6ab8RO_xu9G2TP9IrshG5cj9dyy7Qur5a9bF8sZ5qVfIhzETvW0d3oyIJdwEazk7Zw-iw1wgvIaUbmngmfDw"
+    }
+  ],
+  "serials": {
+    "secret": "b80d76d75c6c2f12f9b18efa1b6d5fa7e25c9c0f2abf7cf899cd269287956192",
+    "cases": [
+      {
+        "email": "Jo.Buyer@Example.com",
+        "counter": 1,
+        "serial": "RT-HQZ4-AC4X-2GFJ"
+      },
+      {
+        "email": "  jo.buyer@example.com ",
+        "counter": 1,
+        "serial": "RT-HQZ4-AC4X-2GFJ"
+      },
+      {
+        "email": "jo.buyer@example.com",
+        "counter": 2,
+        "serial": "RT-V334-7E25-Q6K2"
+      },
+      {
+        "email": "ZOË@Exämple.DE",
+        "counter": 1,
+        "serial": "RT-G3BS-FQDW-WVT8"
+      }
+    ]
+  },
+  "licences": [
+    {
+      "case": "valid",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.iaN8vnIzhLqrtz7-sWPRTXfBB2wW3rJjz7uI50yHWKnXovdZDG0yMW_M250DI6UdFkovTcCNrSTCE_aepZWDBw",
+      "verdict": "valid"
+    },
+    {
+      "case": "valid, a name and an address outside ASCII",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJab8OrIMOFbmdzdHLDtm0txYF1a2FzaWV3aWN6IiwiZW1haWwiOiJ6b8OrK3BsdWdpbnNAZXjDpG1wbGUuZGUiLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.yZ6ab8RO_xu9G2TP9IrshG5cj9dyy7Qur5a9bF8sZ5qVfIhzETvW0d3oyIJdwEazk7Zw-iw1wgvIaUbmngmfDw",
+      "verdict": "valid"
+    },
+    {
+      "case": "valid, members the checker does not know",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIiwibm90ZSI6InByZXNzIGNvcHkiLCJzZWF0cyI6M30.ORB-_GHnOL1jQJtAJDlYhSNU82rHHLgc9hhRFqrKCYewgD6lWPWcwBzcBcWnbdR18oDlns_bV2AMStZWdvLXAw",
+      "verdict": "valid"
+    },
+    {
+      "case": "valid, a later major version",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6NywiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.FS7aG0ol4w2isd5dGBX2GRZHLmuD9rO74FugkufRkpXdU4VLqiL299NowALv2aARM8ddMq897UHq23SLXXhNAA",
+      "verdict": "valid"
+    },
+    {
+      "case": "valid, wrapped at 40 characters as an email wraps it",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJ\r\npYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWU\r\niOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJ\r\nAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGU\r\niLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0\r\nwMiIsInNvdXJjZSI6InN0b3JlIn0.iaN8vnIzhLq\r\nrtz7-sWPRTXfBB2wW3rJjz7uI50yHWKnXovdZDG0\r\nyMW_M250DI6UdFkovTcCNrSTCE_aepZWDBw",
+      "verdict": "valid"
+    },
+    {
+      "case": "valid, with spaces and tabs round it",
+      "text": "  \tRTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.iaN8vnIzhLqrtz7-sWPRTXfBB2wW3rJjz7uI50yHWKnXovdZDG0yMW_M250DI6UdFkovTcCNrSTCE_aepZWDBw \n",
+      "verdict": "valid"
+    },
+    {
+      "case": "revoked serial",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC0wMDAwLTAwMDAtUkVWSyIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.Nond2SQuHb8N5z9z9eIUy6bG0on3MCQtGNOS-P4PBbbct2s2PzexWzVpaSA4ATJ8BB1mvsMVF_V8o0EWBPEEAQ",
+      "verdict": "revoked"
+    },
+    {
+      "case": "another product",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0IjoiYW1wIiwibWFqb3IiOjEsImlzc3VlZCI6IjIwMjYtMTEtMDIiLCJzb3VyY2UiOiJzdG9yZSJ9.m0CJH3IyFpvtvjCzGb3px8a5pg5_b45m226QW50UZz8g3AxXuJ36PtOkuivY1dIpuaxSFUGrg-f5JZaMrujVBA",
+      "verdict": "wrong-product"
+    },
+    {
+      "case": "an earlier major version",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MCwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.8oRJwdmJgqYeZGHKApBFDwlhRekgIudMZ437YAN4w2uzydLmyVpqlP_MT789IqE9fo_UWIxOct73Vg0WMoZIAg",
+      "verdict": "older-major-version"
+    },
+    {
+      "case": "a key the build does not hold",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTIiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.AVFW8OqLGmk6gg0mF4YW--yMTHrtxvGyic2giSr7aBxry-R1ZTF5R0fxfU9dEL6e2NiUBtxVJvcyi1aNzEgvAQ",
+      "verdict": "unknown-key"
+    },
+    {
+      "case": "signed by another key than its kid names",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.U4IF1lV3bZdLVSiTP6N7umh54tTd7pGTmkMb0Fz8QG7yH0zxCbbdAdBf494jyhMxQU8oMGSkPoppTnbHBS3mBA",
+      "verdict": "bad-signature"
+    },
+    {
+      "case": "its payload swapped for another under the same signature",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoic29tZW9uZS5lbHNlQGV4YW1wbGUuY29tIiwicHJvZHVjdCI6InN1aXRlIiwibWFqb3IiOjEsImlzc3VlZCI6IjIwMjYtMTEtMDIiLCJzb3VyY2UiOiJzdG9yZSJ9.iaN8vnIzhLqrtz7-sWPRTXfBB2wW3rJjz7uI50yHWKnXovdZDG0yMW_M250DI6UdFkovTcCNrSTCE_aepZWDBw",
+      "verdict": "bad-signature"
+    },
+    {
+      "case": "its signature's first byte altered",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.iKN8vnIzhLqrtz7-sWPRTXfBB2wW3rJjz7uI50yHWKnXovdZDG0yMW_M250DI6UdFkovTcCNrSTCE_aepZWDBw",
+      "verdict": "bad-signature"
+    },
+    {
+      "case": "no RTL1 prefix",
+      "text": "eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.iaN8vnIzhLqrtz7-sWPRTXfBB2wW3rJjz7uI50yHWKnXovdZDG0yMW_M250DI6UdFkovTcCNrSTCE_aepZWDBw",
+      "verdict": "malformed"
+    },
+    {
+      "case": "RTL2",
+      "text": "RTL2.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.iaN8vnIzhLqrtz7-sWPRTXfBB2wW3rJjz7uI50yHWKnXovdZDG0yMW_M250DI6UdFkovTcCNrSTCE_aepZWDBw",
+      "verdict": "malformed"
+    },
+    {
+      "case": "padded base64",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.iaN8vnIzhLqrtz7-sWPRTXfBB2wW3rJjz7uI50yHWKnXovdZDG0yMW_M250DI6UdFkovTcCNrSTCE_aepZWDBw==",
+      "verdict": "malformed"
+    },
+    {
+      "case": "standard base64's alphabet",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0+.iaN8vnIzhLqrtz7-sWPRTXfBB2wW3rJjz7uI50yHWKnXovdZDG0yMW_M250DI6UdFkovTcCNrSTCE_aepZWDBw",
+      "verdict": "malformed"
+    },
+    {
+      "case": "a third dot",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.iaN8vnIzhLqrtz7-sWPRTXfBB2wW3rJjz7uI50yHWKnXovdZDG0yMW_M250DI6UdFkovTcCNrSTCE_aepZWDBw.AAAA",
+      "verdict": "malformed"
+    },
+    {
+      "case": "a short signature",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.iaN8vnIzhLqrtz7-sWPRTXfBB2wW3rJjz7uI50yH",
+      "verdict": "malformed"
+    },
+    {
+      "case": "version 2 of the payload",
+      "text": "RTL1.eyJ2IjoyLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MSwiaXNzdWVkIjoiMjAyNi0xMS0wMiIsInNvdXJjZSI6InN0b3JlIn0.RDgbXCmPr73NyniXX5LDnOmbcBGxAHrIgLIkVfpR0j6K5S3kV0P1avRloR7---JKMkvteQCjNMt1FUG7K3ndCg",
+      "verdict": "malformed"
+    },
+    {
+      "case": "a fractional major version",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsImVtYWlsIjoiam8uYnV5ZXJAZXhhbXBsZS5jb20iLCJwcm9kdWN0Ijoic3VpdGUiLCJtYWpvciI6MS41LCJpc3N1ZWQiOiIyMDI2LTExLTAyIiwic291cmNlIjoic3RvcmUifQ.ckNGUWTbEWSbfyPyOKaSkQN_v3OS6q7EKWS4Lphh8XrDHpatz9wKyNotOg5lbL6bJ3niCv1htl9DlgDwfjN1AQ",
+      "verdict": "malformed"
+    },
+    {
+      "case": "no email",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiJKbyBCdXllciIsInByb2R1Y3QiOiJzdWl0ZSIsIm1ham9yIjoxLCJpc3N1ZWQiOiIyMDI2LTExLTAyIiwic291cmNlIjoic3RvcmUifQ.wXqblY8ALZyfdMVcL35hSO9zIY1fI9Jqbd9JkyRPKrGiGufti5orLnKrKzwMtincxL134zOAiwjHosvVnCARDw",
+      "verdict": "malformed"
+    },
+    {
+      "case": "an empty name",
+      "text": "RTL1.eyJ2IjoxLCJraWQiOiJ0ZXN0LTEiLCJzZXJpYWwiOiJSVC1IUVo0LUFDNFgtMkdGSiIsIm5hbWUiOiIiLCJlbWFpbCI6ImpvLmJ1eWVyQGV4YW1wbGUuY29tIiwicHJvZHVjdCI6InN1aXRlIiwibWFqb3IiOjEsImlzc3VlZCI6IjIwMjYtMTEtMDIiLCJzb3VyY2UiOiJzdG9yZSJ9.nsbKqS3ycn9NsshOHx56eWiPiLw2wnyQ5wTGex7Jxsg3sPvFBNDpbNKkH2DVJB-zQYUDfZt8SJRnmWQRPXT6CA",
+      "verdict": "malformed"
+    },
+    {
+      "case": "a payload that is not JSON",
+      "text": "RTL1.bm90IGpzb24.iaN8vnIzhLqrtz7-sWPRTXfBB2wW3rJjz7uI50yHWKnXovdZDG0yMW_M250DI6UdFkovTcCNrSTCE_aepZWDBw",
+      "verdict": "malformed"
+    },
+    {
+      "case": "empty",
+      "text": "",
+      "verdict": "malformed"
+    }
+  ]
+}

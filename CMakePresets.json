@@ -1,0 +1,90 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {"major": 3, "minor": 25, "patch": 0},
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "RECKLESS_TOOLKIT_BUILD_TESTS": "ON",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            }
+        },
+        {
+            "name": "release",
+            "displayName": "Release: the toolkit top-level, every part and every suite",
+            "inherits": "base",
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}
+        },
+        {
+            "name": "release-universal",
+            "displayName": "Release, macOS: every binary for Apple silicon and Intel, as CI builds it",
+            "inherits": "release",
+            "condition": {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin"},
+            "cacheVariables": {"CMAKE_OSX_ARCHITECTURES": "arm64;x86_64"}
+        },
+        {
+            "name": "debug",
+            "displayName": "Debug: optimised with symbols, the debugger's tree",
+            "inherits": "base",
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo"}
+        },
+        {
+            "name": "tests",
+            "displayName": "Tests: the suites with nothing windowed (no Skia fetched), quick to build",
+            "inherits": "base",
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "Release", "RECKLESS_TOOLKIT_GUI": "OFF"}
+        },
+        {
+            "name": "coverage",
+            "displayName": "Coverage: gcc's or clang's --coverage, unoptimised, nothing windowed (CI's coverage job)",
+            "inherits": "base",
+            "condition": {"type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows"},
+            "binaryDir": "${sourceDir}/build/cov",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "RECKLESS_TOOLKIT_GUI": "OFF",
+                "CMAKE_C_FLAGS": "--coverage -O0",
+                "CMAKE_CXX_FLAGS": "--coverage -O0",
+                "CMAKE_EXE_LINKER_FLAGS": "--coverage",
+                "CMAKE_SHARED_LINKER_FLAGS": "--coverage"
+            }
+        }
+    ],
+    "buildPresets": [
+        {"name": "release", "configurePreset": "release"},
+        {"name": "release-universal", "configurePreset": "release-universal"},
+        {"name": "debug", "configurePreset": "debug"},
+        {"name": "tests", "configurePreset": "tests"},
+        {"name": "coverage", "configurePreset": "coverage"}
+    ],
+    "testPresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "output": {"outputOnFailure": true},
+            "execution": {"jobs": 8},
+            "environment": {"RECKLESS_UPDATE_CHECK": "off"},
+            "filter": {"exclude": {"label": "^window$"}}
+        },
+        {"name": "release", "inherits": "base", "configurePreset": "release"},
+        {"name": "release-universal", "inherits": "base", "configurePreset": "release-universal"},
+        {"name": "debug", "inherits": "base", "configurePreset": "debug"},
+        {"name": "tests", "inherits": "base", "configurePreset": "tests"},
+        {
+            "name": "coverage",
+            "inherits": "base",
+            "configurePreset": "coverage",
+            "filter": {"exclude": {"label": "^window$", "name": "^audio_devices$"}}
+        },
+        {
+            "name": "windows",
+            "displayName": "The window suites alone (they open windows on this display and take the focus)",
+            "configurePreset": "release",
+            "output": {"outputOnFailure": true},
+            "filter": {"include": {"label": "^window$"}}
+        }
+    ]
+}

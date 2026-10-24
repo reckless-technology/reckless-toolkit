@@ -1,0 +1,120 @@
+{
+    // Terminal > Run Task..., or Ctrl+Shift+B for the default build task. Each runs a CMake preset from
+    // CMakePresets.json (the first configures its tree under build/<preset>); on Windows run VS Code from a developer
+    // prompt, so cmake, ninja and cl are on the PATH. "setup environment" installs what building, testing and coverage
+    // need on this machine (tools/setup-dev.ps1 on Windows, tools/setup-dev.sh on Linux and macOS); "check
+    // environment" only reports.
+    "version": "2.0.0",
+    "options": {
+        "cwd": "${workspaceFolder}"
+    },
+    "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+    },
+    "tasks": [
+        {
+            "label": "setup environment",
+            "detail": "Install what this machine lacks to build, test and cover the toolkit",
+            "type": "shell",
+            "command": "${workspaceFolder}/tools/setup-dev.sh",
+            "windows": {
+                "command": "powershell",
+                "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/setup-dev.ps1"]
+            },
+            "problemMatcher": [],
+            "presentation": { "reveal": "always", "focus": true }
+        },
+        {
+            "label": "check environment",
+            "detail": "Report what this machine lacks, installing nothing",
+            "type": "shell",
+            "command": "${workspaceFolder}/tools/setup-dev.sh",
+            "args": ["--check"],
+            "windows": {
+                "command": "powershell",
+                "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/setup-dev.ps1", "-Check"]
+            },
+            "problemMatcher": [],
+            "presentation": { "reveal": "always" }
+        },
+        {
+            "label": "Build: release",
+            "detail": "Configure (once) and build the release tree, build/release: every part and every suite",
+            "type": "shell",
+            "command": "cmake --preset release && cmake --build --preset release",
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": ["$gcc", "$msCompile"]
+        },
+        {
+            "label": "Build: debug",
+            "detail": "Configure (once) and build the debugger's tree, build/debug (RelWithDebInfo)",
+            "type": "shell",
+            "command": "cmake --preset debug && cmake --build --preset debug",
+            "group": "build",
+            "problemMatcher": ["$gcc", "$msCompile"]
+        },
+        {
+            "label": "Build: tests (no GUI)",
+            "detail": "Configure (once) and build the suites with nothing windowed, build/tests: no Skia fetched",
+            "type": "shell",
+            "command": "cmake --preset tests && cmake --build --preset tests",
+            "group": "build",
+            "problemMatcher": ["$gcc", "$msCompile"]
+        },
+        {
+            "label": "Test: every suite",
+            "detail": "ctest on the release tree, the window suites left out (they open windows and take the focus)",
+            "type": "shell",
+            "command": "ctest --preset release",
+            "dependsOn": "Build: release",
+            "group": { "kind": "test", "isDefault": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "Test: the window suites",
+            "detail": "The suites labelled window on the release tree: they open windows on this display",
+            "type": "shell",
+            "command": "ctest --preset windows",
+            "dependsOn": "Build: release",
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "Test: every suite (no GUI)",
+            "detail": "ctest on the tests tree",
+            "type": "shell",
+            "command": "ctest --preset tests",
+            "dependsOn": "Build: tests (no GUI)",
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "Coverage",
+            "detail": "CI's coverage job on this machine: gcovr on gcc's or clang's counters (llvm-cov's on Windows)",
+            "type": "shell",
+            "command": "cmake --preset coverage && cmake --build --preset coverage && ctest --preset coverage && gcovr --root . --object-directory build/cov --filter '(core|gfx|look|view|net|update|licence)/' --exclude 'gfx/skia/' --exclude '.*/tests/' --gcov-ignore-parse-errors=suspicious_hits.warn --gcov-exclude-directories '.*/CMakeFiles/[0-9][^/]*/.*' --gcov-exclude-directories '.*/_deps/.*' --txt --print-summary build/cov",
+            "windows": {
+                "command": "powershell",
+                "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/coverage-windows.ps1"]
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Documents: check",
+            "detail": "Every document's links resolve and every document is indexed",
+            "type": "shell",
+            "command": "python3 tools/check-docs.py",
+            "windows": { "command": "python tools/check-docs.py" },
+            "problemMatcher": []
+        },
+        {
+            "label": "Format: the changed C++",
+            "detail": "clang-format 22.1.8 over every C++ file that differs from main",
+            "type": "shell",
+            "command": "git diff --name-only main -- '*.h' '*.cpp' '*.mm' | xargs clang-format -i",
+            "problemMatcher": []
+        }
+    ]
+}

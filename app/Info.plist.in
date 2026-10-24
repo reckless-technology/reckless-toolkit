@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>@BUNDLE_EXECUTABLE@</string>
+  <key>CFBundleIconFile</key><string>Icon.icns</string>
+  <key>CFBundleIdentifier</key><string>@BUNDLE_IDENTIFIER@</string>
+  <key>CFBundleName</key><string>@DISPLAY@</string>
+  <key>CFBundleDisplayName</key><string>@DISPLAY@</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleSignature</key><string>????</string>
+  <key>CFBundleShortVersionString</key><string>@VERSION@</string>
+  <key>CFBundleVersion</key><string>@VERSION@</string>
+  <key>NSHumanReadableCopyright</key><string>@COPYRIGHT@</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>@MICROPHONE_TEXT@</string>
+</dict>
+</plist>

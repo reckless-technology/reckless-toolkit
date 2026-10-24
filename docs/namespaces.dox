@@ -1,0 +1,109 @@
+/**
+    @file
+    The toolkit's namespaces, documented once each for the source documentation (the Doxyfile reads this file).
+    Doxygen lists nothing of an undocumented namespace's free functions and constants, and warns of none of them, so
+    every namespace the toolkit opens has its line here unless the header that opens it documents it itself. A product
+    documents its own namespaces in its own tree. One is left out on purpose: reckless::audio::test::suite, the device
+    suites' harness (tests/devices/DeviceSuite.h), whose helpers are the suites' cases' and, like a test case, are
+    documented by their names and the tables they print.
+*/
+
+/** @namespace reckless
+    The toolkit: the namespaces of the core, the drawing layer, the
+    look, the views, the panel, the windows, the app's platform, the audio device layer, the network, the update check
+    and the licence. */
+
+/** @namespace reckless::app
+    An app's platform layer (app/): the application behind its platform seam, where a window goes, and the audio
+    settings' widgets on the views; and an app's shell on it - its window and loop, its root, its theme, its widgets,
+    its resources and its update check. */
+
+/** @namespace reckless::app::fonts
+    An app's fonts: the series' serif at the series' sizes (app/AppTheme.h). */
+
+/** @namespace reckless::audio
+    The audio device layer (audio/): the device APIs on RtAudio and RtMidi, Windows Audio as the toolkit's own back
+    end, the settings an app keeps and a device with no hardware. */
+
+/** @namespace reckless::audio::test
+    The device suite's rigs: a deterministic test device on each real audio API (tests/devices). */
+
+/** @namespace reckless::audio::wasapi
+    Windows Audio's arithmetic that needs no Windows: the modes' names, the encodings and their conversion, the
+    periods and the capture ring (audio/win/WasapiFormats.h). */
+
+/** @namespace reckless::core
+    The core (core/): JSON, UTF-8, numbers to and from text in any locale, the user's files and folders, the
+    interface's preferences, audio files, and what an audio thread and its display share. */
+
+/** @namespace reckless::core::json
+    The one form everything saved takes: a JSON value, its plain writer and its strict RFC 8259 reader. */
+
+/** @namespace reckless::core::json::detail
+    The JSON writer's internals. */
+
+/** @namespace reckless::core::presets
+    The preset files: one JSON document per preset in a folder per product, and the platform's folders they and the
+    settings live in. */
+
+/** @namespace reckless::core::utf8
+    UTF-8 stepped, measured and checked for well-formedness. */
+
+/** @namespace reckless::embedded
+    A binary's embedded files - the serif, the mark, a product's face plates - found by name at run time
+    (cmake/RecklessEmbed.cmake writes the table). */
+
+/** @namespace reckless::gfx
+    The drawing layer (gfx/), header only: geometry, colour, paths, text, the canvas and the meters' artwork, with
+    Skia beneath it in gfx/skia. */
+
+/** @namespace reckless::gfx::colors
+    Named colours every canvas knows. */
+
+/** @namespace reckless::gfx::detail
+    The drawing layer's internals. */
+
+/** @namespace reckless::licence
+    The licence (licence/): its text and its Ed25519 signature checked against the public keys a build holds, offline,
+    the licence a machine keeps for every product on it, and the build's demo switch. */
+
+/** @namespace reckless::look
+    The series' look (look/): its metrics and palettes, and every piece of it drawn on a canvas - the knob, the plates,
+    the header, the lamps, the tubes, the meters, the scope and the tone stack's schematic. */
+
+/** @namespace reckless::look::tone_stack_detail
+    The tone stack schematic's drawing metrics, in design pixels. */
+
+/** @namespace reckless::net
+    The network (net/): an HTTP exchange on the platform's own stack - NSURLSession, WinHTTP, libcurl loaded by name -
+    with redirects followed by the browsers' rule, URLs and forms, SHA-256 and base64url, the system's random bytes,
+    and a one-shot listener on the loopback interface for a sign-in's redirect. */
+
+/** @namespace reckless::panel
+    The series' panel on the views (panel/): the face every product's panel holds and its screens and meters. */
+
+/** @namespace reckless::tempo
+    The tempo divisions the synced LFOs and delays share: their beats, names and rates at a tempo. */
+
+/** @namespace reckless::test
+    What the toolkit's suites, and a product's built on them, share: measures, noise, scratch paths, a window of the
+    platform's own and an HTTP server on the loopback interface. */
+
+/** @namespace reckless::test::allocations
+    A counting global operator new: the audio suites' count of a callback's allocations. */
+
+/** @namespace reckless::update
+    The update check (update/): whether a newer release is out, from a small manifest on the company's website, at
+    most once a day per machine and only while a window shows; a product's description and the one factory its
+    checker comes from; and the Updates menu every product offers. */
+
+/** @namespace reckless::view
+    The views (view/), header only: the view tree and its mouse routing, and every control, menu, dialog and layout a
+    panel is built from. */
+
+/** @namespace reckless::view::tooltip
+    The tooltip's text: words split, trimmed and wrapped to the balanced lines a tooltip draws. */
+
+/** @namespace reckless::window
+    The child window a panel is shown in (window/), written against no toolkit, and the shell at the root of every
+    window. */

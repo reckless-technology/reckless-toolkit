@@ -1,0 +1,22 @@
+{
+    // CMake's presets (CMakePresets.json) configure and build; clang-format 22.1.8 formats (the repository's
+    // .clang-format, vst-plugins').
+    "cmake.useCMakePresets": "always",
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/build/debug/compile_commands.json",
+    "C_Cpp.clang_format_style": "file",
+    "editor.rulers": [120],
+    "files.exclude": {
+        "build/": true
+    },
+    "[cpp]": {
+        "editor.tabSize": 4,
+        "editor.formatOnSave": false
+    },
+    "[powershell]": {
+        "editor.tabSize": 4
+    },
+    "[yaml]": {
+        "editor.tabSize": 2
+    }
+}

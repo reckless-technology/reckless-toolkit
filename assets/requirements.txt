@@ -1,0 +1,7 @@
+# What rendering the face plates needs (vst-plugins' face plate generator, run by the build through each plugin's
+# Assets/make_background.py), as ranges rather than pins: the CI jobs render with the Python each runner has - 3.13 on
+# the Windows runner, the Command Line Tools' on the Mac - and no one numpy release serves every one of them. Any
+# numpy 2 and any recent Pillow give the same pixels: the render is float32 adds, multiplies, absolutes and clips on
+# a PCG64 stream numpy holds stable across releases, and Pillow's rasteriser is integer.
+numpy>=2.0,<3
+pillow>=10,<13

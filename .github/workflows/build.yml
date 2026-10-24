@@ -1,0 +1,494 @@
+name: build
+
+# The check on every pull request and on demand, sized to the change. Documentation alone (Markdown, docs/, the licence
+# and notice, the ignore file, the editor settings, the Doxyfile and its README filter) builds nothing; anything else
+# configures the toolkit top-level and builds and runs every suite on the three platforms - Linux with gcc, its window
+# suites on Xvfb's display; Windows with MSVC; macOS universal, every binary held to both slices and to the macOS floor
+# - with the audio layer's device suite on each platform's test device; builds it again with nothing windowed and no
+# audio device layer, the smallest configuration a consumer may ask for; configures every product built on the toolkit
+# on this checkout of it and builds a few of each one's targets (the consumers job); and measures coverage. The
+# formatting, the documents' links and index, and the source documentation are checked whatever changed. The last job,
+# "CI", is the one check the ruleset on main requires: green when every job the run needed passed or was not needed,
+# red when any failed or was cancelled.
+#
+# Every job runs on a GitHub-hosted runner, its image pinned - ubuntu-24.04, windows-2025 and macos-15, each on a
+# fresh machine - as the three app repositories do. This repository is public, and the organisation's self-hosted
+# pool does not serve public repositories at all: a job queued for it here would wait for ever. A public repository
+# pays nothing for the hosted images, which is what made the old arrangement (the organisation's own machines, to
+# keep a hosted macOS minute from billing as ten) unnecessary as well as unworkable. .github/actions/cpp installs
+# what an image lacks. Nothing is kept between runs: each job builds from nothing and fetches what it needs.
+#
+# The audio layer's device suite (CTest audio_devices, tests/test_audio_devices.cpp) opens the real audio APIs on a
+# deterministic test device each, and every job names the APIs its runner must have (RECKLESS_AUDIO_REQUIRE), so a
+# missing device fails rather than skips: Linux ALSA and JACK - tools/audio-test-devices.sh provisions either Linux
+# runner first (jackd2, the headers, acl; snd-aloop loaded, its nodes opened to the job's user) and the suite starts its
+# own JACK server on the dummy driver - Windows ASIO, on the SDK's sample driver the suite builds from the SDK fetched by
+# name and hash and registers for its own process, and macOS CoreAudio, on the default output, written with silence.
+# Windows Audio needs a render endpoint, which neither Windows runner has: it is tested on a machine with one
+# (docs/audio/device-tests.md), never required here.
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      fresh:
+        description: "Delete the build trees kept on the runners and build from nothing"
+        type: boolean
+        default: false
+
+# The token reads the repository and nothing else: every job runs on the organisation's own machines, where an action is
+# code run with the runner's credentials on a kept workspace. .github/dependabot.yml opens a pull request when a pinned
+# action's major moves.
+permissions:
+  contents: read
+
+# One run per pull request at a time: a push to the branch cancels the run its predecessor started.
+concurrency:
+  group: build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The update check off in every process a job starts (update/SharedUpdates.h in a product): no suite reaches the
+  # network or writes the runner's updates.json.
+  RECKLESS_UPDATE_CHECK: "off"
+
+jobs:
+  changes:
+    name: What changed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      cpp: ${{ steps.pick.outputs.cpp }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          clean: false
+      # Every commit in the organisation is authored and committed as Jonny Reckless <jonny@recklesstechnology.com>, so
+      # a pull request carrying a commit under any other identity - another address, a bot, GitHub's own for a merge
+      # made with the Update branch button - goes red here before anything builds, documentation alone included. The
+      # commits are those the pull request adds to its base. The hooks under .githooks make the same check on a clone.
+      - name: Every commit is Jonny Reckless's
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          identity="jonny@recklesstechnology.com"
+          git log --format='%h %ae %ce %s' "$PR_BASE..$PR_HEAD"
+          foreign=$(git log --format='%h %ae %ce %s' "$PR_BASE..$PR_HEAD" | awk -v want="$identity" '$2 != want || $3 != want')
+          if [ -n "$foreign" ]; then
+            echo "::error::Every commit here is authored and committed as <$identity>; these are not (hash, author, committer, subject):"
+            echo "$foreign"
+            echo "Make them again under it and force-push the branch:"
+            echo "  git config user.name 'Jonny Reckless' && git config user.email $identity"
+            echo "  git rebase --exec 'git commit --amend --no-edit --reset-author' origin/main && git push --force-with-lease"
+            exit 1
+          fi
+          echo "Every commit is authored and committed as <$identity>."
+      # Every relative link in every tracked document resolves inside the toolkit and every document has its line
+      # in docs/index.md. The commit's files alone
+      # (--tracked): the workspace is kept between jobs, and an untracked file in it is no commit's.
+      - name: Every document's links resolve, every document is in the index
+        run: python3 tools/check-docs.py --tracked
+      - name: Decide what this run needs
+        id: pick
+        shell: bash
+        run: |
+          cpp=true
+          base=""
+          if [ "${{ github.event_name }}" = pull_request ]; then base="${{ github.event.pull_request.base.sha }}"; fi
+          if [ -n "$base" ] && git cat-file -e "$base" 2>/dev/null; then
+            changed=$(git diff --name-only "$base" "$GITHUB_SHA")
+            echo "changed files:"; echo "$changed"
+            # Documentation never reaches a compiler. The doxygen job, which every run makes, reads the Doxyfile, its
+            # filter and docs/namespaces.dox.
+            code=$(echo "$changed" | grep -vE '[.]md$|^docs/|^LICENSE$|^NOTICE$|^[.]gitignore$|^[.]vscode/|^Doxyfile$|^tools/doxygen_readme_filter[.]py$|^tools/check-docs[.]py$' || true)
+            if [ -z "$code" ]; then cpp=false; fi
+          fi
+          echo "cpp=$cpp" >> "$GITHUB_OUTPUT"
+          echo "code changed: $cpp"
+
+  # ---- The toolkit top-level, on the three platforms ------------------------------------------------------------
+
+  linux:
+    name: Linux (gcc)
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          clean: false
+      - name: Tidy the workspace
+        run: |
+          if [ "${{ github.event.inputs.fresh }}" = "true" ]; then echo "fresh: removing the kept trees"; rm -rf build/ci-toolkit*; fi
+          if [ -f build/ci-toolkit/CMakeCache.txt ]; then echo "build/ci-toolkit kept from the last run"; else echo "build/ci-toolkit: building from nothing"; fi
+      - name: Toolchain
+        id: cpp
+        uses: ./.github/actions/cpp
+        with:
+          gui: "true"
+      # The device suite's two Linux APIs: the ALSA and JACK headers RtAudio compiles against, jackd, setfacl, ALSA's
+      # loopback card loaded and its nodes opened to the job's user, with the runner's passwordless sudo. Before the
+      # configure, which promises ALSA and JACK only where it finds their headers.
+      - name: Audio test devices (ALSA loopback card, JACK)
+        run: tools/audio-test-devices.sh
+      - name: Configure
+        run: >
+          cmake -S . -B build/ci-toolkit -G Ninja -DCMAKE_BUILD_TYPE=Release -DFETCHCONTENT_UPDATES_DISCONNECTED=ON
+          "-DFETCHCONTENT_BASE_DIR=${{ steps.cpp.outputs.deps }}"
+      - name: Build
+        run: cmake --build build/ci-toolkit -j ${{ steps.cpp.outputs.jobs }}
+      # Every suite but the window suites, the device suite among them, run alone (RUN_SERIAL) with ALSA and JACK
+      # required, so a missing test device fails rather than skips.
+      - name: Test
+        env:
+          RECKLESS_AUDIO_REQUIRE: ALSA,JACK
+        run: ctest --test-dir build/ci-toolkit --output-on-failure -j "$(nproc)" -LE '^window$'
+      # The window suites (the CTest label `window`: child_window) on a 24-bit display Xvfb provides - the child window
+      # draws into BGRA and refuses a parent with any other visual - and RECKLESS_REQUIRE_WINDOW set, so a display that
+      # never came fails the step rather than skipping it.
+      - name: Test the windows on a display (xvfb-run)
+        env:
+          RECKLESS_REQUIRE_WINDOW: 1
+        run: xvfb-run -a -s "-screen 0 1280x1024x24" ctest --test-dir build/ci-toolkit --output-on-failure -L '^window$'
+
+  windows:
+    name: Windows (MSVC)
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          clean: false
+      - name: Tidy the workspace
+        run: |
+          if ('${{ github.event.inputs.fresh }}' -eq 'true') { 'fresh: removing the kept trees'; Remove-Item -Recurse -Force build/ci-toolkit* -ErrorAction SilentlyContinue }
+          if (Test-Path build/ci-toolkit/CMakeCache.txt) { 'build/ci-toolkit kept from the last run' } else { 'build/ci-toolkit: building from nothing' }
+      - name: Toolchain
+        id: cpp
+        uses: ./.github/actions/cpp
+      # ASIO on (the default): the SDK fetched from Steinberg's server by its versioned name and hash into the tool
+      # cache, compiled against and never shipped.
+      - name: Configure
+        run: >
+          cmake -S . -B build/ci-toolkit -G Ninja -DCMAKE_BUILD_TYPE=Release -DFETCHCONTENT_UPDATES_DISCONNECTED=ON
+          "-DFETCHCONTENT_BASE_DIR=${{ steps.cpp.outputs.deps }}"
+      - name: Build
+        run: cmake --build build/ci-toolkit -j ${{ steps.cpp.outputs.jobs }}
+      # Every suite, the device suite with ASIO required (the suite registers the SDK's sample driver for its own
+      # process, with no administrator). The runners are services on a window station that shows nothing, so a window
+      # suite draws and its checks of a visible window skip.
+      - name: Test
+        env:
+          RECKLESS_AUDIO_REQUIRE: ASIO
+        run: ctest --test-dir build/ci-toolkit --output-on-failure -j $env:NUMBER_OF_PROCESSORS
+
+  macos:
+    name: macOS (universal)
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          clean: false
+      - name: Tidy the workspace
+        run: |
+          if [ "${{ github.event.inputs.fresh }}" = "true" ]; then echo "fresh: removing the kept trees"; rm -rf build/ci-toolkit*; fi
+          if [ -f build/ci-toolkit/CMakeCache.txt ]; then echo "build/ci-toolkit kept from the last run"; else echo "build/ci-toolkit: building from nothing"; fi
+      - name: Toolchain
+        id: cpp
+        uses: ./.github/actions/cpp
+      # Universal, as every product's release is built: the x86_64 slice compiled and linked here too, so a slice that
+      # stops building fails the pull request. The floor read from the CMakeLists.txt and passed, not defaulted: a kept
+      # tree's cache keeps the value it was first configured with.
+      - name: Configure
+        run: |
+          floor=$(sed -nE 's/.*set\(CMAKE_OSX_DEPLOYMENT_TARGET "([0-9.]+)".*/\1/p' CMakeLists.txt | head -1)
+          [ -n "$floor" ] || { echo "::error::no macOS floor in CMakeLists.txt"; exit 1; }
+          echo "FLOOR=$floor" >> "$GITHUB_ENV"
+          echo "macOS floor: $floor"
+          cmake -S . -B build/ci-toolkit -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" \
+            "-DCMAKE_OSX_DEPLOYMENT_TARGET=$floor" -DFETCHCONTENT_UPDATES_DISCONNECTED=ON \
+            "-DFETCHCONTENT_BASE_DIR=${{ steps.cpp.outputs.deps }}"
+      - name: Build
+        run: cmake --build build/ci-toolkit -j ${{ steps.cpp.outputs.jobs }}
+      # Nothing after the build reads which slices a binary holds or which macOS it asks for: the suites run the slice
+      # this machine prefers on a macOS newer than the floor, so a binary that lost its x86_64 slice, or one that asks
+      # for a later macOS, would pass them all and not load where a product says it runs. So every executable and
+      # static library the toolkit builds is read with lipo for exactly arm64 and x86_64, and every executable's two
+      # slices with vtool for the floor (LC_BUILD_VERSION's minos).
+      - name: Every binary holds arm64 and x86_64, for the macOS floor
+        run: |
+          status=0
+          binaries=$(find build/ci-toolkit -path build/ci-toolkit/_deps -prune -o -type f \( -name 'reckless_*' -perm -u+x -o -name 'libreckless_*.a' \) -print | sort)
+          [ -n "$binaries" ] || { echo "::error::no binaries found under build/ci-toolkit"; exit 1; }
+          for binary in $binaries; do
+            archs=$(lipo -archs "$binary" | tr ' ' '\n' | sort | tr '\n' ' ')
+            if [ "$archs" != "arm64 x86_64 " ]; then echo "::error::$binary holds: $archs"; status=1; fi
+            case "$binary" in
+              *.a) ;;
+              *)
+                minos=$(vtool -show-build "$binary" | awk '/minos/ {print $2}' | sort -u | tr '\n' ' ')
+                if [ "$minos" != "$FLOOR " ]; then echo "::error::$binary asks for macOS $minos, not $FLOOR"; status=1; fi
+                ;;
+            esac
+          done
+          echo "$(echo "$binaries" | wc -l | tr -d ' ') binaries checked"
+          exit $status
+      # Every suite, with CoreAudio required on the machine's default output (the Mac mini's speakers, written with
+      # silence) and a window required: the runner is a LaunchAgent in a login session and has a window server, so a
+      # window suite that finds none fails rather than skips.
+      - name: Test
+        env:
+          RECKLESS_AUDIO_REQUIRE: CoreAudio
+          RECKLESS_REQUIRE_WINDOW: 1
+        run: ctest --test-dir build/ci-toolkit --output-on-failure -j ${{ steps.cpp.outputs.jobs }}
+
+  # ---- The smallest configuration, and coverage ------------------------------------------------------------------
+
+  # The toolkit with nothing windowed (RECKLESS_TOOLKIT_GUI off: no Skia fetched, no child window, no app platform) and
+  # no audio device layer (RECKLESS_BUILD_AUDIO off: no RtAudio or RtMidi), its suites on: the configuration a consumer
+  # that needs only the core, the network or the views asks for, so a target that grew a dependency on a
+  # windowed or device part fails here.
+  minimal:
+    name: Linux, no GUI and no audio devices
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          clean: false
+      - name: Toolchain
+        id: cpp
+        uses: ./.github/actions/cpp
+      - name: Configure
+        run: >
+          cmake -S . -B build/ci-toolkit-minimal -G Ninja -DCMAKE_BUILD_TYPE=Release -DRECKLESS_TOOLKIT_GUI=OFF
+          -DRECKLESS_BUILD_AUDIO=OFF -DFETCHCONTENT_UPDATES_DISCONNECTED=ON
+          "-DFETCHCONTENT_BASE_DIR=${{ steps.cpp.outputs.deps }}"
+      - name: Build
+        run: cmake --build build/ci-toolkit-minimal -j ${{ steps.cpp.outputs.jobs }}
+      - name: Test
+        run: ctest --test-dir build/ci-toolkit-minimal --output-on-failure -j "$(nproc)"
+
+  # Every product built on the toolkit - vst-plugins, Reckless IR Capture, Reckless Amphitheater, Knect 4 and Reckless
+  # Sudoku - at the head of its default branch with this pull request's toolkit in place of the commit it pins,
+  # configured as the product configures itself and a few of its targets built (tools/check-consumers.sh): a target, a
+  # CTest or an option of the same name as one of a product's, a header a product's own shadows, or a function a product
+  # calls that moved fails the toolkit's pull request, not the product's next bump. Linux alone, the cheapest of the three platforms;
+  # each product is cloned through a read-only deploy key on it whose private half is this repository's secret (Actions
+  # and Dependabot), its clone, its build tree and its downloads kept between runs under the workspace and the tool
+  # cache.
+  consumers:
+    name: Consumers on this toolkit (Linux)
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          clean: false
+      - name: Tidy the workspace
+        run: |
+          if [ "${{ github.event.inputs.fresh }}" = "true" ]; then echo "fresh: removing the kept trees"; rm -rf build/ci-toolkit-consumers; fi
+          if [ -d build/ci-toolkit-consumers/build ]; then echo "build/ci-toolkit-consumers kept from the last run"; else echo "build/ci-toolkit-consumers: building from nothing"; fi
+      - name: Toolchain
+        id: cpp
+        uses: ./.github/actions/cpp
+        with:
+          gui: "true"
+      # The products' configures look for a Python with numpy and Pillow, which render vst-plugins' face plates and the
+      # apps' icons at build time: a venv of this job's own in the tool cache, made once.
+      - name: Python with numpy and Pillow
+        id: python
+        run: |
+          venv="$RUNNER_TOOL_CACHE/reckless-toolkit-consumers-venv"
+          if ! "$venv/bin/python" -c "import numpy, PIL" 2> /dev/null; then
+            rm -rf "$venv"
+            python3 -m venv "$venv"
+            "$venv/bin/python" -m pip install --quiet -r assets/requirements.txt
+          fi
+          "$venv/bin/python" -c "import numpy, PIL; print('numpy', numpy.__version__, 'Pillow', PIL.__version__)"
+          echo "python=$venv/bin/python" >> "$GITHUB_OUTPUT"
+      - name: Every consumer, on this toolkit
+        env:
+          CONSUMER_VST_PLUGINS_DEPLOY_KEY: ${{ secrets.CONSUMER_VST_PLUGINS_DEPLOY_KEY }}
+          JOBS: ${{ steps.cpp.outputs.jobs }}
+        run: >
+          tools/check-consumers.sh build/ci-toolkit-consumers "${{ steps.cpp.outputs.deps }}/consumers"
+          "${{ steps.python.outputs.python }}"
+
+  # Line coverage of the parts the toolkit's own suites test - core/, gfx/ (not its Skia canvas), look/, view/, net/,
+  # update/ and licence/ - from an instrumented, unoptimised gcc build with nothing windowed, every suite run but the
+  # device suite (whose test devices are the linux job's), and gcovr reading the counters, red under the floor. CMake's
+  # instrumented compiler-identification stubs (CMakeFiles/<version>/CompilerId*), which have no source and stop gcov,
+  # and the fetched dependencies' objects are left out of gcovr's search. The floor, 89 %, is a little under
+  # what the suites reach - 90.6 % of lines under gcc here, 91.9 % under llvm-cov on Windows, each platform compiling its
+  # own transport - so a suite that stops reaching code fails the pull request. tools/coverage-windows.ps1 is the
+  # same on Windows, reading the floor from here.
+  coverage:
+    name: Coverage (gcov)
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          clean: false
+      - name: Toolchain
+        id: cpp
+        uses: ./.github/actions/cpp
+      # gcovr in a venv under the runner's tool cache, made once and kept, at the version setup-dev reads from here.
+      - name: gcovr 8.3
+        run: |
+          venv="$RUNNER_TOOL_CACHE/reckless-toolkit-gcovr-8.3"
+          if [ ! -x "$venv/bin/gcovr" ]; then
+            python3 -m venv "$venv"
+            "$venv/bin/pip" install --quiet gcovr==8.3
+          fi
+          echo "$venv/bin" >> "$GITHUB_PATH"
+          "$venv/bin/gcovr" --version | head -1
+      # A fresh tree every run, as vst-plugins' coverage job makes one: a kept tree carries other branches' notes and
+      # counters - a .gcda or .gcno of a target or a source this checkout lacks, or renames - which gcovr stops on, and
+      # no clean-up between runs keeps up with every branch's targets. The fetched dependencies stay in the tool cache
+      # (FETCHCONTENT_BASE_DIR), so only the toolkit itself is compiled again.
+      - name: Configure
+        run: |
+          rm -rf build/ci-toolkit-cov
+          cmake -S . -B build/ci-toolkit-cov -G Ninja -DCMAKE_BUILD_TYPE=Debug -DRECKLESS_TOOLKIT_GUI=OFF \
+            "-DCMAKE_CXX_FLAGS=--coverage -O0" "-DCMAKE_C_FLAGS=--coverage -O0" -DCMAKE_EXE_LINKER_FLAGS=--coverage \
+            -DFETCHCONTENT_UPDATES_DISCONNECTED=ON "-DFETCHCONTENT_BASE_DIR=${{ steps.cpp.outputs.deps }}"
+      - name: Build
+        run: cmake --build build/ci-toolkit-cov -j ${{ steps.cpp.outputs.jobs }}
+      - name: Test
+        run: ctest --test-dir build/ci-toolkit-cov --output-on-failure -j "$(nproc)" -E '^audio_devices$'
+      - name: Coverage, 89 % of lines or red
+        run: >
+          gcovr --root . --object-directory build/ci-toolkit-cov --filter '(core|gfx|look|view|net|update|licence)/'
+          --exclude 'gfx/skia/' --exclude '.*/tests/' --gcov-ignore-parse-errors=suspicious_hits.warn
+          --gcov-exclude-directories '.*/CMakeFiles/[0-9][^/]*/.*' --gcov-exclude-directories '.*/_deps/.*'
+          --txt --print-summary --fail-under-line 89 build/ci-toolkit-cov
+
+  # ---- Checked whatever changed ----------------------------------------------------------------------------------
+
+  # Every C++ file clang-format clean under the repository's .clang-format, with 22.1.8 from the PyPI wheel (the one
+  # version every Reckless repository formats with), kept in a venv under the tool cache.
+  format:
+    name: clang-format
+    needs: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          clean: false
+      - name: clang-format 22.1.8
+        run: |
+          venv="$RUNNER_TOOL_CACHE/clang-format-22.1.8"
+          if [ ! -x "$venv/bin/clang-format" ]; then
+            python3 -m venv "$venv"
+            "$venv/bin/pip" install --quiet 'clang-format==22.1.8'
+          fi
+          "$venv/bin/clang-format" --version
+          files=$(git ls-files -- '*.h' '*.cpp' '*.mm' || true)
+          echo "$(echo "$files" | grep -c . || true) files"
+          if [ -n "$files" ]; then "$venv/bin/clang-format" --dry-run -Werror $files; fi
+
+  # The source documentation: Doxygen on the Doxyfile - every class, function and data member of the toolkit and the
+  # suites' shared support, README.md the main page - red on any warning, which it prints, so the documentation cannot
+  # fall behind the code. Doxygen is the release the Doxyfile names, its Linux binary fetched once by its hash into the
+  # runner's tool cache (the distribution's 1.9.8 warns that a class member's parameters are undocumented when they
+  # are); Graphviz's dot draws the class diagrams, installed by the runner's passwordless sudo where it is missing.
+  doxygen:
+    name: Source documentation (Doxygen)
+    needs: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      DOXYGEN_VERSION: 1.14.0
+      DOXYGEN_SHA256: e5d6ae24d0bf3f0cdc4d8f146726b89ca323922f19441af99b1872d503665ad6
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          clean: false
+      - name: Doxygen from the kept tool cache, and Graphviz
+        run: |
+          dir="$RUNNER_TOOL_CACHE/reckless-doxygen/$DOXYGEN_VERSION"
+          if [ ! -x "$dir/bin/doxygen" ]; then
+            tag="Release_${DOXYGEN_VERSION//./_}"
+            tarball="doxygen-$DOXYGEN_VERSION.linux.bin.tar.gz"
+            rm -rf "$dir.part"; mkdir -p "$dir.part"
+            curl -sSLf -o "$dir.part/$tarball" "https://github.com/doxygen/doxygen/releases/download/$tag/$tarball"
+            echo "$DOXYGEN_SHA256  $dir.part/$tarball" | sha256sum -c -
+            tar -xzf "$dir.part/$tarball" -C "$dir.part" --strip-components=1
+            rm "$dir.part/$tarball"
+            rm -rf "$dir"; mv "$dir.part" "$dir"
+          fi
+          echo "$dir/bin" >> "$GITHUB_PATH"
+          if ! command -v dot > /dev/null; then
+            if sudo -n true 2> /dev/null; then
+              sudo -n apt-get update -qq
+              sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq graphviz
+            else
+              echo "::error::the runner lacks Graphviz's dot: sudo apt install graphviz"
+              exit 1
+            fi
+          fi
+          "$dir/bin/doxygen" --version
+          dot -V
+      - name: Generate
+        run: |
+          RECKLESS_VERSION=$(git rev-parse --short HEAD)
+          export RECKLESS_VERSION
+          rm -rf build/doxygen
+          mkdir -p build/doxygen
+          doxygen Doxyfile
+          if [ -s build/doxygen/warnings.log ]; then
+            echo "::error::Doxygen warned $(grep -c 'warning:' build/doxygen/warnings.log) times; every class, function, member, parameter and return value is documented:"
+            cat build/doxygen/warnings.log
+            exit 1
+          fi
+          echo "build/doxygen/html: $(find build/doxygen/html -type f | wc -l) files, $(du -sh build/doxygen/html | cut -f1), commit $RECKLESS_VERSION, no warnings"
+
+  # The one check the ruleset on main requires. Which jobs a run needs varies with the change - documentation alone
+  # needs none of the builds - so a rule cannot name them; this one always runs, after everything, and reads the
+  # others' results.
+  ci:
+    name: CI
+    needs: [changes, linux, windows, macos, minimal, consumers, coverage, format, doxygen]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every job this run needed passed
+        shell: bash
+        env:
+          RESULTS: ${{ toJson(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          if echo "$RESULTS" | jq -e '[.[] | .result] | any(. == "failure" or . == "cancelled")' > /dev/null; then
+            echo "A job failed or was cancelled." >&2
+            exit 1
+          fi
+          echo "Green."

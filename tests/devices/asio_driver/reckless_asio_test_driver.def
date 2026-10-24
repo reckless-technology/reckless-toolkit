@@ -1,0 +1,7 @@
+; The ASIO test driver's exports: COM's two for an in-process server, and the device suite's request of the running
+; driver (TestDriverClock.cpp). It is never registered with the system, so the registration pair is not exported.
+LIBRARY reckless_asio_test_driver
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE
+    reckless_asio_test_driver_request

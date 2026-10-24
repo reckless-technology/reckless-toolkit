@@ -1,0 +1,6 @@
+# Every build tree, configured on the toolkit alone: build/<name> (CMakePresets.json's, and CI's build/ci-toolkit*).
+build*/
+
+# A local Python for the tools
+.venv/
+__pycache__/

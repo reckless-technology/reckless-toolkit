@@ -1,0 +1,103 @@
+name: C++ toolchain
+description: >
+  What every C++ job of the toolkit needs on a self-hosted runner. On Linux: g++, CMake, Ninja and, for a job that
+  builds the windowed parts, what Skia and the child window link (FreeType, fontconfig, X11, found by pkg-config) with
+  Xvfb for the display the window suites open their windows on - each looked up by name and installed with the runner's
+  passwordless sudo where it is missing, else the job stops with the apt line for a person to run. On macOS: Xcode's
+  clang and the tools the universal checks read (lipo, vtool), Homebrew's CMake and Ninja, an arm64 runner. On Windows:
+  the MSVC developer environment of the Visual Studio vswhere finds, exported to the job's later steps. Then a directory
+  under the runner's tool cache, keyed by compiler, generator and GoogleTest's pin, where FetchContent keeps what it
+  fetches between runs - the toolkit's own, never shared with another repository's (reckless-toolkit-deps).
+inputs:
+  gui:
+    description: Linux - also check for (and install) what the windowed parts and their suites need
+    default: "false"
+outputs:
+  deps:
+    description: The FetchContent directory for this runner's compiler
+    value: ${{ steps.unix.outputs.deps || steps.windows.outputs.deps }}
+  jobs:
+    description: The build's parallelism for this runner
+    value: ${{ steps.unix.outputs.jobs || steps.windows.outputs.jobs }}
+runs:
+  using: composite
+  steps:
+    - name: Toolchain (Linux, macOS)
+      if: runner.os != 'Windows'
+      id: unix
+      shell: bash
+      env:
+        GUI: ${{ inputs.gui }}
+      run: |
+        set -euo pipefail
+        gtest=$(sed -nE 's/.*RECKLESS_GOOGLETEST_TAG +"([^"]+)".*/\1/p' cmake/ToolkitPins.cmake)
+        if [ "$(uname -s)" = "Linux" ]; then
+          apt_line="build-essential cmake ninja-build pkg-config curl python3"
+          tools="g++ cmake ninja pkg-config curl python3"
+          packages=""
+          if [ "$GUI" = "true" ]; then
+            apt_line="$apt_line xvfb libfreetype-dev libfontconfig1-dev libx11-dev"
+            tools="$tools xvfb-run"
+            packages="freetype2 fontconfig x11"
+          fi
+          find_missing() {
+            missing=""
+            for tool in $tools; do command -v "$tool" > /dev/null || missing="$missing $tool"; done
+            for package in $packages; do pkg-config --exists "$package" 2> /dev/null || missing="$missing $package.pc"; done
+          }
+          find_missing
+          if [ -n "$missing" ] && sudo -n true 2> /dev/null; then
+            echo "the runner lacks:$missing - installing with the runner's passwordless sudo"
+            sudo -n apt-get update -qq
+            sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $apt_line
+            find_missing
+          fi
+          if [ -n "$missing" ]; then echo "::error::the runner lacks:$missing. sudo apt install $apt_line"; exit 1; fi
+          compiler="gcc$(g++ -dumpversion | cut -d. -f1)"
+          mem_gb=$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') / 1048576 ))
+          # A job per two thirds of a gigabyte, never more than the cores: a translation unit can peak past a gigabyte
+          # under gcc, and the out-of-memory killer would take the compilers down at a job per core.
+          jobs=$(( mem_gb * 2 / 3 )); [ "$jobs" -gt "$(nproc)" ] && jobs=$(nproc); [ "$jobs" -lt 1 ] && jobs=1
+          echo "$(nproc) cores, $mem_gb GB, $(. /etc/os-release && echo "$PRETTY_NAME"); $(g++ --version | head -1)"
+        else
+          [ "$(uname -m)" = arm64 ] || { echo "::error::the macOS jobs run on Apple silicon; this runner is $(uname -m)"; exit 1; }
+          for tool in clang cmake ninja xcrun lipo vtool; do
+            command -v "$tool" > /dev/null || { echo "::error::$tool is not on the runner's PATH"; exit 1; }
+          done
+          compiler="appleclang$(clang --version | sed -nE '1s/.*version ([0-9]+).*/\1/p')"
+          jobs=$(sysctl -n hw.ncpu)
+          echo "$(uname -m), $jobs cores, macOS $(sw_vers -productVersion); $(clang --version | head -1)"
+        fi
+        cmake --version | head -1; echo "ninja $(ninja --version)"
+        deps="$RUNNER_TOOL_CACHE/reckless-toolkit-deps/$compiler-ninja-gtest$gtest"
+        mkdir -p "$deps"
+        echo "dependencies: $deps; build jobs: $jobs"
+        { echo "deps=$deps"; echo "jobs=$jobs"; } >> "$GITHUB_OUTPUT"
+
+    - name: Toolchain (Windows)
+      if: runner.os == 'Windows'
+      id: windows
+      shell: pwsh
+      run: |
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        if (-not $vs) { throw "No Visual Studio with the x64 C++ tools found" }
+        $before = @{}
+        Get-ChildItem env: | ForEach-Object { $before[$_.Name] = $_.Value }
+        $devcmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
+        $changed = @{}
+        cmd.exe /c "`"$devcmd`" -arch=x64 -host_arch=x64 -no_logo && set" | ForEach-Object {
+          if ($_ -match '^([^=]+)=(.*)$' -and $before[$Matches[1]] -ne $Matches[2]) { $changed[$Matches[1]] = $Matches[2] }
+        }
+        foreach ($name in $changed.Keys) {
+          "$name=$($changed[$name])" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          [Environment]::SetEnvironmentVariable($name, $changed[$name])
+        }
+        "Visual Studio: $vs; MSVC $env:VCToolsVersion; $env:NUMBER_OF_PROCESSORS cores"
+        cmake --version | Select-Object -First 1; "ninja $(ninja --version)"
+        $gtest = (Select-String -Path cmake/ToolkitPins.cmake -Pattern 'RECKLESS_GOOGLETEST_TAG +"([^"]+)"').Matches[0].Groups[1].Value
+        $deps = Join-Path $env:RUNNER_TOOL_CACHE "reckless-toolkit-deps\msvc$env:VCToolsVersion-ninja-gtest$gtest"
+        New-Item -ItemType Directory -Force -Path $deps | Out-Null
+        "dependencies: $deps"
+        "deps=$deps" >> $env:GITHUB_OUTPUT
+        "jobs=$env:NUMBER_OF_PROCESSORS" >> $env:GITHUB_OUTPUT
