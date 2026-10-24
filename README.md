@@ -6,24 +6,28 @@ window a panel is shown in on Skia, an app's platform layer, the audio device la
 the licence - with the artwork they draw, the suites that hold them and the CMake helpers a product builds its binaries
 with. C++20, every directory an include directory of its own and every header included by
 its bare name (`#include "View.h"`). Free software under the GNU General Public License, version 3 or later,
-copyright Jonny Reckless, published as Reckless Technology ([LICENSE](LICENSE) is the licence; [NOTICE](NOTICE)
-says what of it is another's - the fonts, Steinberg's logo, the company's marks - and under what terms).
+copyright Jonny Reckless, published as Reckless Technology: the copyright and what the licence does not cover in
+[COPYRIGHT](COPYRIGHT), the licence itself in [LICENSE](LICENSE), and what of this is another's and under what terms
+in [NOTICE](NOTICE).
 
 The toolkit depends on nothing of any product: nothing here may include, link or name a path of a product. It was
-vst-plugins' shared code, gathered there and lifted out with its history into this repository, which is now the one
-copy every product builds on.
+vst-plugins' shared code, gathered there and lifted out into this repository, which is now the one copy every
+product builds on. It is the GUI and app layer only: the signal processing that once lived here went back to
+vst-plugins, at its `common/dsp/`.
 
 ## Who builds on it
 
 | Product | Repository | How |
 |---|---|---|
-| The Reckless plugin suite | `reckless-technology/vst-plugins` | a git submodule at `external/reckless-toolkit`, added with `add_subdirectory` |
-| Reckless IR Capture | `reckless-technology/ir-capture` | moving onto the submodule from its own copy of the build files |
-| Reckless Amphitheater | `reckless-technology/amphitheater-chess` | a git submodule at `external/reckless-toolkit`, added with the GUI on and its suites off |
-| Knect 4 | `reckless-technology/knect4` | a git submodule at `external/reckless-toolkit`, added with the GUI and the audio layer on, its suites and ASIO off |
-| Reckless Sudoku | `reckless-technology/sudoku` | a git submodule at `external/reckless-toolkit`, added with the GUI on, its suites, the audio layer and ASIO off |
+| The Reckless plugin suite | `reckless-technology/vst-plugins` | a git subtree at `external/reckless-toolkit`, added with `add_subdirectory` |
+| Reckless IR Capture | inside the plugin suite, at its `ir-capture/` | shares the suite's copy of the toolkit; it has no repository of its own any more |
+| Reckless Amphitheater | `reckless-technology/amphitheater-chess` | a git subtree at `external/reckless-toolkit`, added with the GUI on and its suites off |
+| Knect 4 | `reckless-technology/knect4` | a git subtree at `external/reckless-toolkit`, added with the GUI and the audio layer on, its suites and ASIO off |
+| Reckless Sudoku | `reckless-technology/sudoku` | a git subtree at `external/reckless-toolkit`, added with the GUI on, its suites, the audio layer and ASIO off |
 
-A product holds the toolkit as a submodule at `external/reckless-toolkit` and adds it from its root `CMakeLists.txt`,
+A product holds the toolkit as a git subtree at `external/reckless-toolkit`, pulled by its own
+`tools/toolkit-pull.sh` (which flattens each pull into one commit, keeping the linear history those repositories
+require), and adds it from its root `CMakeLists.txt`,
 after setting, as normal variables, whichever options follow the product's (CMP0077 lets a normal variable stand in for
 an option):
 

@@ -15,29 +15,47 @@ directory is an include directory and a header is included by its bare name (`"V
 flat: a consumer names its own headers apart from the toolkit's.
 
 Repository `github.com/reckless-technology/reckless-toolkit`, **public**, default branch `main`, free software under
-the GNU General Public License version 3 or later - copyright Jonny Reckless (`LICENSE`); `NOTICE` lists what of it
-is another's and under what terms. The apps built on it are GPL too, and a GPL binary owes its user the whole of
-its corresponding source: that is why this repository is public. It was extracted with its full history from
-vst-plugins' `external/reckless-toolkit/` (`git filter-repo`, every older path followed), so `git log --follow` on a
-file reaches back through vst-plugins' `common/` and the plugins' own directories.
+the GNU General Public License version 3 or later - copyright Jonny Reckless. Three files carry that, and each holds
+one thing only: `COPYRIGHT` the copyright, the grant and what the licence does not cover, `LICENSE` the Free Software
+Foundation's text **byte for byte and nothing else** - a word of our own above it and GitHub stops recognising the
+licence, reporting `NOASSERTION` instead of `GPL-3.0`, which is what happened to `reckless-toolkit-old` and is why
+the recital lives in `COPYRIGHT` - and `NOTICE` what of this is another's and under what terms. The apps built on it are GPL too, and a GPL binary owes its user the whole of
+its corresponding source: that is why this repository is public.
+
+**The history here starts at this repository's first commit** (2026-10-24), a snapshot of the toolkit as it then
+stood, taken deliberately so that no private history was published. The development history up to that date - the
+toolkit's own 478 commits, reaching back through vst-plugins' `common/` and the plugins' own directories - is in
+`reckless-technology/reckless-toolkit-old`, private and archived. The two share no common ancestor, so they cannot be
+fetched into one another and `git log --follow` does not cross from one to the other: for anything before
+2026-10-24, read the archived repository.
 
 ## The consumers
 
 | Product | Repository | State |
 |---|---|---|
-| The plugin suite | `vst-plugins` | a submodule at `external/reckless-toolkit`, added with `add_subdirectory`; it sets `RECKLESS_TOOLKIT_BUILD_TESTS`, `RECKLESS_TOOLKIT_GUI` and `RECKLESS_TOOLKIT_FETCH_ASIO_SDK` from its own options, and reads the pins back for its third-party notices |
-| Reckless IR Capture | `ir-capture` | a submodule at `external/reckless-toolkit`, added with the GUI and the audio layer on and its suites off |
-| Reckless Amphitheater | `amphitheater-chess` | a submodule at `external/reckless-toolkit`, added with the GUI on and its suites and the audio layer off; its window is built on the app shell (`app/AppRun.h`, `docs/app/app-shell.md`) |
-| Knect 4 | `knect4` | a submodule at `external/reckless-toolkit`, added with the GUI and the audio layer on and its suites and ASIO off; its window is built on the app shell, its landings' clicks played through the audio layer's default output |
-| Reckless Sudoku | `sudoku` | a submodule at `external/reckless-toolkit`, added with the GUI on and its suites, the audio layer and ASIO off; its window is built on the app shell, under the series' header with the company mark |
+**Every consumer carries the toolkit as a git subtree** at `external/reckless-toolkit` - no submodule anywhere any
+more, the last of them converted on 2026-10-24. A pull is made by the consumer's own `tools/toolkit-pull.sh`, which
+flattens it into one linear commit, because these repositories require a linear history and are rebase-only. So a
+toolkit change reaches a product in two steps: merge it here, then run that script in each product.
 
-Each consumer's CI reads the submodule with a read-only deploy key on this repository (Settings, Deploy keys), its
-private half a secret in the consumer's repository; a key per consumer, named for it. The other way round, this
-repository's CI reads each consumer with a read-only deploy key on the consumer ("reckless-toolkit CI consumer guard
-(read-only)"), its private half this repository's Actions and Dependabot secret `CONSUMER_VST_PLUGINS_DEPLOY_KEY`,
-`CONSUMER_IR_CAPTURE_DEPLOY_KEY`, `CONSUMER_AMPHITHEATER_DEPLOY_KEY`, `CONSUMER_KNECT4_DEPLOY_KEY` or
-`CONSUMER_SUDOKU_DEPLOY_KEY`, for the
-`consumers` job below. A new consumer gets its line in `tools/check-consumers.sh`, its key and its secret (`ssh-keygen
+| Product | Repository | State |
+|---|---|---|
+| The plugin suite | `vst-plugins` (private) | **a subtree** since pull request #503; added with `add_subdirectory`; it sets `RECKLESS_TOOLKIT_BUILD_TESTS`, `RECKLESS_TOOLKIT_GUI` and `RECKLESS_TOOLKIT_FETCH_ASIO_SDK` from its own options, and reads the pins back for its third-party notices |
+| Reckless IR Capture | `vst-plugins/ir-capture/` | no longer a repository of its own: it moved into the suite and shares the suite's copy of the toolkit, with the GUI and the audio layer on and its suites off. The standalone `ir-capture` repository is archived |
+| Reckless Amphitheater | `amphitheater-chess` (public) | **a subtree**, added with the GUI on and its suites and the audio layer off; its window is built on the app shell (`app/AppRun.h`, `docs/app/app-shell.md`) |
+| Knect 4 | `knect4` (public) | **a subtree**, added with the GUI and the audio layer on and its suites and ASIO off; its window is built on the app shell, its landings' clicks played through the audio layer's default output |
+| Reckless Sudoku | `sudoku` (public) | **a subtree**, added with the GUI on and its suites, the audio layer and ASIO off; its window is built on the app shell, under the series' header with the company mark |
+
+**A consumer needs no key to read this repository any more**: it is public, so a consumer's CI clones it over https,
+and the per-consumer read-only deploy keys that used to sit here (Settings, Deploy keys) can go with the secrets that
+held their private halves in each consumer.
+
+The other way round, this repository's CI reads each consumer for the `consumers` job below, and there a key is still
+needed for a **private** consumer only: `vst-plugins`, through a read-only deploy key on it ("reckless-toolkit CI
+consumer guard (read-only)") whose private half is this repository's Actions and Dependabot secret
+`CONSUMER_VST_PLUGINS_DEPLOY_KEY`. `amphitheater-chess`, `knect4` and `sudoku` went public and GPL on 2026-10-24 and
+are cloned over https with no key, which is what a checkout with no key can do; `tools/check-consumers.sh` chooses per
+consumer. `CONSUMER_IR_CAPTURE_DEPLOY_KEY` is obsolete with the standalone `ir-capture` repository. A new consumer gets its line in `tools/check-consumers.sh`, its key and its secret (`ssh-keygen
 -t ed25519`, `gh repo deploy-key add` on the consumer, `gh secret set` here for both apps, the key files deleted after).
 
 ## Commands
