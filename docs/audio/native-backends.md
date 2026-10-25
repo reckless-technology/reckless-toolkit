@@ -72,13 +72,13 @@ Nektar Impact LX88+ on USB ([device-tests.md](device-tests.md), "On a Mac with a
   here, in Mac OS Roman by RtAudio.
 - **Duplex on one device, through the cable**, at every rate the UMC1820 offers (44.1, 48, 88.2 and 96 kHz) and every
   block from 32 to 1024 frames: the rate and block asked, no xruns, each channel back as it was played (a 64-tap fit
-  of 0.9997 or better), one stream playing bursts with silence between them bringing every burst back within a
+  of 0.9996 or better), one stream playing bursts with silence between them bringing every burst back within a
   hundredth of a frame of the first.
 - **The round trip, measured against what the HAL reports.** Two blocks and the latency reported, and then the
   driver's error: the UMC1820's driver reports its latency and safety offsets as a fixed time (about 1.5 ms each in,
   0.28 ms each out: 74 and 14 frames at 48 kHz, 146 and 26 at 96), where its converters' delay is fixed in samples -
-  so the measured round trip is 21 to 37 frames more than reported at 44.1 and 48 kHz and 41 to 70 frames less at
-  88.2 and 96, within 0.8 ms either way. RtAudio counted the device latency alone, without the safety offsets, which
+  so the measured round trip is 21 to 39 frames more than reported at 44.1 and 48 kHz and 41 to 70 frames less at
+  88.2 and 96, within 0.9 ms either way. RtAudio counted the device latency alone, without the safety offsets, which
   is about 110 frames short at every rate. Within a stream the round trip never moves. Between one stream and the
   next it moves by up to one USB high-speed microframe (125 µs: 6 frames at 48 kHz, 12 at 96) - how the driver lines
   its input and output packets up at a start - but for one case: the first stream at 48 kHz after the device has run
