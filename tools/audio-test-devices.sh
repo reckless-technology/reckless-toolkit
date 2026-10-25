@@ -69,9 +69,16 @@ if [ -z "$card" ]; then
         sudo -n depmod -a || true
     fi
     if ! modinfo snd-aloop > /dev/null 2>&1; then
-        echo "::error::this kernel has no snd-aloop and $extra did not bring one. What is there:" >&2
-        find /lib/modules -name '*aloop*' 2>/dev/null | head -5 >&2 || true
-        ls /lib/modules 2>/dev/null >&2 || true
+        # Printed as plain lines before the annotation: GitHub collapses a ::error:: to its first line, so a
+        # multi-line payload inside one vanishes - and an empty search then looks exactly like a swallowed one.
+        echo "after installing $extra and running depmod, modinfo still finds no snd-aloop. What is there:"
+        echo "  kernels in /lib/modules: $(ls /lib/modules 2>/dev/null | tr '
+' ' ')"
+        echo "  anything matching aloop: $(find /lib/modules -name '*aloop*' 2>/dev/null | head -5 | tr '
+' ' ')"
+        echo "  the package's own files: $(dpkg -L "$extra" 2>/dev/null | grep -ci aloop) matching aloop"
+        echo "  sound modules present:   $(find /lib/modules -path '*sound*' -name '*.ko*' 2>/dev/null | wc -l)"
+        echo "::error::this kernel has no snd-aloop and $extra did not bring one (the lines above say what is there)"
         exit 1
     fi
     sudo -n modprobe snd-aloop
