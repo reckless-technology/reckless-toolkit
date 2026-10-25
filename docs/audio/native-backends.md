@@ -38,7 +38,11 @@ dropped while PipeWire played through it.
 
 JACK, measured against RtAudio's on the suite's dummy-driver server: the same block, rate, loop (bit for bit, 1024
 samples) and xrun recovery to the sample, and the server stopped under a running stream told to the callback within
-5 ms, the stream closed in under 25 ms and opened again once the server was back. A device's ports are its client's
+5 ms, the stream closed in under 25 ms and opened again once the server was back. The block asked is asked of the server, where
+RtAudio took the server's whatever was asked: of PipeWire's graph as the client's latency, which moved this machine's
+graph from its 1024-frame quantum to 64 for the stream's life - the UMC1820 duplex through it at 64 frames, no xruns -
+and of a JACK server as its buffer size. PipeWire's own `jack_set_buffer_size` is never called: it forces a quantum
+on the whole graph that outlives the stream. A device's ports are its client's
 by exact name, where RtAudio's pattern counted any client whose name held the device's.
 
 Nothing above the seam has to change: `AudioDevice.h`'s `AudioSystem` (nine pure virtuals) and `MidiSystem` (four)

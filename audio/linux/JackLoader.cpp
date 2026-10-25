@@ -34,8 +34,12 @@ struct Jack
     decltype(&reckless_jack_port_register)          port_register          = nullptr; ///< `jack_port_register`
     decltype(&reckless_jack_port_unregister)        port_unregister        = nullptr; ///< `jack_port_unregister`
     decltype(&reckless_jack_set_error_function)     set_error_function     = nullptr; ///< `jack_set_error_function`
-    decltype(&reckless_jack_set_process_callback)   set_process_callback   = nullptr; ///< `jack_set_process_callback`
-    decltype(&reckless_jack_set_xrun_callback)      set_xrun_callback      = nullptr; ///< `jack_set_xrun_callback`
+    decltype(&reckless_jack_set_buffer_size)        set_buffer_size        = nullptr; ///< `jack_set_buffer_size`
+    decltype(&reckless_jack_set_buffer_size_callback) set_buffer_size_callback =
+        nullptr;                                                                  ///< `jack_set_buffer_size_callback`
+    decltype(&reckless_jack_set_process_callback) set_process_callback = nullptr; ///< `jack_set_process_callback`
+    decltype(&reckless_jack_set_xrun_callback)    set_xrun_callback    = nullptr; ///< `jack_set_xrun_callback`
+    bool is_pipewire = false; ///< whether the library is PipeWire's, which brings libpipewire in with it
 };
 
 /** `function` from `library` by its libjack name, or null. A symbol's address as a function pointer is what dlsym
@@ -77,8 +81,13 @@ Jack Load()
     Find(library, "jack_port_register", jack.port_register);
     Find(library, "jack_port_unregister", jack.port_unregister);
     Find(library, "jack_set_error_function", jack.set_error_function);
+    Find(library, "jack_set_buffer_size", jack.set_buffer_size);
+    Find(library, "jack_set_buffer_size_callback", jack.set_buffer_size_callback);
     Find(library, "jack_set_process_callback", jack.set_process_callback);
     Find(library, "jack_set_xrun_callback", jack.set_xrun_callback);
+    // PipeWire's libjack reports JACK's own version, so it is known by what it links: dlsym through a handle searches
+    // the library's dependencies too, and only PipeWire's brings libpipewire, and pw_init, with it.
+    jack.is_pipewire = library != nullptr && dlsym(library, "pw_init") != nullptr;
     return jack;
 }
 
@@ -291,6 +300,36 @@ extern "C"
     {
         const auto function = Library().set_process_callback;
         return function != nullptr ? function(client, process_callback, arg) : -1;
+    }
+
+    /** libjack's `jack_set_buffer_size`: the server's block changed, for every client - jackd's own; PipeWire's sets
+        a quantum forced on its whole graph, which outlives the client (JackDevice.cpp asks it of jackd alone).
+        @param client  the client
+        @param frames  the block, in frames
+        @return  0 on success; -1 with no library or on failure */
+    int reckless_jack_set_buffer_size(jack_client_t *client, jack_nframes_t frames)
+    {
+        const auto function = Library().set_buffer_size;
+        return function != nullptr ? function(client, frames) : -1;
+    }
+
+    /** libjack's `jack_set_buffer_size_callback`: a callback for the server's block changing.
+        @param client  the client
+        @param callback  called, on a thread of the server's, with the new block
+        @param arg  passed to `callback`
+        @return  0 on success; -1 with no library or on failure */
+    int reckless_jack_set_buffer_size_callback(jack_client_t *client, JackBufferSizeCallback callback, void *arg)
+    {
+        const auto function = Library().set_buffer_size_callback;
+        return function != nullptr ? function(client, callback, arg) : -1;
+    }
+
+    /** Whether the libjack loaded is PipeWire's - the graph's own JACK - rather than a JACK server's. Not libjack's:
+       the loader's own answer, from what the library links.
+        @return  1 for PipeWire's libjack; 0 for JACK's own, or none */
+    int reckless_jack_is_pipewire(void)
+    {
+        return Library().is_pipewire ? 1 : 0;
     }
 
     /** libjack's `jack_set_xrun_callback`: the function that is told of an xrun.

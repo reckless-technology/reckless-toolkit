@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <memory>
@@ -153,14 +155,40 @@ std::vector<DeviceInfo> List(jack_client_t *client)
     return devices;
 }
 
-/** A client of the machine's JACK server, never one started for it.
-    @param name  the client's name
-    @return      the client, or null where no server answers */
-jack_client_t *OpenClient(const std::string &name)
+/** A client of the machine's JACK server, never one started for it - on PipeWire's JACK asking the graph for `block`
+    frames a cycle. PipeWire runs its graph at the smallest latency any running node asks for (its node.latency, within
+    the graph's own bounds), and its libjack takes a client's from PIPEWIRE_LATENCY as the client connects: so the
+    variable is set for the open alone, and put back as it was after. Nothing is forced on the graph - it goes back to
+    its own quantum once the stream's client is gone - and a JACK server's libjack never reads the variable.
+    @param name   the client's name
+    @param block  the frames a cycle to ask PipeWire's graph for; 0 to ask nothing
+    @param rate   the rate the stream asks for, in hertz, which the latency is counted at
+    @return       the client, or null where no server answers */
+jack_client_t *OpenClient(const std::string &name, int block = 0, int rate = 0)
 {
     SilenceLibjack();
-    jack_status_t status = JackFailure;
-    return jack_client_open(name.c_str(), JackNoStartServer, &status);
+    const bool        asks = block > 0 && reckless_jack_is_pipewire() != 0;
+    const char       *had  = asks ? std::getenv("PIPEWIRE_LATENCY") : nullptr;
+    const std::string was  = had != nullptr ? had : "";
+    if (asks)
+    {
+        const std::string latency = std::to_string(block) + "/" + std::to_string(rate > 0 ? rate : 48000);
+        setenv("PIPEWIRE_LATENCY", latency.c_str(), 1);
+    }
+    jack_status_t  status = JackFailure;
+    jack_client_t *client = jack_client_open(name.c_str(), JackNoStartServer, &status);
+    if (asks)
+    {
+        if (had != nullptr)
+        {
+            setenv("PIPEWIRE_LATENCY", was.c_str(), 1);
+        }
+        else
+        {
+            unsetenv("PIPEWIRE_LATENCY");
+        }
+    }
+    return client;
 }
 
 /** The latency a device port reports the way a stream uses it, the least of its range.
@@ -223,7 +251,8 @@ class JackSystem final : public AudioSystem
         Close();
         SetError({});
         const std::string name = request.client_name.empty() ? std::string(kDefaultClient) : request.client_name;
-        client_                = OpenClient(name);
+        asked_block_           = request.block_size > 0 ? std::min(request.block_size, kMaxFrames) : 0;
+        client_                = OpenClient(name, asked_block_, request.sample_rate);
         if (client_ == nullptr)
         {
             return Refuse("no JACK server is running, so nothing named '" + request.output_device +
@@ -302,6 +331,17 @@ class JackSystem final : public AudioSystem
             return Refuse("the JACK server would not take the stream's callbacks");
         }
         jack_on_shutdown(client_, &JackSystem::Shutdown, this);
+        jack_set_buffer_size_callback(client_, &JackSystem::BufferSize, this);
+
+        // A JACK server's block is a server's setting any client may change, and the one a person tunes a live rig by:
+        // the block asked is asked of it. Never of PipeWire's, whose jack_set_buffer_size forces a quantum on the
+        // whole graph that outlives the stream; there the client asked for its latency as it connected (OpenClient).
+        if (asked_block_ > 0 && reckless_jack_is_pipewire() == 0 &&
+            jack_get_buffer_size(client_) != static_cast<jack_nframes_t>(asked_block_))
+        {
+            jack_set_buffer_size(client_, static_cast<jack_nframes_t>(asked_block_));
+        }
+        block_.store(static_cast<int>(jack_get_buffer_size(client_)), std::memory_order_release);
 
         const auto most = static_cast<std::size_t>(kMaxFrames);
         input_storage_.assign(std::max<std::size_t>(in_ports_.size(), 1) * most, 0.0f);
@@ -310,11 +350,10 @@ class JackSystem final : public AudioSystem
         outputs_.assign(out_ports_.size(), nullptr);
 
         format_.sample_rate      = rate;
-        format_.block_size       = static_cast<int>(jack_get_buffer_size(client_));
+        format_.block_size       = block_.load(std::memory_order_acquire);
         format_.input_channels   = static_cast<int>(in_ports_.size());
         format_.output_channels  = static_cast<int>(out_ports_.size());
-        format_.reported_latency = LatencyOf(client_, targets_.front(), JackPlaybackLatency) +
-                                   (sources_.empty() ? 0 : LatencyOf(client_, sources_.front(), JackCaptureLatency));
+        format_.reported_latency = DeviceLatency();
         callback_.store(&callback, std::memory_order_release);
         failed_.store(false, std::memory_order_relaxed);
         server_gone_.store(false, std::memory_order_relaxed);
@@ -341,6 +380,8 @@ class JackSystem final : public AudioSystem
             return false;
         }
         active_ = true;
+        AwaitBlock();
+        format_.reported_latency = DeviceLatency(); // a device port's latency follows the block, settled now
         // Connected once active, as JACK requires; deactivating disconnects them, so each Start connects afresh.
         for (std::size_t c = 0; c < out_ports_.size(); ++c)
         {
@@ -404,7 +445,12 @@ class JackSystem final : public AudioSystem
 
     StreamFormat Format() const override
     {
-        return format_;
+        StreamFormat format = format_;
+        if (open_)
+        {
+            format.block_size = block_.load(std::memory_order_acquire); // the server's block, which it may change
+        }
+        return format;
     }
 
     std::string LastError() const override
@@ -466,6 +512,42 @@ class JackSystem final : public AudioSystem
         }
         system.in_flight_.fetch_sub(1);
         return 0;
+    }
+
+    /** JACK's buffer-size callback, on a thread of the server's: the block it runs at now, for Format and AwaitBlock.
+        @param frames  the new block, in frames
+        @param self    the JackSystem
+        @return        0 */
+    static int BufferSize(jack_nframes_t frames, void *self) noexcept
+    {
+        static_cast<JackSystem *>(self)->block_.store(static_cast<int>(frames), std::memory_order_release);
+        return 0;
+    }
+
+    /** PipeWire's graph moves to the latency the client asked for (OpenClient) only once the client is active, a cycle
+        or two on: Start waits for it - up to half a second, since another node may hold the graph at a larger block,
+        or the graph's bounds forbid the one asked - so that what the stream's format says once Start returns is the
+        block it plays at. Nothing to wait for on a JACK server, whose block was set at the open. */
+    void AwaitBlock() const
+    {
+        if (asked_block_ <= 0 || reckless_jack_is_pipewire() == 0)
+        {
+            return;
+        }
+        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (block_.load(std::memory_order_acquire) > asked_block_ && std::chrono::steady_clock::now() < until)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+
+    /** The latency the device ports report beyond the block: the first output's playback latency and the first
+        input's capture latency, summed.
+        @return  the latency, in frames */
+    int DeviceLatency() const
+    {
+        return LatencyOf(client_, targets_.front(), JackPlaybackLatency) +
+               (sources_.empty() ? 0 : LatencyOf(client_, sources_.front(), JackCaptureLatency));
     }
 
     /** JACK's xrun callback, on a thread of the server's: the next process callback is told.
@@ -553,6 +635,8 @@ class JackSystem final : public AudioSystem
     std::atomic<bool>            pending_xrun_{false}; ///< an xrun to tell the next callback of
     std::atomic<bool>            failed_{false};       ///< true once the stream's failure has been told
     std::atomic<bool>            server_gone_{false};  ///< true once the server has shut the client down
+    std::atomic<int>             block_{0};            ///< the server's block now, from its buffer-size callback
+    int                          asked_block_{0};      ///< the block the stream asked for; 0 for the server's
     mutable std::mutex           error_mutex_;         ///< guards `last_error_`
     std::string                  last_error_;          ///< the last error, for a person to read
 };

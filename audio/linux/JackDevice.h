@@ -16,13 +16,16 @@ namespace reckless::audio
     device's, as RtAudio's pattern counted it.
 
     A stream is a client of the name the request gives (JACK's list shows it), with one port a channel - "outport 0",
-    "inport 0", RtAudio's names - connected on Start to the device's ports from the first channel asked; the server's
-    rate, which the request must ask for, and the server's block, whatever the request asks, which the stream's format
-    then says. The callback is JACK's process callback, on the server's real-time thread, each port's buffer copied in
-    and out of channels laid end to end. An xrun the server reports is told to the next callback; the server shutting
-    the client down - stopped, or gone - is the stream failing, told once (AudioCallback::StreamFailed). Stop
-    deactivates the client, which JACK returns from only once no process callback runs, and waits for any still
-    counted in.
+    "inport 0", RtAudio's names - connected on Start to the device's ports from the first channel asked, at the server's
+    rate, which the request must ask for. The block asked is asked of the server: of PipeWire's graph as the client's
+    latency (PIPEWIRE_LATENCY as it connects), which the graph runs at while no other node asks for less and leaves once
+    the client goes, nothing forced on it; of a JACK server as its buffer size (jack_set_buffer_size), a server's
+    setting any client may change. The server may give another, or change it while the stream runs, and the stream's
+    format says the block it runs at - after Start, once PipeWire's graph has moved to it. The callback is JACK's
+    process callback, on the server's real-time thread, each port's buffer copied in and out of channels laid end to
+    end. An xrun the server reports is told to the next callback; the server shutting the client down - stopped, or gone
+    - is the stream failing, told once (AudioCallback::StreamFailed). Stop deactivates the client, which JACK returns
+    from only once no process callback runs, and waits for any still counted in.
 
     Message thread throughout but for the process, xrun and shutdown callbacks, which run on the server's threads.
 */
