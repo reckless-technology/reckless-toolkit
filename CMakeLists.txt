@@ -73,6 +73,10 @@ set(RECKLESS_ASIO_SDK_DIR "" CACHE PATH "Windows: an unzipped Steinberg ASIO SDK
 # Fetch the ASIO SDK wherever ASIO is on, even where nothing compiles it: a product's third-party notices quote the
 # licence of the SDK's host files, which its notices script reads from the fetched tree on any platform.
 option(RECKLESS_TOOLKIT_FETCH_ASIO_SDK "Fetch the ASIO SDK on every platform, for a product's notices" OFF)
+# Fetch RtAudio's and RtMidi's sources wherever the audio layer is on, even where nothing compiles them (Linux, whose
+# back ends are all the toolkit's own): a product's notices are one file for every platform's release and quote their
+# licences, which its notices script reads from the fetched trees.
+option(RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES "Fetch RtAudio's and RtMidi's sources on every platform, for notices" OFF)
 # Demo mode: a product gates an unlicensed binary (the switch, licence/DemoMode.h, which the licence's targets carry as
 # a compile definition so every translation unit that reads it agrees). Off until a product is sold.
 option(RECKLESS_DEMO_MODE "Gate an unlicensed product: the build's demo switch (licence/DemoMode.h)" OFF)
@@ -200,8 +204,9 @@ FetchContent_MakeAvailable(monocypher)
 if(RECKLESS_BUILD_AUDIO)
     find_package(Threads REQUIRED)
     # RtAudio and RtMidi for macOS and Windows alone: on Linux every API is the toolkit's own (audio/linux/), and
-    # neither library is fetched.
-    if(APPLE OR WIN32)
+    # neither library is fetched - but for a product's notices (RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES), which fetch
+    # their sources and build nothing.
+    if(APPLE OR WIN32 OR RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES)
         FetchContent_Declare(rtaudio
             URL      https://github.com/thestk/rtaudio/archive/refs/tags/${RECKLESS_RTAUDIO_VERSION}.tar.gz
             URL_HASH SHA256=7206c8b6cee43b474f43d64988fefaadfdcfc4264ed38d8de5f5d0e6ddb0a123
@@ -212,7 +217,8 @@ if(RECKLESS_BUILD_AUDIO)
             URL_HASH SHA256=ef7bcda27fee6936b651c29ebe9544c74959d0b1583b716ce80a1c6fea7617f0
             SOURCE_SUBDIR reckless-builds-this-itself)
         FetchContent_MakeAvailable(rtaudio rtmidi)
-
+    endif()
+    if(APPLE OR WIN32)
         add_library(rtaudio STATIC "${rtaudio_SOURCE_DIR}/RtAudio.cpp")
         add_library(rtmidi STATIC "${rtmidi_SOURCE_DIR}/RtMidi.cpp")
         # RtAudio converts device names through <codecvt>'s wstring_convert, deprecated since C++17 and kept by every
