@@ -3,9 +3,9 @@
 // While the native back ends are written, RtAudio still serves whatever they do not yet: it is one back end among
 // them, offering the API names the native ones have not taken. A native back end lands ahead of it in the list and
 // takes its name - two back ends may offer the same name, and the first in the list wins - so each API moves over on
-// its own, with the device suite run against both to compare them. On Linux every name has moved - ALSA and JACK are
-// the toolkit's own - so RtAudio is not listed there. Its descriptor goes when the last name it serves has moved
-// everywhere, and with it cmake/PatchRtAudio.cmake.
+// its own, with the device suite run against both to compare them. On Linux and Windows every name has moved - ALSA
+// and JACK, Windows Audio and ASIO are the toolkit's own - so RtAudio is not listed there. Its descriptor goes when
+// CoreAudio moves too.
 //
 // So the list's order says which back end serves a name, and the order a Standalone offers the names in is the
 // series' own (kPreference), apart from it: a native back end listed ahead of RtAudio must not put its name ahead of
@@ -27,6 +27,9 @@
 
 #if defined(_WIN32)
 #include "win/WasapiDevice.h"
+#endif
+#if defined(RECKLESS_AUDIO_ASIO)
+#include "win/AsioDevice.h"
 #endif
 #if defined(RECKLESS_AUDIO_JACK)
 #include "linux/JackDevice.h"
@@ -65,14 +68,17 @@ const std::vector<const AudioBackend *> &AudioBackends()
         // The suite's own WASAPI, in its two modes, ahead of ASIO: only a person with an ASIO driver wants ASIO.
         &WasapiBackend(),
 #endif
+#if defined(RECKLESS_AUDIO_ASIO)
+        &AsioBackend(),
+#endif
 #if defined(RECKLESS_AUDIO_JACK)
         &JackBackend(),
 #endif
 #if defined(RECKLESS_AUDIO_ALSA)
         &AlsaBackend(),
 #endif
-#if !defined(__linux__)
-        // RtAudio, for what is not yet the toolkit's own: CoreAudio, and ASIO. On Linux it serves nothing.
+#if defined(__APPLE__)
+        // RtAudio, for what is not yet the toolkit's own: CoreAudio. On Linux and Windows it serves nothing.
         &RtAudioBackend(),
 #endif
     };

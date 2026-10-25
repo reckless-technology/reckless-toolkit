@@ -387,9 +387,10 @@ TEST_P(AudioDevices, CarriesTheSamplesALoopBringsBack)
     else
     {
         // The ASIO test driver's inputs: its sine on the first, its sawtooth on the second, every block the same 256
-        // 16-bit samples (AsioRig.cpp makes them as the driver does), each read as int16 / 32768 exactly. RtAudio hands
-        // a callback the input of the block before - its own buffer, filled after the callback runs - so the first
-        // callback's input is silence: one block of it, and no more, before the driver's samples.
+        // 16-bit samples (AsioRig.cpp makes them as the driver does), each read as int16 / 32768 exactly. The driver
+        // fills the half of its input buffers it is about to hand over, and the back end reads that half in the same
+        // switch, so the first callback already carries the driver's samples: none of silence before them. (RtAudio
+        // read the half before, a block late.)
         const std::vector<std::vector<float>> waves = reckless::audio::test::AsioTestDriverWaves();
         ASSERT_EQ(waves.size(), 2u);
         const std::size_t period = waves[0].size();
@@ -416,8 +417,9 @@ TEST_P(AudioDevices, CarriesTheSamplesALoopBringsBack)
             }
         }
         Table(api_ + ": the test driver's own inputs")
-            .Row("silent before the driver's samples", Str(static_cast<std::int64_t>(lead)) + " frames (one block: " +
-                                                           Str(static_cast<std::int64_t>(format.block_size)) + ")")
+            .Row("silent before the driver's samples",
+                 Str(static_cast<std::int64_t>(lead)) +
+                     " frames (none; a block: " + Str(static_cast<std::int64_t>(format.block_size)) + ")")
             .Row("samples compared, exactly", Str(compared) + " over 2 channels")
             .Row("mismatches",
                  Str(mismatches) + (mismatches > 0
@@ -425,7 +427,7 @@ TEST_P(AudioDevices, CarriesTheSamplesALoopBringsBack)
                                         : std::string()))
             .Row("xruns reported", Str(xruns))
             .Print();
-        EXPECT_EQ(lead, static_cast<std::size_t>(format.block_size)) << "the driver's samples did not start a block in";
+        EXPECT_EQ(lead, 0u) << "the driver's samples did not start with the first callback";
         EXPECT_EQ(mismatches, 0) << "an input sample is not the driver's sine or sawtooth read as int16 / 32768";
         EXPECT_GE(compared, static_cast<std::int64_t>(rate)); // two channels of at least half a second
     }

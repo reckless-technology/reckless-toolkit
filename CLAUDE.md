@@ -34,8 +34,8 @@ MIDI back ends become the platforms' own APIs, one at a time behind the seam in 
 touching anything under `audio/`, read **[docs/audio/native-backends.md](docs/audio/native-backends.md)**: it holds
 the decision and what it rests on, which API each platform ends up on, where it stands, the order the work takes and
 how a back end is added, and the things already settled by measurement so they are not re-argued. On Linux every
-API is the toolkit's own since 2026-10-25 - ALSA, JACK and the ALSA sequencer, with neither library fetched there - and
-what remains, CoreAudio, CoreMIDI, ASIO and WinMM, wants a Mac and a Windows machine.
+API is the toolkit's own since 2026-10-25 - ALSA, JACK and the ALSA sequencer, with neither library fetched there - and on
+Windows, Windows Audio and ASIO; what remains is WinMM's MIDI, then CoreAudio and CoreMIDI on a Mac.
 
 ## The consumers
 

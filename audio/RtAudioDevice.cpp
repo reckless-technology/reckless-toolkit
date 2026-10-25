@@ -17,35 +17,10 @@
 #include <RtAudio.h>
 #include <RtMidi.h>
 
-#if defined(RECKLESS_AUDIO_ASIO_HOST)
-#include "asiodrivers.h" // the ASIO SDK's host code (RtAudio.h has brought in windows.h, with NOMINMAX)
-
-// The SDK's own list of drivers (its host/asiodrivers.cpp, compiled into RtAudio's library): the one its ASIOExit
-// releases the current driver through.
-extern AsioDrivers *asioDrivers;
-#endif
-
 namespace reckless::audio
 {
 namespace
 {
-#if defined(RECKLESS_AUDIO_ASIO_HOST)
-/** The SDK's ASIOExit, which RtAudio calls after every probe of a driver and as it closes a stream, releases the
-    current driver through the SDK's global list - set only by the SDK's loadAsioDriver, which RtAudio never calls,
-    keeping a list of its own - and dereferences it without a check: RtAudio's bundled copy of the host code checks it,
-    but the build compiles the SDK's own (the root CMakeLists.txt says why), and with it the first probe of any driver
-    read through a null pointer. So the global is given a list of its own, which loads no driver: ASIOExit asks it to
-    release none, and the release is RtAudio's, through its own list, as with RtAudio's copy. Made after RtAudio's ASIO
-    back end, so the list's own start of COM on this thread is a nested one. */
-void GiveAsioExitAList()
-{
-    static AsioDrivers none;
-    if (asioDrivers == nullptr)
-    {
-        asioDrivers = &none;
-    }
-}
-#endif
 
 /** The APIs the series opens, by its names, in the order a Standalone prefers them (AudioApis says why). */
 struct ApiName
@@ -58,7 +33,6 @@ struct ApiName
     Windows Audio and ALSA are the suite's own (win/WasapiDevice.h, linux/AlsaDevice.h), never RtAudio's. */
 constexpr ApiName kApis[] = {
     {RtAudio::MACOSX_CORE, "CoreAudio"},
-    {RtAudio::WINDOWS_ASIO, "ASIO"},
     {RtAudio::UNIX_JACK, "JACK"},
 };
 
@@ -760,12 +734,6 @@ std::unique_ptr<AudioSystem> MakeSystem(const std::string &name)
         if (name == api.name && std::find(compiled.begin(), compiled.end(), api.api) != compiled.end())
         {
             auto system = std::make_unique<RtAudioSystem>(api.api, api.name);
-#if defined(RECKLESS_AUDIO_ASIO_HOST)
-            if (api.api == RtAudio::WINDOWS_ASIO)
-            {
-                GiveAsioExitAList();
-            }
-#endif
             return system;
         }
     }

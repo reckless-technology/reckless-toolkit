@@ -1,8 +1,8 @@
 # The audio layer on the real APIs
 
 The audio layer (`audio/`) reaches the machine's interfaces through the back ends `DeviceBackends.h` chooses between:
-the toolkit's own on Windows Audio (WASAPI, in two modes), ALSA and JACK, and RtAudio's on CoreAudio and ASIO until
-each moves (`native-backends.md`). Two suites hold it. `audio`
+the toolkit's own on Windows Audio (WASAPI, in two modes), ASIO, ALSA and JACK, and RtAudio's on CoreAudio until it
+moves (`native-backends.md`). Two suites hold it. `audio`
 (`reckless_audio_test`) runs the engine on the offline device and needs no hardware; `audio_devices`
 (`reckless_audio_device_test`, `tests/test_audio_devices.cpp`) opens every API the build carries on a
 deterministic test device and holds what really happens there. This note is the second: what it holds, the device it
@@ -128,14 +128,14 @@ waiting inside ALSA is "Why a case took a minute, while RtAudio served ALSA", be
 
 ## ASIO: registering the test driver without an administrator
 
-RtAudio lists ASIO drivers through the SDK's host code (`host/pc/asiolist.cpp`): each driver's class from
-`HKLM\SOFTWARE\ASIO`, its DLL from `HKCR\CLSID\<class>\InprocServer32`, read once as RtAudio's static driver list is built
+The ASIO back end (`audio/win/AsioDevice.cpp`) lists drivers through the SDK's host code (`host/pc/asiolist.cpp`): each
+driver's class from `HKLM\SOFTWARE\ASIO`, its DLL from `HKCR\CLSID\<class>\InprocServer32`, read once as its driver list is built
 while the binary loads; a driver is created later with `CoCreateInstance`. A CI runner's account cannot write HKLM, and a
 process at the System integrity level - a service's, as the runners' are - is not given COM's per-user classes. So
 `devices/AsioRig.cpp` registers the driver for its own process alone:
 
 - **The registry, seen through views.** In the C runtime's library initialisation segment (`#pragma init_seg(lib)`),
-  which runs before every ordinary static initialiser and so before RtAudio's driver list is built, the binary loads an
+  which runs before every ordinary static initialiser and so before the back end's driver list is built, the binary loads an
   application hive (`RegLoadAppKey`: a hive file in the temporary folder, private to the process, needing no privilege),
   writes into it the test driver's entries - and, copied beside them, the machine's own drivers' entries, so a person's
   interface still lists - and points `HKEY_LOCAL_MACHINE` and `HKEY_CLASSES_ROOT` at it for this process with
@@ -159,25 +159,18 @@ its clock, in place of the sample's `wintimer.cpp`. The sample's thread sleeps a
 5 for 256 frames, whatever the rate - plus the scheduler's quantum, so its blocks come some way off the rate it reports;
 the suite's clock keeps an absolute schedule on a high-resolution waitable timer, so the blocks come at the rate the
 stream opened at, and the rate by the clock can be judged. The clock also takes the suite's requests
-(`reckless_asio_test_driver_request`): a resync request, which RtAudio reports as an xrun, and a reset request, which a
-driver sends when it loses its device or changes its buffer size, and on which RtAudio closes the stream on a thread of
-its own and reports the disconnection. The sample's waves are computed again by the suite exactly as the driver computes
+(`reckless_asio_test_driver_request`): a resync request, which the back end reports as an xrun, and a reset request, which a
+driver sends when it loses its device or changes its buffer size, and on which the back end tells the stream it failed,
+for the engine to close it from the message thread. The sample's waves are computed again by the suite exactly as the driver computes
 them - with the sample's own value of pi, 0.3141592654 - and each input sample must be that wave's int16 over 32768.
-RtAudio hands a callback the input of the block before, so the first callback's input is silent: the check allows that
-one block, and no more.
+The driver fills the half of its input buffers it is about to hand over, and the back end reads that half in the same
+switch, so the first callback already carries the driver's samples: the check allows no silence before them. (RtAudio
+read the half before, and the check allowed it a block.)
 
-Two things `RtAudioDevice.cpp` does on ASIO, without which a real driver does not work through the layer:
-
-- **It gives the SDK's `ASIOExit` a driver list to ask.** `ASIOExit` releases the current driver through the SDK's
-  global driver list, `asioDrivers`, which only the SDK's `loadAsioDriver` sets - RtAudio keeps a list of its own and
-  never calls it - and it does not check the pointer. RtAudio's bundled copy of the host code checks it; the build
-  compiles the SDK's own, so without a list the first probe of any ASIO driver reads through a null pointer and the
-  process dies of an access violation. The layer gives the global an empty list of its own as it makes the ASIO system:
-  `ASIOExit` asks it to release no driver, and the release is RtAudio's, through its own list, as with RtAudio's copy.
-- **It lets RtAudio finish with a driver before the next open.** RtAudio's ASIO back end marks a stream closed before it
-  has released the driver - its closing thread then disposes of the buffers, exits the driver and removes it - so after
-  a stream the API closed itself, `RtAudioDevice` asks RtAudio to probe its drivers until it no longer answers that a
-  stream is open, before it lets the next open begin.
+What the back end does about the SDK's host code, which RtAudio needed two workarounds for: its driver list is the
+SDK's own global, `asioDrivers`, which the SDK's `ASIOExit` releases the current driver through - RtAudio kept a list
+of its own and left the global null, so the build's copy of the SDK read through a null pointer on the first probe -
+and it closes a stream from the message thread alone, so no close of the driver ever races an open.
 
 ## Required, not skipped
 

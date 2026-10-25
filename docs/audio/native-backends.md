@@ -15,8 +15,8 @@ That is what makes this a migration rather than a rewrite. **A native back end i
 its name**, so one API moves at a time and the device suite can be run against either. The order a Standalone offers
 the names in is the series' own (`kPreference` in `DeviceBackends.cpp`), apart from which back end serves each, so a
 native back end listed first does not jump its name ahead of RtAudio's others. Once a name has moved, RtAudio stops
-compiling that API's back end and its patches go. RtAudio's descriptor goes when the last name it serves has moved,
-and `cmake/PatchRtAudio.cmake` with it.
+compiling that API's back end and its patches go - the last, `cmake/PatchRtAudio.cmake`, with RtAudio's ASIO. RtAudio's
+descriptor goes when CoreAudio moves, the last name it serves.
 
 ## Where it stands
 
@@ -25,9 +25,10 @@ and `cmake/PatchRtAudio.cmake` with it.
 | Windows Audio, its two modes | the toolkit's, `audio/win/WasapiDevice.cpp`; its low-latency mode folded into Windows Audio | before 2026-10-25; two modes 2026-10-25 |
 | ALSA | the toolkit's, `audio/linux/AlsaDevice.cpp`; RtAudio no longer compiles its ALSA, and both ALSA patches are gone | 2026-10-25 |
 | JACK | the toolkit's, `audio/linux/JackDevice.cpp`, libjack loaded at run time (`JackLoader.cpp`); RtAudio compiles no API on Linux and is not listed there | 2026-10-25 |
-| CoreAudio, ASIO | RtAudio | on a Mac, and on Windows |
+| ASIO | the toolkit's, `audio/win/AsioDevice.cpp`, on Steinberg's SDK; RtAudio compiles no API on Windows and is not listed there | 2026-10-25 |
+| CoreAudio | RtAudio | on a Mac |
 | MIDI on Linux | the toolkit's, `audio/linux/AlsaMidi.cpp`, on ALSA's sequencer | 2026-10-25 |
-| MIDI on macOS and Windows | RtMidi | after each platform's audio |
+| MIDI on macOS and Windows | RtMidi | WinMM next, then CoreMIDI |
 
 ALSA, measured against RtAudio's on the same machine and the same loopback card
 ([device-tests.md](device-tests.md), "Why a case took a minute"): every device named as RtAudio named it, a stop in
@@ -47,6 +48,12 @@ graph from its 1024-frame quantum to 64 for the stream's life - the UMC1820 dupl
 and of a JACK server as its buffer size. PipeWire's own `jack_set_buffer_size` is never called: it forces a quantum
 on the whole graph that outlives the stream. A device's ports are its client's
 by exact name, where RtAudio's pattern counted any client whose name held the device's.
+
+ASIO, held by the Windows job's device suite on the SDK's sample driver: the driver list taken during static
+initialisation as RtAudio's was (the suite registers its test driver in registry views that exist only until main),
+the SDK's own `asioDrivers` global pointed at it, so the two workarounds `RtAudioDevice.cpp` carried for RtAudio are
+gone, and the input read from the half of the buffer the driver has just filled - a block sooner than RtAudio, which
+read the half before.
 
 **Linux carries neither library now**: with the ALSA sequencer serving MIDI, RtAudio and RtMidi are not fetched or
 compiled there. The sequencer lists every input under the name RtMidi gave it - checked side by side against RtMidi
