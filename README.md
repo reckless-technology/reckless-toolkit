@@ -96,10 +96,10 @@ is the check `main` requires.
 |---|---|---|
 | `RECKLESS_TOOLKIT_BUILD_TESTS` | ON | The toolkit's suites, and GoogleTest, which a product's suites use too. |
 | `RECKLESS_TOOLKIT_GUI` | ON | The windowed parts: Skia (fetched), `reckless_gfx_skia`, the child window and the app platform. Off, nothing of Skia is fetched. |
-| `RECKLESS_BUILD_AUDIO` | ON | The audio device layer - the toolkit's own back ends, and on macOS RtAudio and RtMidi (fetched) until CoreAudio and CoreMIDI move - and its suites. |
+| `RECKLESS_BUILD_AUDIO` | ON | The audio device layer - the toolkit's own back ends on each platform's API - and its suites. |
 | `RECKLESS_ASIO`, `RECKLESS_ASIO_SDK_DIR` | ON, empty | Windows: ASIO devices on Steinberg's ASIO SDK, fetched by version and hash, or the unzipped SDK the directory names. |
 | `RECKLESS_TOOLKIT_FETCH_ASIO_SDK` | OFF | Fetch the ASIO SDK on every platform, for a product's notices, compiling none of it. |
-| `RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES` | OFF | Fetch RtAudio's and RtMidi's sources on every platform, for a product's notices, where the toolkit builds neither (Linux). |
+| `RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES` | OFF | Fetch RtAudio's and RtMidi's sources, for a product's notices; the toolkit builds neither. |
 | `RECKLESS_DEMO_MODE` | OFF | The build's demo switch (`licence/DemoMode.h`), a compile definition on `reckless_demo_mode`. |
 
 ### Targets
@@ -113,7 +113,7 @@ independent with their symbols hidden, as a plug-in module's code is.
 - `reckless_demo_mode`, `reckless_monocypher`, `reckless_common_licence`.
 - `reckless_window_headers` - the window's headers with no Skia (the shell, the licence's card); `reckless_app_headers` - the app platform's seam (`app/AppPlatform.h`) on them, with no platform compiled, for a suite's platform of its own.
 - `reckless_app_shell` - a desktop app's shell on that seam, with no platform and no renderer: its window and loop (`app/AppRun.h`), its root (`app/AppRoot.h`), the window's sizes from a View menu (`app/AppWindowSizes.h`), its theme and fonts (`app/AppTheme.h`), its widgets (`app/AppWidgets.h`) and its update check (`app/AppUpdates.h`) - [docs/app/app-shell.md](docs/app/app-shell.md).
-- `reckless_common_audio`; with the audio layer, `reckless_audio_devices`, `rtaudio`, `rtmidi` and on Linux with JACK's headers `reckless_jack_loader`.
+- `reckless_common_audio`; with the audio layer, `reckless_audio_devices`, on Windows with the ASIO SDK `reckless_asio_host`, and on Linux with JACK's headers `reckless_jack_loader`.
 - With the GUI: `reckless_skia`, `reckless_gfx_skia`, `reckless_window_api` (the window's header, for an adapter), `reckless_window` (the window compiled once), `reckless_app_platform` and `reckless_app_resources` (what an app's views draw with on Skia, `app/AppResources.h`).
 - With the suites: `reckless_toolkit_test_support`, `reckless_test_host_window` (with the GUI), `GTest::gtest` and `GTest::gtest_main`, and `reckless_warnings` unless the product defined it first.
 
@@ -171,13 +171,13 @@ these scripts through the environment of its release job; the scripts never prin
 | `window/` | The child window a panel is shown in (an NSView, an HWND, an X11 window) and the shell round a panel (`ShellView.h`), with the licence's card. |
 | `skia/` | Skia, prebuilt from a pinned skia-pack release, and the targets on it. |
 | `app/` | An app's platform layer: the application, where a window goes, the audio settings' widgets, a post to the main thread from any other, the clipboard, and the menu bar with its shortcuts (`MenuBar.h`, drawn on Linux by `MenuBarView.h`) - [docs/app/platform.md](docs/app/platform.md); and a desktop app's shell on it - its window and loop, its root, theme, widgets, resources and update check ([docs/app/app-shell.md](docs/app/app-shell.md)). |
-| `audio/` | The audio device layer: the toolkit's own back ends on Windows Audio (WASAPI), ASIO, WinMM, ALSA, the ALSA sequencer and JACK, and on macOS RtAudio's CoreAudio and RtMidi's CoreMIDI until they move, the settings an app keeps and an offline device. |
+| `audio/` | The audio device layer: the toolkit's own back ends on CoreAudio and CoreMIDI, Windows Audio (WASAPI), ASIO and WinMM, ALSA, the ALSA sequencer and JACK, the settings an app keeps and an offline device. |
 | `net/` | HTTP on the platform's own stack, URLs, SHA-256 and a loopback listener for a sign-in's redirect. |
 | `update/` | The update check against the company's website: the check (`UpdateCheck.h`), a product's description and the one factory its checker comes from (`UpdateProduct.h`), and the Updates menu every product offers (`UpdatesMenu.h`) - [docs/update/update-check.md](docs/update/update-check.md). |
 | `licence/` | A licence's Ed25519 signature checked offline, the machine's store, and the build's demo switch (`DemoMode.h`). |
 | `assets/` | The fonts - the series' serif (Noto Serif) and the monospaced family (Monaspace Xenon, `fonts/monaspace/`), each regular and bold beside its licence - the chicken-head knob's film strip and its CAD model, the company's mark and icons, the meters' artwork, and the Python requirements of what the build renders. |
 | `tests/` | The suites, and what every suite shares (`reckless_toolkit_test_support`), among it an app platform of the suites' own with no display (`FakeAppPlatform.h`). |
-| `cmake/` | The helpers above, the pins (`ToolkitPins.cmake`) and the patch applied to fetched RtAudio. |
+| `cmake/` | The helpers above and the pins (`ToolkitPins.cmake`). |
 | `docs/` | The documents, every one listed in [docs/index.md](docs/index.md), and `docs/namespaces.dox`, every namespace documented once for Doxygen. |
 | `tools/` | The setup scripts, coverage on Windows, every consumer configured on this checkout (`check-consumers.sh`, CI's `consumers` job), the Linux test devices' setup, the licence's reference signer (`licence.py`), the documents' check (`check-docs.py`), the README's filter for Doxygen, and the release signing every product shares (`sign-mac.sh`, `esigner-sign.ps1`, `installer/app.entitlements`; above, under Release signing). |
 | `.githooks/` | `pre-commit` (the one identity, and staged C++ clean under clang-format 22.1.8) and `pre-push` (no push to `main`, no commit under another identity). |

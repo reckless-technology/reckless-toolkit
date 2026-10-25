@@ -60,7 +60,7 @@ option(RECKLESS_TOOLKIT_BUILD_TESTS "Build the toolkit's suites" ON)
 # or plain C++ and build, with their suites, without it.
 option(RECKLESS_TOOLKIT_GUI "Build the windowed parts: Skia, its canvas, the child window and the app platform" ON)
 # The audio device layer (audio/) on RtAudio and RtMidi, fetched below, with its suites.
-option(RECKLESS_BUILD_AUDIO "Build the audio device layer (and RtAudio, RtMidi on macOS and Windows) and its suites" ON)
+option(RECKLESS_BUILD_AUDIO "Build the audio device layer and its suites" ON)
 # Windows only: the audio device layer offers ASIO devices, through RtAudio's ASIO back end on Steinberg's ASIO SDK. The
 # SDK is dual-licensed, Steinberg's proprietary ASIO licence or GPLv3, and a closed product takes the proprietary one,
 # whose terms the build keeps: the SDK is fetched from Steinberg's own server at a pinned version with a hash, below,
@@ -181,25 +181,22 @@ FetchContent_Declare(monocypher
 FetchContent_MakeAvailable(monocypher)
 
 # The audio device layer (audio/) reaches the machine's audio interfaces and MIDI ports through the toolkit's own back
-# ends and, on macOS until CoreAudio and CoreMIDI are written, through RtAudio and RtMidi: one source file and one
-# header each, under the same permissive licence (MIT's, with a request - not a condition - that modifications be sent
-# upstream), fetched as their release tarballs with a hash each and built into two static libraries, rtaudio and
-# rtmidi:
-#   macOS    CoreAudio and CoreMIDI;
-#   Windows  nothing: Windows Audio (WASAPI), ASIO and WinMM's MIDI are the toolkit's own back ends (audio/win/), ASIO
-#            on Steinberg's SDK fetched by name and hash, its host files compiled here as reckless_asio_host;
-#   Linux    nothing: ALSA's PCMs and sequencer and JACK are the toolkit's own back ends (audio/linux/), each where its
-#            development headers are installed, and neither library is fetched.
+# ends alone, each on the platform's own API (docs/audio/native-backends.md):
+#   macOS    CoreAudio on the HAL and CoreMIDI (audio/mac/);
+#   Windows  Windows Audio (WASAPI), ASIO on Steinberg's SDK - fetched by name and hash, its host files compiled here as
+#            reckless_asio_host - and WinMM's MIDI (audio/win/);
+#   Linux    ALSA's PCMs and sequencer and a JACK client (audio/linux/), each where its development headers are
+#            installed.
 # JACK is linked at no point: libjack is loaded by name at run time (audio/linux/JackLoader.cpp), so a machine without it
 # runs on ALSA rather than failing to start - every JACK function the toolkit calls is renamed to the loader's by
-# audio/linux/JackNames.h. Both libraries, and the ASIO SDK's host files, compile without the toolkit's warning set, a
-# fetched tree being no part of this one's to keep clean, and their headers are SYSTEM to the code that includes them.
+# audio/linux/JackNames.h. The ASIO SDK's host files compile without the toolkit's warning set, a fetched tree being no
+# part of this one's to keep clean, and their headers are SYSTEM to the code that includes them. RtAudio and RtMidi, which
+# the layer was first written on, are fetched only for a product's notices (RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES).
 if(RECKLESS_BUILD_AUDIO)
     find_package(Threads REQUIRED)
-    # RtAudio and RtMidi for macOS alone: on Linux and Windows every API is the toolkit's own (audio/linux/,
-    # audio/win/), and neither library is built - but for a product's notices (RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES),
-    # which fetch their sources and build nothing.
-    if(APPLE OR RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES)
+    # RtAudio's and RtMidi's sources, for a product's notices alone (RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES): every API
+    # is the toolkit's own, and neither library is built.
+    if(RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES)
         FetchContent_Declare(rtaudio
             URL      https://github.com/thestk/rtaudio/archive/refs/tags/${RECKLESS_RTAUDIO_VERSION}.tar.gz
             URL_HASH SHA256=7206c8b6cee43b474f43d64988fefaadfdcfc4264ed38d8de5f5d0e6ddb0a123
@@ -210,27 +207,11 @@ if(RECKLESS_BUILD_AUDIO)
             SOURCE_SUBDIR reckless-builds-this-itself)
         FetchContent_MakeAvailable(rtaudio rtmidi)
     endif()
-    if(APPLE)
-        add_library(rtaudio STATIC "${rtaudio_SOURCE_DIR}/RtAudio.cpp")
-        add_library(rtmidi STATIC "${rtmidi_SOURCE_DIR}/RtMidi.cpp")
-        # RtAudio converts device names through <codecvt>'s wstring_convert, deprecated since C++17 and kept by every
-        # library the toolkit builds with: the deprecation is RtAudio's to answer, so it goes unsaid in RtAudio's own file.
-        target_compile_options(rtaudio PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-deprecated-declarations>)
-        target_include_directories(rtaudio SYSTEM PUBLIC "${rtaudio_SOURCE_DIR}")
-        target_include_directories(rtmidi SYSTEM PUBLIC "${rtmidi_SOURCE_DIR}")
-        target_link_libraries(rtaudio PRIVATE Threads::Threads)
-        target_link_libraries(rtmidi PRIVATE Threads::Threads)
-        set_target_properties(rtaudio rtmidi PROPERTIES POSITION_INDEPENDENT_CODE ON)
-    endif()
     # The APIs compiled in, for the configure's log and the suite that lists them.
     set(RECKLESS_AUDIO_APIS "")
     if(APPLE)
-        # CoreAudio is the toolkit's own (audio/mac/CoreAudioDevice.cpp); RtAudio compiles none of its APIs, and stays
-        # for RtMidi's sake until CoreMIDI moves too.
-        target_compile_definitions(rtmidi PRIVATE __MACOSX_CORE__)
-        target_link_libraries(rtmidi PRIVATE
-            "-framework CoreMIDI" "-framework CoreAudio" "-framework CoreFoundation" "-framework CoreServices")
-        list(APPEND RECKLESS_AUDIO_APIS "CoreAudio (the toolkit's own)" CoreMIDI)
+        # CoreAudio and CoreMIDI, the toolkit's own (audio/mac/).
+        list(APPEND RECKLESS_AUDIO_APIS "CoreAudio (the toolkit's own)" "CoreMIDI (the toolkit's own)")
     elseif(WIN32)
         # RtAudio's string conversions use <codecvt>, deprecated since C++17 and kept by every library the toolkit
         # builds with; MSVC's STL would say so in every build. The C runtime's classic string functions likewise.
@@ -296,11 +277,7 @@ if(RECKLESS_BUILD_AUDIO)
             list(APPEND RECKLESS_AUDIO_APIS "JACK (the toolkit's own, libjack loaded at run time)")
         endif()
     endif()
-    if(TARGET rtaudio)
-        set(reckless_audio_libraries "RtAudio ${RECKLESS_RTAUDIO_VERSION}, RtMidi ${RECKLESS_RTMIDI_VERSION} and ")
-    else()
-        set(reckless_audio_libraries "")
-    endif()
+    set(reckless_audio_libraries "")
     if(RECKLESS_AUDIO_APIS)
         list(JOIN RECKLESS_AUDIO_APIS ", " apis)
         message(STATUS "Audio device layer: ${reckless_audio_libraries}the toolkit's own back ends, on ${apis}")
@@ -530,8 +507,7 @@ target_link_libraries(reckless_app_shell
 # The audio device layer: header only but for the devices, namespace reckless::audio, included by bare name - the
 # device and MIDI interfaces (AudioDevice.h), the settings an app keeps (AudioSettings.h: reckless-technology/<name>/
 # audio.json) and an offline device for the suites (OfflineDevice.h). The devices themselves are reckless_audio_devices,
-# with the toolkit's own back ends - Windows Audio on WASAPI (audio/win/WasapiDevice.cpp), and on Linux ALSA's PCMs and
-# sequencer and a JACK client (audio/linux/) - and RtAudio and RtMidi on macOS and Windows (audio/RtAudioDevice.cpp).
+# with the toolkit's own back ends on each platform's API (audio/mac/, audio/win/, audio/linux/).
 # ---------------------------------------------------------------------------------------------------------------
 add_library(reckless_common_audio INTERFACE)
 target_include_directories(reckless_common_audio INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/audio")
@@ -543,15 +519,13 @@ if(RECKLESS_BUILD_AUDIO)
     # is stripped from this static library by the linker (audio/DeviceBackends.h says so at length).
     add_library(reckless_audio_devices STATIC audio/DeviceBackends.cpp)
     target_link_libraries(reckless_audio_devices PUBLIC reckless_common_audio PRIVATE Threads::Threads reckless_warnings)
-    if(TARGET rtaudio)
-        target_sources(reckless_audio_devices PRIVATE audio/RtAudioDevice.cpp)
-        target_link_libraries(reckless_audio_devices PRIVATE rtaudio rtmidi)
-    endif()
     if(APPLE)
-        # CoreAudio, the toolkit's own back end on the HAL (audio/mac/CoreAudioDevice.cpp).
-        target_sources(reckless_audio_devices PRIVATE audio/mac/CoreAudioDevice.cpp)
-        target_link_libraries(reckless_audio_devices PRIVATE "-framework CoreAudio" "-framework CoreFoundation")
-        target_compile_definitions(reckless_audio_devices PRIVATE RECKLESS_AUDIO_COREAUDIO)
+        # CoreAudio, the toolkit's own back end on the HAL (audio/mac/CoreAudioDevice.cpp), and MIDI on CoreMIDI
+        # (audio/mac/CoreMidi.cpp).
+        target_sources(reckless_audio_devices PRIVATE audio/mac/CoreAudioDevice.cpp audio/mac/CoreMidi.cpp)
+        target_link_libraries(reckless_audio_devices PRIVATE
+            "-framework CoreAudio" "-framework CoreMIDI" "-framework CoreFoundation")
+        target_compile_definitions(reckless_audio_devices PRIVATE RECKLESS_AUDIO_COREAUDIO RECKLESS_AUDIO_COREMIDI)
     endif()
     if(WIN32)
         # Windows Audio, the toolkit's own WASAPI back end in its two modes: COM, and the multimedia scheduler (avrt)
@@ -700,7 +674,8 @@ inline constexpr EmbeddedFile kEmbeddedFiles[] = {
     # The audio device layer on the offline device and its arithmetic: the settings an app keeps, and Windows Audio's
     # formats, periods and capture ring, which need no Windows.
     add_executable(reckless_audio_test tests/test_audio_settings.cpp tests/test_wasapi_formats.cpp
-                                       tests/test_asio_formats.cpp tests/test_win_midi_formats.cpp)
+                                       tests/test_asio_formats.cpp tests/test_win_midi_formats.cpp
+                                       tests/test_core_midi_formats.cpp)
     target_link_libraries(reckless_audio_test PRIVATE reckless_common_audio reckless_toolkit_test_support
                                                       reckless_warnings GTest::gtest_main)
     add_test(NAME audio COMMAND reckless_audio_test)
@@ -853,9 +828,11 @@ if(RECKLESS_TOOLKIT_BUILD_TESTS AND TARGET reckless_audio_devices)
                                                 reckless_toolkit_test_support ${ARG_LIBRARIES} reckless_warnings
                                                 GTest::gtest)
         if(APPLE)
-            # A device of the suite's own on CoreAudio, a private aggregate, named outside ASCII.
-            target_sources(${target} PRIVATE "${tests_dir}/devices/AggregateMac.cpp")
-            target_link_libraries(${target} PRIVATE "-framework CoreAudio" "-framework CoreFoundation")
+            # A device of the suite's own on CoreAudio, a private aggregate, named outside ASCII; and a MIDI source of
+            # its own on CoreMIDI.
+            target_sources(${target} PRIVATE "${tests_dir}/devices/AggregateMac.cpp" "${tests_dir}/devices/MidiSourceMac.cpp")
+            target_link_libraries(${target} PRIVATE
+                "-framework CoreAudio" "-framework CoreMIDI" "-framework CoreFoundation")
         endif()
         target_compile_definitions(${target} PRIVATE RECKLESS_AUDIO_PROMISED_APIS="${RECKLESS_AUDIO_PROMISED_TEXT}")
         if(TARGET reckless_jack_loader)

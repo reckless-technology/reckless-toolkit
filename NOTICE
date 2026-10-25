@@ -12,9 +12,14 @@ the toolkit hands up to a product as RECKLESS_TOOLKIT_PINS) and by its archive's
   libpng, zlib (from the skia-pack release)        libpng, zlib         Skia's PNG codec and encoder
   zlib's SIMD routines (the Chromium source tree)  BSD 3-clause         inside the skia-pack's zlib
   FreeType (from the skia-pack release, Linux)     FreeType Licence     Skia's fonts on Linux
-  RtAudio, RtMidi                                  RtAudio's MIT-style  the audio device layer (audio/)
-  Steinberg ASIO SDK (Windows)                     Steinberg's ASIO     ASIO devices (audio/), compiled against and
-                                                   licence              never distributed in part or whole
+  Steinberg ASIO SDK (Windows)                     Steinberg's ASIO     ASIO devices (audio/win/AsioDevice.cpp): its
+                                                   licence              host files (asio.cpp, asiodrivers.cpp,
+                                                                        asiolist.cpp) compiled in, reckless_asio_host;
+                                                                        its source never distributed in part or whole
+  RtAudio, RtMidi                                  RtAudio's MIT-style  in no binary: fetched only for a product's
+                                                                        notices (RECKLESS_TOOLKIT_FETCH_RTAUDIO_
+                                                                        SOURCES), the audio layer's back ends being
+                                                                        the toolkit's own
   Monocypher                                       BSD 2-clause or CC0  a licence's Ed25519 check (licence/)
   dr_flac, dr_mp3 (dr_libs)                        public domain or     audio files (core/AudioFiles.h)
                                                    MIT No Attribution
