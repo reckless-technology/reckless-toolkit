@@ -146,10 +146,10 @@ TEST_P(AudioDevices, ListsADeviceNamedOutsideAsciiInUtf8)
         GTEST_SKIP() << "a device named outside ASCII is made on CoreAudio alone, as a private aggregate";
     }
     // A device of the test's own named as macOS names a person's earphones - an apostrophe past ASCII - with a letter
-    // past ASCII too. RtAudio reads CoreAudio's names into UTF-8 only with UNICODE defined (the root CMakeLists), and
-    // otherwise in the system's encoding: Mac OS Roman's bytes, which are not UTF-8, which a setting of the device kept
-    // in UTF-8 never matches, and which the Standalone's settings would draw. RtAudio lists the device with its maker
-    // before its name, so it is found by the name it ends in.
+    // past ASCII too. The back end reads CoreAudio's names in UTF-8 - RtAudio read them in the system's encoding unless
+    // UNICODE was defined: Mac OS Roman's bytes, which a setting of the device kept in UTF-8 never matches, and which
+    // the Standalone's settings would draw. A device is listed with its maker before its name, as RtAudio listed it,
+    // so it is found by the name it ends in.
     const TestDevice output = Find();
     RECKLESS_NEED_TEST_DEVICE(output);
     const std::string                             name = "Reckless Test\xE2\x80\x99s Ger\xC3\xA4t";

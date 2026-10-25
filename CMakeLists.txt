@@ -225,15 +225,12 @@ if(RECKLESS_BUILD_AUDIO)
     # The APIs compiled in, for the configure's log and the suite that lists them.
     set(RECKLESS_AUDIO_APIS "")
     if(APPLE)
-        # UNICODE: RtAudio reads CoreAudio's maker and device names into UTF-8 only with it, in the system's encoding
-        # (Mac OS Roman on an English Mac) without it - bytes no settings file written in UTF-8 matches, and a name
-        # with a character that encoding lacks read as nothing. It gates those two conversions alone.
-        target_compile_definitions(rtaudio PRIVATE __MACOSX_CORE__ UNICODE)
-        target_link_libraries(rtaudio PRIVATE "-framework CoreAudio" "-framework CoreFoundation")
+        # CoreAudio is the toolkit's own (audio/mac/CoreAudioDevice.cpp); RtAudio compiles none of its APIs, and stays
+        # for RtMidi's sake until CoreMIDI moves too.
         target_compile_definitions(rtmidi PRIVATE __MACOSX_CORE__)
         target_link_libraries(rtmidi PRIVATE
             "-framework CoreMIDI" "-framework CoreAudio" "-framework CoreFoundation" "-framework CoreServices")
-        list(APPEND RECKLESS_AUDIO_APIS CoreAudio CoreMIDI)
+        list(APPEND RECKLESS_AUDIO_APIS "CoreAudio (the toolkit's own)" CoreMIDI)
     elseif(WIN32)
         # RtAudio's string conversions use <codecvt>, deprecated since C++17 and kept by every library the toolkit
         # builds with; MSVC's STL would say so in every build. The C runtime's classic string functions likewise.
@@ -549,6 +546,12 @@ if(RECKLESS_BUILD_AUDIO)
     if(TARGET rtaudio)
         target_sources(reckless_audio_devices PRIVATE audio/RtAudioDevice.cpp)
         target_link_libraries(reckless_audio_devices PRIVATE rtaudio rtmidi)
+    endif()
+    if(APPLE)
+        # CoreAudio, the toolkit's own back end on the HAL (audio/mac/CoreAudioDevice.cpp).
+        target_sources(reckless_audio_devices PRIVATE audio/mac/CoreAudioDevice.cpp)
+        target_link_libraries(reckless_audio_devices PRIVATE "-framework CoreAudio" "-framework CoreFoundation")
+        target_compile_definitions(reckless_audio_devices PRIVATE RECKLESS_AUDIO_COREAUDIO)
     endif()
     if(WIN32)
         # Windows Audio, the toolkit's own WASAPI back end in its two modes: COM, and the multimedia scheduler (avrt)

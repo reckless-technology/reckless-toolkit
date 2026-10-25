@@ -3,9 +3,9 @@
 // While the native back ends are written, RtAudio still serves whatever they do not yet: it is one back end among
 // them, offering the API names the native ones have not taken. A native back end lands ahead of it in the list and
 // takes its name - two back ends may offer the same name, and the first in the list wins - so each API moves over on
-// its own, with the device suite run against both to compare them. On Linux and Windows every name has moved - ALSA
-// and JACK, Windows Audio and ASIO are the toolkit's own - so RtAudio is not listed there. Its descriptor goes when
-// CoreAudio moves too.
+// its own, with the device suite run against both to compare them. Every name has moved - CoreAudio, Windows Audio,
+// ASIO, JACK and ALSA are the toolkit's own - so RtAudio is listed nowhere; its descriptor goes with RtMidi, when
+// CoreMIDI moves.
 //
 // So the list's order says which back end serves a name, and the order a Standalone offers the names in is the
 // series' own (kPreference), apart from it: a native back end listed ahead of RtAudio must not put its name ahead of
@@ -23,6 +23,9 @@
 
 #if defined(__APPLE__)
 #include "RtAudioDevice.h"
+#endif
+#if defined(RECKLESS_AUDIO_COREAUDIO)
+#include "mac/CoreAudioDevice.h"
 #endif
 
 #if defined(_WIN32)
@@ -80,9 +83,8 @@ const std::vector<const AudioBackend *> &AudioBackends()
 #if defined(RECKLESS_AUDIO_ALSA)
         &AlsaBackend(),
 #endif
-#if defined(__APPLE__)
-        // RtAudio, for what is not yet the toolkit's own: CoreAudio. On Linux and Windows it serves nothing.
-        &RtAudioBackend(),
+#if defined(RECKLESS_AUDIO_COREAUDIO)
+        &CoreAudioBackend(),
 #endif
     };
     return backends;
