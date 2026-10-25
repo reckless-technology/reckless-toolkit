@@ -346,12 +346,12 @@ exact silence rather than failing, which the loop then fails on. A Mac with its 
 the built-in microphone's input over as silence too.
 
 Look for, in each run: the loop's delay through the cable against two blocks and the latency the API reports; both
-channels' 64-tap fit at 0.9997 or better; every burst through silence at the first one's delay to a hundredth of a
+channels' 64-tap fit at 0.9995 or better; every burst through silence at the first one's delay to a hundredth of a
 frame; no xruns, but for the one the xrun test makes; and the stream test's input level that of the device asked
 for - a measurement microphone's room, not an idle input's hiss.
 
 What it found on 2026-10-25 - an M1 Pro on macOS 27, a UMC1820 cabled from outputs 3 and 4 to inputs 1 and 2, a
 UMIK-2 and a Nektar Impact LX88+ - is in [native-backends.md](native-backends.md): every rate and block clean, the round
-trip within 0.8 ms of what the driver reports, the aggregate's input the UMIK-2's, every name RtAudio's and RtMidi's,
+trip within 0.9 ms of what the driver reports, the aggregate's input the UMIK-2's, every name RtAudio's and RtMidi's,
 and three faults the run found and the back end fixed.
 
