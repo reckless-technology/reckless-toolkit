@@ -21,8 +21,7 @@ descriptor goes when CoreAudio moves, the last name it serves.
 ## Where it stands
 
 **Done, 2026-10-25: every API on every platform is the toolkit's own**, and RtAudio and RtMidi are compiled into no
-binary - fetched only where a product's notices ask for their licences (`RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES`), until
-the products' notices drop them. What is left is to run the hardware a CI runner lacks: Windows Audio and ASIO on a
+binary, nor fetched: the products' notices name neither. What is left is to run the hardware a CI runner lacks: Windows Audio and ASIO on a
 real interface, CoreAudio duplex across two devices, and each platform's MIDI from a real keyboard.
 
 | API | back end | since |
@@ -124,9 +123,10 @@ and asserts first-callback latency, the rate within 3 %, no xruns, the longest c
 
 - A file under `audio/` (or `audio/linux/`, `audio/win/`) implementing `AudioSystem`, with a header exposing only
   `const AudioBackend &<Name>Backend();` - no library's headers in it, so nothing else meets them.
-- Its descriptor added to the list in `DeviceBackends.cpp`, **ahead of RtAudio's**, under the `#if` that compiles it.
+- Its descriptor added to the list in `DeviceBackends.cpp` under the `#if` that compiles it, and its API's name to the
+  series order (`kPreference`) where it is a new one.
 - Its sources added to `reckless_audio_devices` in the root `CMakeLists.txt`.
-- The device suite run against it, and against RtAudio's for the same API, and the two compared.
+- The device suite run against it, and against the back end it replaces where there is one, and the two compared.
 
 ## Two things settled by evidence, worth not re-deciding
 

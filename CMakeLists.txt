@@ -59,9 +59,9 @@ option(RECKLESS_TOOLKIT_BUILD_TESTS "Build the toolkit's suites" ON)
 # platform layer. Off, nothing of Skia is fetched: the drawing layer, the look, the views and the panel are header-only
 # or plain C++ and build, with their suites, without it.
 option(RECKLESS_TOOLKIT_GUI "Build the windowed parts: Skia, its canvas, the child window and the app platform" ON)
-# The audio device layer (audio/) on RtAudio and RtMidi, fetched below, with its suites.
+# The audio device layer (audio/), a back end of the toolkit's own for every API, with its suites.
 option(RECKLESS_BUILD_AUDIO "Build the audio device layer and its suites" ON)
-# Windows only: the audio device layer offers ASIO devices, through RtAudio's ASIO back end on Steinberg's ASIO SDK. The
+# Windows only: the audio device layer offers ASIO devices, through the toolkit's ASIO back end on Steinberg's ASIO SDK. The
 # SDK is dual-licensed, Steinberg's proprietary ASIO licence or GPLv3, and a closed product takes the proprietary one,
 # whose terms the build keeps: the SDK is fetched from Steinberg's own server at a pinned version with a hash, below,
 # and never committed or shipped (the licence forbids distributing it in part or whole), and Steinberg's usage
@@ -73,10 +73,6 @@ set(RECKLESS_ASIO_SDK_DIR "" CACHE PATH "Windows: an unzipped Steinberg ASIO SDK
 # Fetch the ASIO SDK wherever ASIO is on, even where nothing compiles it: a product's third-party notices quote the
 # licence of the SDK's host files, which its notices script reads from the fetched tree on any platform.
 option(RECKLESS_TOOLKIT_FETCH_ASIO_SDK "Fetch the ASIO SDK on every platform, for a product's notices" OFF)
-# Fetch RtAudio's and RtMidi's sources wherever the audio layer is on, even where nothing compiles them (Linux, whose
-# back ends are all the toolkit's own): a product's notices are one file for every platform's release and quote their
-# licences, which its notices script reads from the fetched trees.
-option(RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES "Fetch RtAudio's and RtMidi's sources on every platform, for notices" OFF)
 # Demo mode: a product gates an unlicensed binary (the switch, licence/DemoMode.h, which the licence's targets carry as
 # a compile definition so every translation unit that reads it agrees). Off until a product is sold.
 option(RECKLESS_DEMO_MODE "Gate an unlicensed product: the build's demo switch (licence/DemoMode.h)" OFF)
@@ -132,8 +128,8 @@ endif()
 # The ASIO SDK (the comment by RECKLESS_ASIO above says why it is fetched and what its licence asks): Steinberg's
 # download server keeps every release at a versioned name, so the zip is pinned by that name and its hash, like every
 # other fetch, and kept under FETCHCONTENT_BASE_DIR. Its single top-level folder is stripped, so the SDK's root, with
-# common/iasiodrv.h, is the source dir. On Windows the audio layer's RtAudio compiles its ASIO back end on the SDK's
-# headers and three host files (below).
+# common/iasiodrv.h, is the source dir. On Windows the audio layer compiles its ASIO back end on the SDK's headers and
+# three host files (below).
 if(RECKLESS_ASIO AND NOT RECKLESS_ASIO_SDK_DIR
    AND (RECKLESS_TOOLKIT_FETCH_ASIO_SDK OR (WIN32 AND RECKLESS_BUILD_AUDIO)))
     FetchContent_Declare(asiosdk
@@ -141,8 +137,8 @@ if(RECKLESS_ASIO AND NOT RECKLESS_ASIO_SDK_DIR
         URL_HASH SHA256=d5ebf0c20dd2c5f43771fd0c1418f4b361bf52434ee670097cfa6b3a335e2eca
         SOURCE_SUBDIR reckless-builds-this-itself)
     FetchContent_MakeAvailable(asiosdk)
-    # A normal variable over the empty cache entry, on Windows alone: the audio layer's RtAudio compiles ASIO where it
-    # is set, and an app shows Steinberg's notice.
+    # A normal variable over the empty cache entry, on Windows alone: the audio layer compiles ASIO where it is set,
+    # and an app shows Steinberg's notice.
     if(WIN32)
         set(RECKLESS_ASIO_SDK_DIR "${asiosdk_SOURCE_DIR}")
     endif()
@@ -191,30 +187,15 @@ FetchContent_MakeAvailable(monocypher)
 # runs on ALSA rather than failing to start - every JACK function the toolkit calls is renamed to the loader's by
 # audio/linux/JackNames.h. The ASIO SDK's host files compile without the toolkit's warning set, a fetched tree being no
 # part of this one's to keep clean, and their headers are SYSTEM to the code that includes them. RtAudio and RtMidi, which
-# the layer was first written on, are fetched only for a product's notices (RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES).
+# the layer was first written on, are neither fetched nor built (docs/audio/native-backends.md).
 if(RECKLESS_BUILD_AUDIO)
     find_package(Threads REQUIRED)
-    # RtAudio's and RtMidi's sources, for a product's notices alone (RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES): every API
-    # is the toolkit's own, and neither library is built.
-    if(RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES)
-        FetchContent_Declare(rtaudio
-            URL      https://github.com/thestk/rtaudio/archive/refs/tags/${RECKLESS_RTAUDIO_VERSION}.tar.gz
-            URL_HASH SHA256=7206c8b6cee43b474f43d64988fefaadfdcfc4264ed38d8de5f5d0e6ddb0a123
-            SOURCE_SUBDIR reckless-builds-this-itself)
-        FetchContent_Declare(rtmidi
-            URL      https://github.com/thestk/rtmidi/archive/refs/tags/${RECKLESS_RTMIDI_VERSION}.tar.gz
-            URL_HASH SHA256=ef7bcda27fee6936b651c29ebe9544c74959d0b1583b716ce80a1c6fea7617f0
-            SOURCE_SUBDIR reckless-builds-this-itself)
-        FetchContent_MakeAvailable(rtaudio rtmidi)
-    endif()
     # The APIs compiled in, for the configure's log and the suite that lists them.
     set(RECKLESS_AUDIO_APIS "")
     if(APPLE)
         # CoreAudio and CoreMIDI, the toolkit's own (audio/mac/).
         list(APPEND RECKLESS_AUDIO_APIS "CoreAudio (the toolkit's own)" "CoreMIDI (the toolkit's own)")
     elseif(WIN32)
-        # RtAudio's string conversions use <codecvt>, deprecated since C++17 and kept by every library the toolkit
-        # builds with; MSVC's STL would say so in every build. The C runtime's classic string functions likewise.
         # Every API is the toolkit's own here: Windows Audio, ASIO and WinMM's MIDI (audio/win/).
         list(APPEND RECKLESS_AUDIO_APIS "Windows Audio (the toolkit's own: shared, exclusive)")
         if(RECKLESS_ASIO_SDK_DIR AND CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -766,7 +747,7 @@ endif()
 # (tests/test_audio_devices.cpp, on the harness tests/devices/DeviceSuite.h). A missing test device skips its tests with
 # the reason, unless RECKLESS_AUDIO_REQUIRE names the API: then they fail. The APIs the configure promised - the
 # platform's own, ASIO wherever the SDK is, JACK and ALSA wherever their headers are - are handed to the suite, which
-# fails a build whose RtAudio carries any other set. A product's suite of an engine playing through the same devices is
+# fails a build that carries any other set. A product's suite of an engine playing through the same devices is
 # made by the same function, reckless_audio_device_suite.
 if(RECKLESS_TOOLKIT_BUILD_TESTS AND TARGET reckless_audio_devices)
     set(reckless_promised_apis "")
@@ -836,7 +817,7 @@ if(RECKLESS_TOOLKIT_BUILD_TESTS AND TARGET reckless_audio_devices)
         endif()
         target_compile_definitions(${target} PRIVATE RECKLESS_AUDIO_PROMISED_APIS="${RECKLESS_AUDIO_PROMISED_TEXT}")
         if(TARGET reckless_jack_loader)
-            # JACK's rig starts a server of its own and wires the loop through the same libjack RtAudio loads by name.
+            # JACK's rig starts a server of its own and wires the loop through the same libjack the back end loads by name.
             target_sources(${target} PRIVATE "${tests_dir}/devices/JackRig.cpp")
             target_include_directories(${target} PRIVATE "${RECKLESS_TOOLKIT_DIR}/audio/linux")
             target_include_directories(${target} SYSTEM PRIVATE "${RECKLESS_JACK_INCLUDE_DIR}")
