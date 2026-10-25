@@ -28,9 +28,10 @@ namespace reckless::audio
 
     An xrun - the output run dry, the input overfilled, a suspend - stops the device, as ALSA stops it once its buffer
     is past (the stop threshold is the buffer's size): the stream is prepared, primed and started again, and the next
-    callback told. A device that goes away, or stops answering for two seconds, is the stream failing, told once
-    (AudioCallback::StreamFailed). Stop wakes the thread and joins it, so no callback runs once it returns, and drops
-    whatever the device still holds.
+    callback told - but not before the first, since a device that runs dry before anything has played is the stream
+    starting, as when PipeWire wakes a suspended input. A device that goes away, or stops answering for two seconds, is
+    the stream failing, told once (AudioCallback::StreamFailed). Stop wakes the thread and joins it, so no callback runs
+    once it returns, and drops whatever the device still holds.
 
     Message thread throughout but for the stream's thread, which asks for round-robin real-time priority 70 where the
     system allows it and runs at the normal priority where it does not.
