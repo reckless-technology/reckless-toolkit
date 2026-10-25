@@ -1,15 +1,11 @@
 // The back ends this build carries, assembled by hand: DeviceBackends.h says why by hand and not by self-registration.
 //
-// While the native back ends are written, RtAudio still serves whatever they do not yet: it is one back end among
-// them, offering the API names the native ones have not taken. A native back end lands ahead of it in the list and
-// takes its name - two back ends may offer the same name, and the first in the list wins - so each API moves over on
-// its own, with the device suite run against both to compare them. Every name has moved - CoreAudio, Windows Audio,
-// ASIO, JACK and ALSA are the toolkit's own - so RtAudio is listed nowhere; its descriptor goes with RtMidi, when
-// CoreMIDI moves.
+// Every back end is the toolkit's own, on each platform's API; RtAudio and RtMidi, which the layer was first written
+// on, served each API until its own back end landed ahead of them and took its name (docs/audio/native-backends.md).
+// Two back ends may still offer one name, the first in the list serving it, which is how the next one would move.
 //
 // So the list's order says which back end serves a name, and the order a Standalone offers the names in is the
-// series' own (kPreference), apart from it: a native back end listed ahead of RtAudio must not put its name ahead of
-// RtAudio's others.
+// series' own (kPreference), apart from it.
 
 #include "DeviceBackends.h"
 
@@ -21,11 +17,11 @@
 #include <string_view>
 #include <vector>
 
-#if defined(__APPLE__)
-#include "RtAudioDevice.h"
-#endif
 #if defined(RECKLESS_AUDIO_COREAUDIO)
 #include "mac/CoreAudioDevice.h"
+#endif
+#if defined(RECKLESS_AUDIO_COREMIDI)
+#include "mac/CoreMidi.h"
 #endif
 
 #if defined(_WIN32)
@@ -90,7 +86,7 @@ const std::vector<const AudioBackend *> &AudioBackends()
     return backends;
 }
 
-#if !defined(__APPLE__) && !defined(RECKLESS_AUDIO_ALSA) && !defined(RECKLESS_AUDIO_WINMM)
+#if !defined(RECKLESS_AUDIO_ALSA) && !defined(RECKLESS_AUDIO_WINMM) && !defined(RECKLESS_AUDIO_COREMIDI)
 /** A build with no MIDI back end - Linux with no ALSA headers - has no MIDI to offer: no inputs, and an open that says
     why.
     @return  "no MIDI (built without ALSA)" */
@@ -135,8 +131,7 @@ std::unique_ptr<MidiSystem> MakeNoMidi(const std::string &)
 }
 #endif
 
-/** The platform's MIDI back end: ALSA's sequencer on Linux, WinMM on Windows, RtMidi on macOS until CoreMIDI is the
-    toolkit's own.
+/** The platform's MIDI back end: ALSA's sequencer on Linux, WinMM on Windows, CoreMIDI on macOS.
     @return  the back end */
 const MidiBackend &TheMidiBackend()
 {
@@ -144,11 +139,11 @@ const MidiBackend &TheMidiBackend()
     return AlsaMidiBackend();
 #elif defined(RECKLESS_AUDIO_WINMM)
     return WinMidiBackend();
-#elif !defined(__APPLE__)
+#elif defined(RECKLESS_AUDIO_COREMIDI)
+    return CoreMidiBackend();
+#else
     static const MidiBackend none{&NoMidiLibrary, &MakeNoMidi};
     return none;
-#else
-    return RtMidiBackend();
 #endif
 }
 } // namespace

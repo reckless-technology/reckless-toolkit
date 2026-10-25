@@ -653,7 +653,7 @@ TEST_P(AudioDevices, CountsAnXrunAndPlaysOnAfterIt)
 
 // ---- MIDI: ALSA's sequencer --------------------------------------------------------------------------------------
 
-#if defined(RECKLESS_AUDIO_TEST_ALSA_SEQ)
+#if defined(RECKLESS_AUDIO_TEST_ALSA_SEQ) || defined(__APPLE__)
 namespace
 {
 /** What a MIDI input delivered: each message's port, time and bytes, into storage made up front, read once the inputs
@@ -715,6 +715,7 @@ class Collected final : public reckless::audio::MidiSink
     std::array<std::vector<std::uint8_t>, kMost> messages_; // assigned on the MIDI thread: test code, not a core
 };
 
+#if defined(RECKLESS_AUDIO_TEST_ALSA_SEQ)
 /** A sequencer client of the test's own with one readable port, which sends straight to whoever subscribes. */
 class TestSource
 {
@@ -766,8 +767,10 @@ class TestSource
     snd_seq_t *seq_{nullptr};
     int        port_{-1};
 };
+#endif
 } // namespace
 
+#if defined(RECKLESS_AUDIO_TEST_ALSA_SEQ)
 TEST(MidiInputs, CarryWhatASequencerPortSendsButWhatTheCoresIgnore)
 {
     TestSource source;
@@ -871,6 +874,102 @@ TEST(MidiInputs, CarryWhatASequencerPortSendsButWhatTheCoresIgnore)
     EXPECT_EQ(sink.count(), counted) << "a message reached the sink after CloseAll";
     EXPECT_EQ(nothing.count(), 0);
 }
+#endif
+
+#if defined(__APPLE__)
+TEST(MidiInputs, CarryWhatACoreMidiSourceSendsButWhatTheCoresIgnore)
+{
+    // A virtual source of the test's own on MIDI 1.0's protocol: listed by its name (a source with no entity is named
+    // by its endpoint alone), opened, and sent Universal MIDI Packets - a note on and off, a controller and a pitch
+    // bend, and between them the kinds the cores do not read.
+    const std::string                        name = "Reckless test source";
+    reckless::audio::test::PrivateMidiSource source(name);
+    if (!source.made())
+    {
+        if (std::find(RequiredApis().begin(), RequiredApis().end(), "CoreAudio") != RequiredApis().end())
+        {
+            FAIL() << "CoreAudio is required and CoreMIDI would not make a source: " << source.why();
+        }
+        GTEST_SKIP() << "CoreMIDI would not make a source: " << source.why();
+    }
+    const auto               midi = reckless::audio::MakeMidiSystem("Reckless MIDI test");
+    std::vector<std::string> inputs;
+    for (int i = 0; i < 100 && std::find(inputs.begin(), inputs.end(), name) == inputs.end(); ++i)
+    {
+        inputs = midi->Inputs(); // a source made is listed at once, but give CoreMIDI its moment
+        if (std::find(inputs.begin(), inputs.end(), name) == inputs.end())
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    }
+    Table table("CoreMIDI: the inputs");
+    for (const std::string &input : inputs)
+    {
+        table.Row(input, "");
+    }
+    table.Row("library", reckless::audio::AudioLibraryVersions()).Print();
+    ASSERT_NE(std::find(inputs.begin(), inputs.end(), name), inputs.end()) << "the test's source, listed as " << name;
+
+    Collected nothing;
+    EXPECT_FALSE(midi->Open("Reckless: no such MIDI input", 0, nothing));
+    EXPECT_NE(midi->LastError().find("Reckless: no such MIDI input"), std::string::npos) << midi->LastError();
+
+    Collected sink;
+    ASSERT_TRUE(midi->Open(name, 3, sink)) << midi->LastError();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // the connection made before anything is sent
+    const std::int64_t                            before  = NowNanoseconds();
+    const std::vector<std::vector<std::uint32_t>> packets = {
+        {0x20913C64u},              // note on, channel 2
+        {0x30037D01u, 0x02000000u}, // a system exclusive, left out
+        {0x10F80000u},              // timing clock, left out
+        {0x20B00740u},              // a controller
+        {0x10FE0000u},              // active sensing, left out
+        {0x20813C00u},              // note off
+        {0x20EF0040u},              // a pitch bend, channel 16
+    };
+    for (const auto &packet : packets)
+    {
+        source.Send(packet.data(), static_cast<int>(packet.size()));
+    }
+    const bool         came  = sink.AwaitCount(4);
+    const std::int64_t after = NowNanoseconds();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // anything left out would have come by now
+    midi->CloseAll();
+    const int           counted = sink.count();
+    const std::uint32_t late[]  = {0x20913D64u};
+    source.Send(late, 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    const std::vector<std::vector<std::uint8_t>> want = {
+        {0x91, 60, 100}, {0xB0, 7, 64}, {0x81, 60, 0}, {0xEF, 0x00, 0x40}};
+    Table result("CoreMIDI: what arrived");
+    for (int i = 0; i < std::min(counted, Collected::kMost); ++i)
+    {
+        std::string bytes;
+        for (const std::uint8_t b : sink.message_at(i))
+        {
+            char hex[4];
+            std::snprintf(hex, sizeof hex, "%02X ", b);
+            bytes += hex;
+        }
+        result.Row("message " + Str(i + 1), bytes + "port " + Str(sink.port_at(i)));
+    }
+    result.Row("after the inputs closed", Str(sink.count() - counted) + " messages").Print();
+
+    ASSERT_TRUE(came) << "the messages did not all arrive";
+    ASSERT_EQ(counted, static_cast<int>(want.size()))
+        << "system exclusive, timing clock and active sensing are left out, and nothing else";
+    for (int i = 0; i < counted; ++i)
+    {
+        EXPECT_EQ(sink.message_at(i), want[static_cast<std::size_t>(i)]) << "message " << i + 1;
+        EXPECT_EQ(sink.port_at(i), 3);
+        EXPECT_GE(sink.time_at(i), before);
+        EXPECT_LE(sink.time_at(i), after);
+    }
+    EXPECT_EQ(sink.count(), counted) << "a message reached the sink after CloseAll";
+    EXPECT_EQ(nothing.count(), 0);
+}
+#endif
 #endif
 
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(AudioDevices);

@@ -11,9 +11,9 @@ namespace reckless::audio
 /**
     The machine's audio and MIDI as a Standalone sees them, written against no library: an audio API's devices and the
     one stream it opens on them (AudioSystem), the stream's callback (AudioCallback), and the MIDI input ports
-    (MidiSystem) whose messages land in a sink (MidiSink). The suite's implementation is RtAudio's and RtMidi's
-    (RtAudioDevice.h); a suite's is a fake that runs the callback itself. The engine between them and a plugin's core
-    is StandaloneEngine.
+    (MidiSystem) whose messages land in a sink (MidiSink). The implementations are the toolkit's own back ends on each
+    platform's API (DeviceBackends.h); a suite's is a fake that runs the callback itself. The engine between them and a
+   plugin's core is StandaloneEngine.
 
     Threads: everything on AudioSystem and MidiSystem is the message thread's; AudioCallback::Process runs on the
     API's audio thread and MidiSink::Arrived on a MIDI port's thread, and StreamFailed on whichever thread the API

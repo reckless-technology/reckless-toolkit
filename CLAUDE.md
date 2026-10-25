@@ -29,14 +29,12 @@ toolkit's own 478 commits, reaching back through vst-plugins' `common/` and the 
 fetched into one another and `git log --follow` does not cross from one to the other: for anything before
 2026-10-24, read the archived repository.
 
-**Work in hand: the device layer is going native.** Both third-party libraries are on their way out - the audio and
-MIDI back ends become the platforms' own APIs, one at a time behind the seam in `audio/DeviceBackends.h`. Before
-touching anything under `audio/`, read **[docs/audio/native-backends.md](docs/audio/native-backends.md)**: it holds
-the decision and what it rests on, which API each platform ends up on, where it stands, the order the work takes and
-how a back end is added, and the things already settled by measurement so they are not re-argued. On Linux every
-API is the toolkit's own since 2026-10-25 - ALSA, JACK and the ALSA sequencer, with neither library fetched there - and on
-Windows - Windows Audio, ASIO and WinMM - neither library fetched on either; and on macOS
-CoreAudio; what remains is CoreMIDI, the last of RtMidi and RtAudio.
+**The device layer is native.** Since 2026-10-25 every audio and MIDI API on every platform is a back end of the
+toolkit's own, behind the seam in `audio/DeviceBackends.h` - CoreAudio and CoreMIDI, Windows Audio, ASIO and WinMM,
+ALSA, its sequencer and JACK - and RtAudio and RtMidi, which the layer was first written on, are compiled into nothing.
+Before touching anything under `audio/`, read **[docs/audio/native-backends.md](docs/audio/native-backends.md)**: the
+decision and what it rests on, each back end and what it was measured against, how a back end is added, and the things
+settled by measurement so they are not re-argued. What is left is running the hardware a CI runner lacks.
 
 ## The consumers
 

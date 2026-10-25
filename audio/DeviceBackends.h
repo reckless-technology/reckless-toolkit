@@ -26,9 +26,9 @@ namespace reckless::audio
     end wins a name two of them offer, and puts the whole set in one readable place.
 
     The list's order decides which back end serves a name two of them offer: the first. The order a Standalone offers
-    the names in - and DefaultAudioApi() tries them in - is the series' own, apart from it (AudioApis()), so a native
-    back end listed ahead of RtAudio takes RtAudio's name without moving it ahead of RtAudio's others. Both orders live
-    in DeviceBackends.cpp.
+    the names in - and DefaultAudioApi() tries them in - is the series' own, apart from it (AudioApis()), so a back end
+    listed ahead of another takes its name without moving it ahead of the other's names. Both orders live in
+    DeviceBackends.cpp.
 */
 struct AudioBackend
 {

@@ -20,6 +20,11 @@ descriptor goes when CoreAudio moves, the last name it serves.
 
 ## Where it stands
 
+**Done, 2026-10-25: every API on every platform is the toolkit's own**, and RtAudio and RtMidi are compiled into no
+binary - fetched only where a product's notices ask for their licences (`RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES`), until
+the products' notices drop them. What is left is to run the hardware a CI runner lacks: Windows Audio and ASIO on a
+real interface, CoreAudio duplex across two devices, and each platform's MIDI from a real keyboard.
+
 | API | back end | since |
 |---|---|---|
 | Windows Audio, its two modes | the toolkit's, `audio/win/WasapiDevice.cpp`; its low-latency mode folded into Windows Audio | before 2026-10-25; two modes 2026-10-25 |
@@ -29,7 +34,7 @@ descriptor goes when CoreAudio moves, the last name it serves.
 | CoreAudio | the toolkit's, `audio/mac/CoreAudioDevice.cpp`, on the HAL; an input on another device joined in a private aggregate; RtAudio listed nowhere | 2026-10-25 |
 | MIDI on Linux | the toolkit's, `audio/linux/AlsaMidi.cpp`, on ALSA's sequencer | 2026-10-25 |
 | MIDI on Windows | the toolkit's, `audio/win/WinMidi.cpp`, on WinMM; neither library fetched on Windows | 2026-10-25 |
-| MIDI on macOS | RtMidi | CoreMIDI next, the last of RtAudio and RtMidi |
+| MIDI on macOS | the toolkit's, `audio/mac/CoreMidi.cpp`, on CoreMIDI's MIDI 1.0 protocol; `RtAudioDevice.cpp` deleted, RtAudio and RtMidi built nowhere | 2026-10-25 |
 
 ALSA, measured against RtAudio's on the same machine and the same loopback card
 ([device-tests.md](device-tests.md), "Why a case took a minute"): every device named as RtAudio named it, a stop in
