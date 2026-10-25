@@ -21,7 +21,7 @@
 #include <string_view>
 #include <vector>
 
-#if !defined(__linux__)
+#if defined(__APPLE__)
 #include "RtAudioDevice.h"
 #endif
 
@@ -30,6 +30,9 @@
 #endif
 #if defined(RECKLESS_AUDIO_ASIO)
 #include "win/AsioDevice.h"
+#endif
+#if defined(RECKLESS_AUDIO_WINMM)
+#include "win/WinMidi.h"
 #endif
 #if defined(RECKLESS_AUDIO_JACK)
 #include "linux/JackDevice.h"
@@ -85,8 +88,9 @@ const std::vector<const AudioBackend *> &AudioBackends()
     return backends;
 }
 
-#if defined(__linux__) && !defined(RECKLESS_AUDIO_ALSA)
-/** A Linux build with no ALSA headers has no MIDI to offer: no inputs, and an open that says why.
+#if !defined(__APPLE__) && !defined(RECKLESS_AUDIO_ALSA) && !defined(RECKLESS_AUDIO_WINMM)
+/** A build with no MIDI back end - Linux with no ALSA headers - has no MIDI to offer: no inputs, and an open that says
+    why.
     @return  "no MIDI (built without ALSA)" */
 std::string NoMidiLibrary()
 {
@@ -129,14 +133,16 @@ std::unique_ptr<MidiSystem> MakeNoMidi(const std::string &)
 }
 #endif
 
-/** The platform's MIDI back end: ALSA's sequencer on Linux, RtMidi elsewhere until CoreMIDI and WinMM are the
+/** The platform's MIDI back end: ALSA's sequencer on Linux, WinMM on Windows, RtMidi on macOS until CoreMIDI is the
     toolkit's own.
     @return  the back end */
 const MidiBackend &TheMidiBackend()
 {
 #if defined(RECKLESS_AUDIO_ALSA)
     return AlsaMidiBackend();
-#elif defined(__linux__)
+#elif defined(RECKLESS_AUDIO_WINMM)
+    return WinMidiBackend();
+#elif !defined(__APPLE__)
     static const MidiBackend none{&NoMidiLibrary, &MakeNoMidi};
     return none;
 #else

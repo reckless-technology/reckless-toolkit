@@ -10,11 +10,10 @@
 namespace reckless::audio
 {
 /**
-    The machine's audio and MIDI through RtAudio and RtMidi, for what is not yet the toolkit's own (the root
-    CMakeLists.txt fetches and builds them on macOS and Windows): CoreAudio's audio on macOS, and the MIDI inputs on
-   both
-    - every other API is a back end of the toolkit's own (DeviceBackends.h). Only RtAudioDevice.cpp includes the two
-    libraries' headers - RtAudio's brings in windows.h on Windows - so nothing else meets them.
+    The machine's audio and MIDI through RtAudio and RtMidi, for what is not yet the toolkit's own: CoreAudio and
+    CoreMIDI, on macOS alone (the root CMakeLists.txt fetches and builds them there) - every other API is a back end of
+    the toolkit's own (DeviceBackends.h). Only RtAudioDevice.cpp includes the two libraries' headers, so nothing else
+    meets them.
 
     A stream is opened non-interleaved in 32-bit float, the format every API delivers or RtAudio converts to in buffers
     it allocates at the open, and asks the API for a real-time callback thread; its callback reads the clock as the API

@@ -28,7 +28,8 @@ descriptor goes when CoreAudio moves, the last name it serves.
 | ASIO | the toolkit's, `audio/win/AsioDevice.cpp`, on Steinberg's SDK; RtAudio compiles no API on Windows and is not listed there | 2026-10-25 |
 | CoreAudio | RtAudio | on a Mac |
 | MIDI on Linux | the toolkit's, `audio/linux/AlsaMidi.cpp`, on ALSA's sequencer | 2026-10-25 |
-| MIDI on macOS and Windows | RtMidi | WinMM next, then CoreMIDI |
+| MIDI on Windows | the toolkit's, `audio/win/WinMidi.cpp`, on WinMM; neither library fetched on Windows | 2026-10-25 |
+| MIDI on macOS | RtMidi | with CoreAudio, on a Mac |
 
 ALSA, measured against RtAudio's on the same machine and the same loopback card
 ([device-tests.md](device-tests.md), "Why a case took a minute"): every device named as RtAudio named it, a stop in
