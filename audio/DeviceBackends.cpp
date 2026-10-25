@@ -16,11 +16,14 @@
 #include <algorithm>
 #include <cstddef>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#if !defined(__linux__)
 #include "RtAudioDevice.h"
+#endif
 
 #if defined(_WIN32)
 #include "win/WasapiDevice.h"
@@ -30,6 +33,7 @@
 #endif
 #if defined(RECKLESS_AUDIO_ALSA)
 #include "linux/AlsaDevice.h"
+#include "linux/AlsaMidi.h"
 #endif
 
 namespace reckless::audio
@@ -76,11 +80,63 @@ const std::vector<const AudioBackend *> &AudioBackends()
     return backends;
 }
 
-/** The platform's MIDI back end.
+#if defined(__linux__) && !defined(RECKLESS_AUDIO_ALSA)
+/** A Linux build with no ALSA headers has no MIDI to offer: no inputs, and an open that says why.
+    @return  "no MIDI (built without ALSA)" */
+std::string NoMidiLibrary()
+{
+    return "no MIDI (built without ALSA)";
+}
+
+/** No MIDI inputs at all. */
+class NoMidiSystem final : public MidiSystem
+{
+  public:
+    std::vector<std::string> Inputs() override
+    {
+        return {};
+    }
+
+    bool Open(const std::string &name, int, MidiSink &) override
+    {
+        error_ = "no MIDI input named '" + name + "': this build has no MIDI back end (it was built without ALSA)";
+        return false;
+    }
+
+    void CloseAll() override
+    {
+    }
+
+    std::string LastError() const override
+    {
+        return error_;
+    }
+
+  private:
+    std::string error_; ///< why the last open failed
+};
+
+/** A system with no inputs.
+    @return  the system, owned by the caller */
+std::unique_ptr<MidiSystem> MakeNoMidi(const std::string &)
+{
+    return std::make_unique<NoMidiSystem>();
+}
+#endif
+
+/** The platform's MIDI back end: ALSA's sequencer on Linux, RtMidi elsewhere until CoreMIDI and WinMM are the
+    toolkit's own.
     @return  the back end */
 const MidiBackend &TheMidiBackend()
 {
+#if defined(RECKLESS_AUDIO_ALSA)
+    return AlsaMidiBackend();
+#elif defined(__linux__)
+    static const MidiBackend none{&NoMidiLibrary, &MakeNoMidi};
+    return none;
+#else
     return RtMidiBackend();
+#endif
 }
 } // namespace
 
