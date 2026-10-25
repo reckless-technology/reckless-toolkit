@@ -65,8 +65,8 @@ struct MidiBackend
 };
 
 /** The audio APIs this build carries, by the series' names, in the order a Standalone prefers them: CoreAudio; on
-    Windows the suite's own WASAPI in its three modes (win/WasapiDevice.h: Windows Audio, its Low Latency Mode and its
-    Exclusive Mode) before ASIO, since only a person with an ASIO driver wants it; JACK before ALSA, since on a
+    Windows the suite's own WASAPI in its two modes (win/WasapiDevice.h: Windows Audio and its Exclusive Mode) before
+    ASIO, since only a person with an ASIO driver wants it; JACK before ALSA, since on a
     PipeWire desktop JACK is how a program joins the graph without fighting it for the card.
     @return  the names of the APIs this machine can open, most preferred first; empty when it can open none */
 std::vector<std::string> AudioApis();

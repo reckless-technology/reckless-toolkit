@@ -12,7 +12,7 @@
 namespace reckless::audio::wasapi
 {
 /**
-    The arithmetic of the suite's WASAPI back end (win/WasapiDevice.cpp) that needs no Windows to hold: the three modes
+    The arithmetic of the suite's WASAPI back end (win/WasapiDevice.cpp) that needs no Windows to hold: the two modes
     and their names, the encodings an exclusive stream asks a device for (the encodings themselves, and their
     conversion to and from the callback's float channels, are SampleEncodings.h's, which ALSA's back end shares), the
     period each mode opens at, and the ring the capture side's samples wait in until the render side's
@@ -20,48 +20,65 @@ namespace reckless::audio::wasapi
     (tests/test_wasapi_formats.cpp); the COM is the .cpp's alone.
 */
 
-/** How a stream opens the endpoints: through the audio engine's mixer at the engine's period (kShared), through it at
-    the driver's smallest periods (kLowLatency, IAudioClient3), or with the device to itself and nothing between
-    (kExclusive). */
+/** How a stream opens the endpoints: through the audio engine's mixer (kShared), at the driver's smallest period that
+    holds the block where it can (SharedRouteOf), or with the device to itself and nothing between (kExclusive). */
 enum class Mode
 {
-    kShared,     ///< shared, through the engine's mixer at the engine's period
-    kLowLatency, ///< shared through IAudioClient3 at the driver's smallest period that holds the block
-    kExclusive   ///< the device to the stream alone, nothing between it and the driver
+    kShared,   ///< shared, through the engine's mixer, at the driver's period that holds the block or the engine's
+    kExclusive ///< the device to the stream alone, nothing between it and the driver
 };
 
-// The three modes' names as the series lists them - an AudioSystem's Name(), a settings file's "api" - JUCE's device
+// The two modes' names as the series lists them - an AudioSystem's Name(), a settings file's "api" - JUCE's device
 // type names, so a person's choice carries over.
-inline constexpr std::string_view kSharedName     = "Windows Audio";                    ///< Mode::kShared's name
-inline constexpr std::string_view kLowLatencyName = "Windows Audio (Low Latency Mode)"; ///< Mode::kLowLatency's name
-inline constexpr std::string_view kExclusiveName  = "Windows Audio (Exclusive Mode)";   ///< Mode::kExclusive's name
+inline constexpr std::string_view kSharedName    = "Windows Audio";                  ///< Mode::kShared's name
+inline constexpr std::string_view kExclusiveName = "Windows Audio (Exclusive Mode)"; ///< Mode::kExclusive's name
+
+/** The name a third mode was listed under until 2026-10-25, when it became what Windows Audio does wherever it can:
+    a settings file that kept it means Windows Audio (ModeNamed, and AudioSettings.h's ReadSettings). */
+inline constexpr std::string_view kFormerLowLatencyName = "Windows Audio (Low Latency Mode)";
 
 /** A mode's name.
     @param mode  the mode
-    @return      its name, one of the three above */
+    @return      its name, one of the two above */
 constexpr std::string_view NameOf(Mode mode) noexcept
 {
-    return mode == Mode::kShared ? kSharedName : (mode == Mode::kLowLatency ? kLowLatencyName : kExclusiveName);
+    return mode == Mode::kShared ? kSharedName : kExclusiveName;
 }
 
-/** The mode a name stands for.
+/** The mode a name stands for - the former low-latency mode's name standing for the shared mode, which does what it
+    did wherever it can.
     @param name  an API's name
     @return      the mode, or none for a name that is no WASAPI mode's */
 constexpr std::optional<Mode> ModeNamed(std::string_view name) noexcept
 {
-    if (name == kSharedName)
+    if (name == kSharedName || name == kFormerLowLatencyName)
     {
         return Mode::kShared;
-    }
-    if (name == kLowLatencyName)
-    {
-        return Mode::kLowLatency;
     }
     if (name == kExclusiveName)
     {
         return Mode::kExclusive;
     }
     return std::nullopt;
+}
+
+/** Which way a shared stream's side opens: at the driver's period that holds the block (IAudioClient3's
+    InitializeSharedAudioStream, LowLatencyPeriod) or at the audio engine's period (IAudioClient's Initialize). */
+enum class SharedRoute
+{
+    kDriversPeriod, ///< the driver's smallest period that holds the block, in the endpoint's mix format
+    kEnginesPeriod  ///< the engine's period, the engine converting the stream's rate to the endpoint's
+};
+
+/** The way a shared side opens at `rate`: at the driver's period where it runs at the endpoint's own rate - nothing to
+    convert, which a small period cannot do - and else at the engine's, converting. The driver's period is the one
+    tried first; a Windows or a driver that refuses it opens at the engine's all the same.
+    @param rate      the stream's rate, in hertz
+    @param mix_rate  the endpoint's mix rate, in hertz
+    @return          the route */
+constexpr SharedRoute SharedRouteOf(int rate, int mix_rate) noexcept
+{
+    return rate > 0 && rate == mix_rate ? SharedRoute::kDriversPeriod : SharedRoute::kEnginesPeriod;
 }
 
 /** The rates an exclusive stream is tried at, each asked of the device (IsFormatSupported): the ones interfaces run at,

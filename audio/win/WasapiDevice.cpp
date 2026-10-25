@@ -1,4 +1,4 @@
-// Windows Audio on WASAPI in its three modes (WasapiDevice.h says what each does and why): the one translation unit
+// Windows Audio on WASAPI in its two modes (WasapiDevice.h says what each does and why): the one translation unit
 // that meets the Core Audio interfaces.
 #include "WasapiDevice.h"
 
@@ -347,20 +347,9 @@ class WasapiSystem final : public AudioSystem
             }
         }
 
-        // The rate: the one asked for, the mix rate where none is, and in low latency mode the mix rate always - the
-        // engine converts nothing at its small periods - which the stream's format then says.
-        int rate = request.sample_rate > 0 ? request.sample_rate : output->mix_rate;
-        if (mode_ == Mode::kLowLatency)
-        {
-            rate = output->mix_rate;
-            if (input != nullptr && !loopback && input->mix_rate != rate)
-            {
-                return Refuse("low latency mode runs at the endpoints' own rate, and '" + input->name + "' runs at " +
-                              std::to_string(input->mix_rate) + " Hz where '" + output->name + "' runs at " +
-                              std::to_string(rate) + " Hz: set both to one rate in Sound settings");
-            }
-        }
-        rate_ = rate;
+        // The rate: the one asked for, the mix rate where none is. At the endpoint's own rate a shared stream opens at
+        // the driver's small periods, and at another at the engine's, converting (wasapi::SharedRouteOf).
+        rate_ = request.sample_rate > 0 ? request.sample_rate : output->mix_rate;
 
         std::string why;
         if (!OpenRender(*output, request.block_size, why))
@@ -632,19 +621,15 @@ class WasapiSystem final : public AudioSystem
     }
 
     /** The rates an endpoint opens at in this mode: the mix rate and the rates interfaces run at in shared mode, which
-        the engine converts; the mix rate alone in low latency mode; and in exclusive mode the rates the device says it
-        takes in any encoding, asked once an endpoint and kept - none kept where it answered none, so it is asked again,
-        and a device that lists none takes any rate it is asked for and says why not at the open.
+        the engine converts (at the mix rate the stream opens at the driver's small periods); and in exclusive mode the
+        rates the device says it takes in any encoding, asked once an endpoint and kept - none kept where it answered
+        none, so it is asked again, and a device that lists none takes any rate it is asked for and says why not at the
+        open.
         @param endpoint  the endpoint
         @return          the rates, in hertz, ascending */
     std::vector<int> RatesOf(const Endpoint &endpoint)
     {
         std::vector<int> rates;
-        if (mode_ == Mode::kLowLatency)
-        {
-            rates.push_back(endpoint.mix_rate);
-            return rates;
-        }
         if (mode_ == Mode::kShared)
         {
             rates.assign(std::begin(wasapi::kRates), std::end(wasapi::kRates));
@@ -725,25 +710,9 @@ class WasapiSystem final : public AudioSystem
                 return false;
             }
         }
-        else if (mode_ == Mode::kLowLatency)
+        else if (!OpenSharedAtTheBlock(endpoint, block, side, why))
         {
-            if (!OpenLowLatency(endpoint, block, side, why))
-            {
-                return false;
-            }
-        }
-        else
-        {
-            hr = OpenShared(endpoint, side, AUDCLNT_STREAMFLAGS_EVENTCALLBACK);
-            if (FAILED(hr))
-            {
-                why = Describe(hr);
-                return false;
-            }
-            REFERENCE_TIME standard = 0;
-            REFERENCE_TIME smallest = 0;
-            side.client->GetDevicePeriod(&standard, &smallest);
-            side.period_frames = std::max(wasapi::FramesOf(standard, rate_), 1);
+            return false;
         }
         hr = side.client->GetService(IID_PPV_ARGS(side.render.GetAddressOf()));
         if (SUCCEEDED(hr))
@@ -787,16 +756,9 @@ class WasapiSystem final : public AudioSystem
                 return false;
             }
         }
-        else if (mode_ == Mode::kLowLatency)
+        else if (!OpenSharedAtTheBlock(endpoint, out_.period_frames, side, why))
         {
-            if (!OpenLowLatency(endpoint, out_.period_frames, side, why))
-            {
-                return false;
-            }
-        }
-        else
-        {
-            hr = OpenShared(endpoint, side, AUDCLNT_STREAMFLAGS_EVENTCALLBACK);
+            return false;
         }
         if (SUCCEEDED(hr))
         {
@@ -812,6 +774,48 @@ class WasapiSystem final : public AudioSystem
             return false;
         }
         Measure(side);
+        return true;
+    }
+
+    /** A side opened in shared mode, its period set: at the driver's smallest period that holds `block` where the
+        stream runs at the endpoint's own rate and this Windows and this driver offer it (OpenLowLatency) - a few
+        milliseconds where the driver offers small periods, as Microsoft's inbox HD Audio driver does - and else at the
+        engine's period, the engine converting the rate (OpenShared): at another rate, on a Windows before 10, or where
+        the driver refuses the small period, on a fresh client, since a refused initialise may leave one unusable.
+        @param endpoint  the endpoint
+        @param block     the block asked for, in frames; 0 for the driver's smallest
+        @param side      the side, its client activated
+        @param why       set to what went wrong
+        @return          true when it opened */
+    bool OpenSharedAtTheBlock(const Endpoint &endpoint, int block, Side &side, std::string &why)
+    {
+        if (wasapi::SharedRouteOf(rate_, endpoint.mix_rate) == wasapi::SharedRoute::kDriversPeriod)
+        {
+            if (OpenLowLatency(endpoint, block, side, why))
+            {
+                return true;
+            }
+            side.client = Activate(endpoint);
+            if (side.client == nullptr)
+            {
+                return false; // `why` says why the driver's period was refused; the engine's cannot be tried
+            }
+            why.clear();
+        }
+        const HRESULT hr = OpenShared(endpoint, side, AUDCLNT_STREAMFLAGS_EVENTCALLBACK);
+        if (FAILED(hr))
+        {
+            why = Describe(hr);
+            return false;
+        }
+        if (&side == &out_)
+        {
+            // The render side's period is the engine's; a capture side's is left to Measure, its buffer, as it was.
+            REFERENCE_TIME standard = 0;
+            REFERENCE_TIME smallest = 0;
+            side.client->GetDevicePeriod(&standard, &smallest);
+            side.period_frames = std::max(wasapi::FramesOf(standard, rate_), 1);
+        }
         return true;
     }
 
@@ -835,8 +839,8 @@ class WasapiSystem final : public AudioSystem
     }
 
     /** Raw mode asked of `client`, where this Windows and this driver offer it: the stream then runs with none of
-        the engine's own effects in its path. Worth asking for in the low-latency mode, since the effects chain both
-        adds latency of its own and holds the engine's period up, and nothing in a guitar amplifier wants Windows to
+        the engine's own effects in its path. Worth asking for at the driver's small periods, since the effects chain
+       both adds latency of its own and holds the engine's period up, and nothing in a guitar amplifier wants Windows to
         process its sound. It must be asked before the stream is initialised, which is the only time the property may
         be set, and a refusal is no reason not to open: the stream simply runs with the effects, as it did before.
         @param client  the client, not yet initialised */
@@ -924,8 +928,7 @@ class WasapiSystem final : public AudioSystem
         ComPtr<IAudioClient3> client3;
         if (FAILED(side.client.As(&client3)))
         {
-            why = "this Windows offers no low-latency shared mode (IAudioClient3, Windows 10 and later): choose " +
-                  std::string(wasapi::kSharedName);
+            why = "this Windows offers no small shared periods (IAudioClient3, Windows 10 and later)";
             return false;
         }
         const WAVEFORMATEX           *mix      = endpoint.MixFormat();
@@ -1335,10 +1338,10 @@ std::unique_ptr<AudioSystem> MakeWasapiSystem(wasapi::Mode mode)
 
 namespace
 {
-/** Windows Audio's three modes, in the order a Standalone lists them. */
-constexpr wasapi::Mode kModes[] = {wasapi::Mode::kShared, wasapi::Mode::kLowLatency, wasapi::Mode::kExclusive};
+/** Windows Audio's two modes, in the order a Standalone lists them. */
+constexpr wasapi::Mode kModes[] = {wasapi::Mode::kShared, wasapi::Mode::kExclusive};
 
-/** The three modes' names.
+/** The two modes' names.
     @return  the names, in the order a Standalone lists them */
 std::vector<std::string> ApiNames()
 {

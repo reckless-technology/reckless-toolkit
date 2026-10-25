@@ -42,9 +42,8 @@ namespace
 {
 /** The series' APIs in the order a Standalone offers them (DeviceBackends.h's AudioApis says why); a name not here
     comes after them, in the order the back ends offer it. */
-constexpr std::string_view kPreference[] = {
-    "CoreAudio", "Windows Audio", "Windows Audio (Low Latency Mode)", "Windows Audio (Exclusive Mode)", "ASIO",
-    "JACK",      "ALSA"};
+constexpr std::string_view kPreference[] = {"CoreAudio", "Windows Audio", "Windows Audio (Exclusive Mode)",
+                                            "ASIO",      "JACK",          "ALSA"};
 
 /** Where a name comes in kPreference.
     @param name  an API's name
@@ -63,7 +62,7 @@ const std::vector<const AudioBackend *> &AudioBackends()
 {
     static const std::vector<const AudioBackend *> backends = {
 #if defined(_WIN32)
-        // The suite's own WASAPI, in its three modes, ahead of ASIO: only a person with an ASIO driver wants ASIO.
+        // The suite's own WASAPI, in its two modes, ahead of ASIO: only a person with an ASIO driver wants ASIO.
         &WasapiBackend(),
 #endif
 #if defined(RECKLESS_AUDIO_JACK)
