@@ -35,10 +35,14 @@ namespace
 constexpr unsigned int kRates[] = {4000,  5512,  8000,  9600,  11025, 16000,  22050,
                                    32000, 44100, 48000, 88200, 96000, 176400, 192000};
 
-/** The periods a stream's buffer holds. The output is primed full and a period written each time one has played, so
-    a callback has two periods' time before the device runs dry - 10.7 ms at 256 frames and 48 kHz - and a sample
-    written plays three periods later. RtAudio's buffer was four. */
+/** The periods an output's buffer holds where the request leaves them to the back end (StreamRequest::periods 0). The
+    output is primed full and a period written each time one has played, so a callback has all but one of them to run
+    before the device runs dry, and a sample written plays this many periods later: three gives two periods' margin -
+    10.7 ms at 256 frames and 48 kHz - and a block's latency more than two. RtAudio's buffer was four. */
 constexpr unsigned int kPeriods = 3;
+
+/** The fewest periods an output's buffer may hold: one playing while the next is written. */
+constexpr unsigned int kFewestPeriods = 2;
 
 /** The frames an input's buffer holds at the least. An input is read a block at a time as soon as it has one, so its
     buffer adds no latency, only room: a sound server's ALSA device hands its input over a whole graph cycle at a time
@@ -439,7 +443,10 @@ class AlsaSystem final : public AudioSystem
         std::string why;
         out_.first = request.first_output;
         out_.count = request.output_count;
-        if (!OpenSide(out_, output->id, SND_PCM_STREAM_PLAYBACK, rate, asked, why))
+        // The product's periods, where it asks for some (StreamRequest::periods), else the back end's own.
+        const unsigned int periods =
+            request.periods > 0 ? std::max(kFewestPeriods, static_cast<unsigned int>(request.periods)) : kPeriods;
+        if (!OpenSide(out_, output->id, SND_PCM_STREAM_PLAYBACK, rate, asked, periods, why))
         {
             Close();
             return Refuse("'" + output->info.name + "' would not open for output on ALSA: " + why);
@@ -449,7 +456,7 @@ class AlsaSystem final : public AudioSystem
         {
             in_.first = request.first_input;
             in_.count = request.input_count;
-            if (!OpenSide(in_, input->id, SND_PCM_STREAM_CAPTURE, rate, block_, why))
+            if (!OpenSide(in_, input->id, SND_PCM_STREAM_CAPTURE, rate, block_, kPeriods, why))
             {
                 Close();
                 return Refuse("'" + input->info.name + "' would not open for input on ALSA: " + why);
@@ -491,6 +498,7 @@ class AlsaSystem final : public AudioSystem
         // A block written lands behind what the output already holds, its buffer less the period just played; a
         // block read is the input's latest.
         format_.reported_latency = out_.buffer - block_;
+        format_.periods          = out_.buffer / std::max(block_, 1);
         callback_.store(&callback, std::memory_order_release);
         failed_.store(false, std::memory_order_relaxed);
         open_ = true;
@@ -587,8 +595,8 @@ class AlsaSystem final : public AudioSystem
 
     /** One side opened on PCM `id`: interleaved, mapped where it can be, at `rate` exactly, in the best encoding it
         takes, with the device channels the side's channels need (or the fewest the device takes past them), a period
-        of `block` frames or the nearest the device takes, kPeriods of them buffered on an output and at least
-        kInputFrames on an input; started only when asked (the
+        of `block` frames or the nearest the device takes, `periods` of them buffered on an output (or the nearest the
+        device takes) and at least kInputFrames on an input; started only when asked (the
         start threshold past the buffer), stopped by ALSA once it is past (the stop threshold the buffer), and waking a
         poll once a block is there.
         @param side    the side, its `first` and `count` set; filled in here
@@ -596,10 +604,11 @@ class AlsaSystem final : public AudioSystem
         @param stream  playback or capture
         @param rate    the rate, in hertz
         @param block   the period to ask for, and the frames a poll waits for, in frames
+        @param periods the periods an output's buffer is to hold, at least kFewestPeriods; an input takes no notice
         @param why     set to the reason when it will not open
         @return        true when it opened */
     static bool OpenSide(Side &side, const std::string &id, snd_pcm_stream_t stream, int rate, int block,
-                         std::string &why)
+                         unsigned int periods, std::string &why)
     {
         int result = snd_pcm_open(&side.pcm, id.c_str(), stream, SND_PCM_NONBLOCK);
         if (result < 0)
@@ -654,12 +663,11 @@ class AlsaSystem final : public AudioSystem
             why = "it takes no period near " + std::to_string(block) + " frames: " + Describe(result);
             return false;
         }
-        // An output's latency is its buffer, so kPeriods of them; an input's room costs nothing (kInputFrames).
-        unsigned int periods =
-            stream == SND_PCM_STREAM_PLAYBACK
-                ? kPeriods
-                : std::max(kPeriods, static_cast<unsigned int>((kInputFrames + period - 1) /
-                                                               std::max<snd_pcm_uframes_t>(period, 1)));
+        // An output's latency is its buffer, so the periods asked for; an input's room costs nothing (kInputFrames).
+        periods = stream == SND_PCM_STREAM_PLAYBACK
+                      ? periods
+                      : std::max(kPeriods, static_cast<unsigned int>((kInputFrames + period - 1) /
+                                                                     std::max<snd_pcm_uframes_t>(period, 1)));
         const unsigned int asked_periods = periods;
         direction                        = 0;
         if ((result = snd_pcm_hw_params_set_periods_near(side.pcm, hw, &periods, &direction)) < 0)

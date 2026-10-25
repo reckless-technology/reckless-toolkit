@@ -32,7 +32,9 @@ and `cmake/PatchRtAudio.cmake` with it.
 ALSA, measured against RtAudio's on the same machine and the same loopback card
 ([device-tests.md](device-tests.md), "Why a case took a minute"): every device named as RtAudio named it, a stop in
 under a millisecond where RtAudio's took seconds, the loop's latency 768 samples at 256 frames where RtAudio's was
-1280, and an xrun recovered in one restart. Settled on the way: an output buffer of three periods (RtAudio's was four),
+1280, and an xrun recovered in one restart. Settled on the way: an output buffer of the periods the product asks for (`StreamRequest::periods`, two at the
+fewest), three where it leaves them to the back end (RtAudio's was four) - measured on the loopback card at 256
+frames, the loop's latency exactly two, three and four blocks -
 an input buffer of at least 4096 frames since PipeWire's `default` hands its input over a 1024-frame quantum at a time,
 and a device's free direction listed where another program holds the other - the UMC1820's inputs, which RtAudio
 dropped while PipeWire played through it.

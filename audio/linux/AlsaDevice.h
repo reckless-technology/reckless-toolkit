@@ -21,7 +21,8 @@ namespace reckless::audio
     period is converted straight into or out of the DMA buffer - at the rate asked, with no resampling on a hardware
     device, in the best of 32-bit float, 32-bit, 24-bit and 16-bit integer the device takes (SampleEncodings.h). The
     period is the block asked for, or the nearest the device takes, which the stream's format then says; an output's
-    buffer is three periods, its latency, and an input's at least 4096 frames, room that costs no latency. The output is
+    buffer is the periods the request asks for (StreamRequest::periods, two at the fewest), or three where it leaves
+    them to the back end - its latency - and an input's at least 4096 frames, room that costs no latency. The output is
     primed with a buffer of silence as it starts, the input and output are linked where ALSA can link them (one card:
     started and stopped as one), and each pass of the stream's thread waits - in poll, bounded, never inside ALSA -
     until the input has a period and the output room for one, reads it, runs the callback and writes it.
