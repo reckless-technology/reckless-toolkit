@@ -1,6 +1,7 @@
 // The settings a Standalone keeps (audio/AudioSettings.h): reckless-technology/<plugin>/audio.json, every setting set
 // or left to its default and read back as written, a member of the wrong kind unset, and a file that is not the
-// settings read as the defaults.
+// settings read as the defaults. And the device names they find a device by (audio/AudioDevice.h's NameApart): a
+// later device of an earlier one's name the same way carrying its ordinal, as RtAudio named them.
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -8,6 +9,7 @@
 #include <system_error>
 #include <vector>
 
+#include "AudioDevice.h"
 #include "AudioSettings.h"
 #include "Json.h"
 #include "ScratchPath.h"
@@ -134,4 +136,37 @@ TEST(AudioSettings, TheFilesAreTheStandalonesOwnInItsFolder)
     const fs::path folder = reckless::audio::SettingsFolder("Reckless Octave");
     EXPECT_EQ(folder.filename().string(), "octave") << "the plugin's own folder, no space";
     EXPECT_EQ(folder.parent_path().filename().string(), "reckless-technology") << "in the suite's";
+}
+
+TEST(AudioDeviceNames, ALaterDeviceOfAnEarliersNameTheSameWayCarriesItsOrdinal)
+{
+    using reckless::audio::DeviceInfo;
+    const auto device = [](const char *name, int in, int out) {
+        DeviceInfo d;
+        d.name            = name;
+        d.input_channels  = in;
+        d.output_channels = out;
+        return d;
+    };
+    // ALSA's loopback card: two duplex devices of one name. A USB microphone with a headphone socket, on CoreAudio:
+    // an input and an output of one name, which keep it. And a third of a name, which takes the lowest ordinal free -
+    // past a device the API itself named with that ordinal.
+    std::vector<DeviceInfo> devices = {device("Loopback (Loopback PCM)", 32, 32),
+                                       device("Loopback (Loopback PCM)", 32, 32),
+                                       device("Mic", 1, 0),
+                                       device("Mic", 0, 2),
+                                       device("Card", 0, 2),
+                                       device("Card (2)", 0, 2),
+                                       device("Card", 0, 2)};
+    reckless::audio::NameApart(devices);
+    const std::vector<std::string> want = {
+        "Loopback (Loopback PCM)", "Loopback (Loopback PCM) (2)", "Mic", "Mic", "Card", "Card (2)", "Card (3)"};
+    ASSERT_EQ(devices.size(), want.size());
+    for (std::size_t i = 0; i < want.size(); ++i)
+    {
+        EXPECT_EQ(devices[i].name, want[i]);
+    }
+    EXPECT_EQ(reckless::audio::FindDevice(devices, "Mic", reckless::audio::Direction::kOutput), 3);
+    EXPECT_EQ(reckless::audio::FindDevice(devices, "Loopback (Loopback PCM) (2)", reckless::audio::Direction::kInput),
+              1);
 }
