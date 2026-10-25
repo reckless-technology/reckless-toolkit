@@ -26,7 +26,8 @@ and `cmake/PatchRtAudio.cmake` with it.
 | ALSA | the toolkit's, `audio/linux/AlsaDevice.cpp`; RtAudio no longer compiles its ALSA, and both ALSA patches are gone | 2026-10-25 |
 | JACK | the toolkit's, `audio/linux/JackDevice.cpp`, libjack loaded at run time (`JackLoader.cpp`); RtAudio compiles no API on Linux and is not listed there | 2026-10-25 |
 | CoreAudio, ASIO | RtAudio | on a Mac, and on Windows |
-| MIDI everywhere | RtMidi | after each platform's audio; the ALSA sequencer is next on Linux |
+| MIDI on Linux | the toolkit's, `audio/linux/AlsaMidi.cpp`, on ALSA's sequencer | 2026-10-25 |
+| MIDI on macOS and Windows | RtMidi | after each platform's audio |
 
 ALSA, measured against RtAudio's on the same machine and the same loopback card
 ([device-tests.md](device-tests.md), "Why a case took a minute"): every device named as RtAudio named it, a stop in
@@ -44,6 +45,12 @@ graph from its 1024-frame quantum to 64 for the stream's life - the UMC1820 dupl
 and of a JACK server as its buffer size. PipeWire's own `jack_set_buffer_size` is never called: it forces a quantum
 on the whole graph that outlives the stream. A device's ports are its client's
 by exact name, where RtAudio's pattern counted any client whose name held the device's.
+
+**Linux carries neither library now**: with the ALSA sequencer serving MIDI, RtAudio and RtMidi are not fetched or
+compiled there. The sequencer lists every input under the name RtMidi gave it - checked side by side against RtMidi
+on this machine, identical - and also finds a name whose client and port numbers have changed, as a USB interface's
+do when it is plugged in again. A Linux build without ALSA's headers has no MIDI inputs at all, as it has no audio
+devices.
 
 Nothing above the seam has to change: `AudioDevice.h`'s `AudioSystem` (nine pure virtuals) and `MidiSystem` (four)
 were already written against no library, and no test names a back end.

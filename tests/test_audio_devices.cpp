@@ -4,7 +4,8 @@
 // device offers with its callbacks counted against what the rate and the block predict and the rate read by the clock,
 // the samples a loop carries back (bit for bit through ALSA's loopback card and a JACK client wired to itself,
 // correlated through WASAPI's loopback capture, the ASIO test driver's own sine and sawtooth exactly), an xrun the
-// device reports, and a device that is not there. Each API's test device is deterministic and set up by the suite or
+// device reports, and a device that is not there; and on Linux, MIDI from a sequencer port of the test's own through
+// ALSA's sequencer back end. Each API's test device is deterministic and set up by the suite or
 // the CI job (devices/DeviceRig.h says which); the tables each test judges are printed. The harness is
 // devices/DeviceSuite.h, which a consumer's suite of an engine playing through the same devices shares.
 //
@@ -14,6 +15,10 @@
 // be exactly the APIs the configure promised (RECKLESS_AUDIO_PROMISED_APIS - ASIO wherever the SDK is, JACK and ALSA
 // wherever their headers are), so a build that silently loses one fails here.
 #include "devices/DeviceSuite.h"
+
+#if defined(RECKLESS_AUDIO_TEST_ALSA_SEQ)
+#include <alsa/asoundlib.h>
+#endif
 
 using namespace reckless::audio::test::suite;
 
@@ -591,6 +596,228 @@ TEST_P(AudioDevices, CountsAnXrunAndPlaysOnAfterIt)
         EXPECT_GE(tail_s, 0.30) << "the loop did not come back to one frame after another";
     }
 }
+
+// ---- MIDI: ALSA's sequencer --------------------------------------------------------------------------------------
+
+#if defined(RECKLESS_AUDIO_TEST_ALSA_SEQ)
+namespace
+{
+/** What a MIDI input delivered: each message's port, time and bytes, into storage made up front, read once the inputs
+    are closed. */
+class Collected final : public reckless::audio::MidiSink
+{
+  public:
+    static constexpr int kMost = 64; ///< the messages kept
+
+    void Arrived(int port, std::int64_t time, const std::uint8_t *bytes, int size) noexcept override
+    {
+        const int n = count_.load(std::memory_order_relaxed);
+        if (n < kMost)
+        {
+            ports_[static_cast<std::size_t>(n)] = port;
+            times_[static_cast<std::size_t>(n)] = time;
+            messages_[static_cast<std::size_t>(n)].assign(bytes, bytes + size);
+        }
+        count_.store(n + 1, std::memory_order_release);
+    }
+
+    int count() const noexcept
+    {
+        return count_.load(std::memory_order_acquire);
+    }
+
+    int port_at(int i) const noexcept
+    {
+        return ports_[static_cast<std::size_t>(i)];
+    }
+
+    std::int64_t time_at(int i) const noexcept
+    {
+        return times_[static_cast<std::size_t>(i)];
+    }
+
+    const std::vector<std::uint8_t> &message_at(int i) const noexcept
+    {
+        return messages_[static_cast<std::size_t>(i)];
+    }
+
+    /** Until `n` messages have arrived, for up to two seconds.
+        @param n  the messages to wait for
+        @return   true when they came */
+    bool AwaitCount(int n) const
+    {
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (count() < n && std::chrono::steady_clock::now() < until)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return count() >= n;
+    }
+
+  private:
+    std::atomic<int>                             count_{0};
+    std::array<int, kMost>                       ports_{};
+    std::array<std::int64_t, kMost>              times_{};
+    std::array<std::vector<std::uint8_t>, kMost> messages_; // assigned on the MIDI thread: test code, not a core
+};
+
+/** A sequencer client of the test's own with one readable port, which sends straight to whoever subscribes. */
+class TestSource
+{
+  public:
+    TestSource()
+    {
+        if (snd_seq_open(&seq_, "default", SND_SEQ_OPEN_OUTPUT, 0) < 0)
+        {
+            seq_ = nullptr;
+            return;
+        }
+        snd_seq_set_client_name(seq_, "Reckless test source");
+        port_ = snd_seq_create_simple_port(seq_, "out", SND_SEQ_PORT_CAP_READ | SND_SEQ_PORT_CAP_SUBS_READ,
+                                           SND_SEQ_PORT_TYPE_MIDI_GENERIC | SND_SEQ_PORT_TYPE_APPLICATION);
+    }
+
+    ~TestSource()
+    {
+        if (seq_ != nullptr)
+        {
+            snd_seq_close(seq_);
+        }
+    }
+
+    TestSource(const TestSource &)            = delete;
+    TestSource &operator=(const TestSource &) = delete;
+
+    bool made() const noexcept
+    {
+        return seq_ != nullptr && port_ >= 0;
+    }
+
+    /** The name the layer lists the port under: RtMidi's "<client>:<port> <client number>:<port number>". */
+    std::string Name() const
+    {
+        return "Reckless test source:out " + std::to_string(snd_seq_client_id(seq_)) + ":" + std::to_string(port_);
+    }
+
+    /** `event` sent to the port's subscribers at once. */
+    void Send(snd_seq_event_t event)
+    {
+        snd_seq_ev_set_source(&event, port_);
+        snd_seq_ev_set_subs(&event);
+        snd_seq_ev_set_direct(&event);
+        snd_seq_event_output_direct(seq_, &event);
+    }
+
+  private:
+    snd_seq_t *seq_{nullptr};
+    int        port_{-1};
+};
+} // namespace
+
+TEST(MidiInputs, CarryWhatASequencerPortSendsButWhatTheCoresIgnore)
+{
+    TestSource source;
+    const bool required = std::find(RequiredApis().begin(), RequiredApis().end(), "ALSA") != RequiredApis().end();
+    if (!source.made())
+    {
+        if (required)
+        {
+            FAIL() << "ALSA is required (RECKLESS_AUDIO_REQUIRE) and its sequencer would not open: is snd-seq loaded?";
+        }
+        GTEST_SKIP() << "ALSA's sequencer would not open: no snd-seq in this kernel";
+    }
+    const auto                     midi   = reckless::audio::MakeMidiSystem("Reckless MIDI test");
+    const std::vector<std::string> inputs = midi->Inputs();
+    Table                          table("ALSA sequencer: the inputs");
+    for (const std::string &input : inputs)
+    {
+        table.Row(input, "");
+    }
+    table.Row("library", reckless::audio::AudioLibraryVersions()).Print();
+    ASSERT_NE(std::find(inputs.begin(), inputs.end(), source.Name()), inputs.end())
+        << "the test's port, listed as " << source.Name();
+
+    // Refused by a name that is nowhere, the error naming it.
+    Collected nothing;
+    EXPECT_FALSE(midi->Open("Reckless: no such MIDI input", 0, nothing));
+    EXPECT_NE(midi->LastError().find("Reckless: no such MIDI input"), std::string::npos) << midi->LastError();
+
+    // Found by its name with other numbers after it, as a device plugged in again comes back.
+    Collected sink;
+    ASSERT_TRUE(midi->Open("Reckless test source:out 999:9", 3, sink)) << midi->LastError();
+
+    const std::int64_t before = NowNanoseconds();
+    snd_seq_event_t    event;
+    snd_seq_ev_clear(&event);
+    snd_seq_ev_set_noteon(&event, 1, 60, 100);
+    source.Send(event);
+    std::uint8_t sysex[] = {0xF0, 0x7D, 0x01, 0x02, 0xF7};
+    snd_seq_ev_clear(&event);
+    snd_seq_ev_set_sysex(&event, sizeof sysex, sysex);
+    source.Send(event);
+    snd_seq_ev_clear(&event);
+    event.type = SND_SEQ_EVENT_CLOCK;
+    source.Send(event);
+    snd_seq_ev_clear(&event);
+    snd_seq_ev_set_controller(&event, 0, 7, 64);
+    source.Send(event);
+    snd_seq_ev_clear(&event);
+    event.type = SND_SEQ_EVENT_SENSING;
+    source.Send(event);
+    snd_seq_ev_clear(&event);
+    snd_seq_ev_set_noteoff(&event, 1, 60, 0);
+    source.Send(event);
+    snd_seq_ev_clear(&event);
+    snd_seq_ev_set_pitchbend(&event, 15, 0);
+    source.Send(event);
+    const bool         came  = sink.AwaitCount(4);
+    const std::int64_t after = NowNanoseconds();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // anything left out would have come by now
+    midi->CloseAll();
+    const int counted = sink.count();
+
+    // Closed: nothing more reaches the sink.
+    snd_seq_ev_clear(&event);
+    snd_seq_ev_set_noteon(&event, 1, 61, 100);
+    source.Send(event);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    const std::vector<std::vector<std::uint8_t>> want = {
+        {0x91, 60, 100}, {0xB0, 7, 64}, {0x81, 60, 0}, {0xEF, 0x00, 0x40}};
+    Table result("ALSA sequencer: what arrived");
+    for (int i = 0; i < std::min(counted, Collected::kMost); ++i)
+    {
+        std::string bytes;
+        for (const std::uint8_t b : sink.message_at(i))
+        {
+            char hex[4];
+            std::snprintf(hex, sizeof hex, "%02X ", b);
+            bytes += hex;
+        }
+        result.Row("message " + Str(i + 1), bytes + "port " + Str(sink.port_at(i)) + ", " +
+                                                Fixed(static_cast<double>(sink.time_at(i) - before) * 1e-6, 2) +
+                                                " ms after the first was sent");
+    }
+    result.Row("after the inputs closed", Str(sink.count() - counted) + " messages").Print();
+
+    ASSERT_TRUE(came) << "the messages did not all arrive";
+    ASSERT_EQ(counted, static_cast<int>(want.size()))
+        << "system exclusive, timing clock and active sensing are left out, and nothing else";
+    for (int i = 0; i < counted; ++i)
+    {
+        EXPECT_EQ(sink.message_at(i), want[static_cast<std::size_t>(i)]) << "message " << i + 1;
+        EXPECT_EQ(sink.port_at(i), 3) << "the index the input was opened under";
+        EXPECT_GE(sink.time_at(i), before);
+        EXPECT_LE(sink.time_at(i), after);
+        if (i > 0)
+        {
+            EXPECT_GE(sink.time_at(i), sink.time_at(i - 1)) << "stamped in the order they came";
+        }
+    }
+    EXPECT_EQ(sink.count(), counted) << "a message reached the sink after CloseAll";
+    EXPECT_EQ(nothing.count(), 0);
+}
+#endif
 
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(AudioDevices);
 INSTANTIATE_TEST_SUITE_P(Apis, AudioDevices, ::testing::ValuesIn(TestedApis()), ApiTestName);
