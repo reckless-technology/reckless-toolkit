@@ -144,10 +144,20 @@ jobs:
         run: cmake --build build/ci-toolkit -j ${{ steps.cpp.outputs.jobs }}
       # Every suite but the window suites, the device suite among them, run alone (RUN_SERIAL) with ALSA and JACK
       # required, so a missing test device fails rather than skips.
+      # Everything but the window suites. Where the machine has test devices the APIs are required, so a missing
+      # one fails rather than skips; where the kernel has no sound at all (a hosted runner: the step above says so
+      # and sets RECKLESS_AUDIO_DEVICES) the device suites are left out and the rest runs, which is every other
+      # suite this job has - Skia, the views, the look, the net and update code.
       - name: Test
-        env:
-          RECKLESS_AUDIO_REQUIRE: ALSA,JACK
-        run: ctest --test-dir build/ci-toolkit --output-on-failure -j "$(nproc)" -LE '^window$'
+        run: |
+          if [ "${RECKLESS_AUDIO_DEVICES:-}" = none ]; then
+            echo "no sound in this kernel: the audio device suites are left out of this run"
+            ctest --test-dir build/ci-toolkit --output-on-failure -j "$(nproc)" -LE '^window$' \
+                -E '^(audio_devices|loopback)$'
+          else
+            RECKLESS_AUDIO_REQUIRE=ALSA,JACK \
+                ctest --test-dir build/ci-toolkit --output-on-failure -j "$(nproc)" -LE '^window$'
+          fi
       # The window suites (the CTest label `window`: child_window) on a 24-bit display Xvfb provides - the child window
       # draws into BGRA and refuses a parent with any other visual - and RECKLESS_REQUIRE_WINDOW set, so a display that
       # never came fails the step rather than skipping it.

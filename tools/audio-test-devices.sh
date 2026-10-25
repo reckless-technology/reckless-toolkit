@@ -28,6 +28,21 @@ user=$(id -un)
 can_sudo=false
 if sudo -n true 2> /dev/null; then can_sudo=true; fi
 
+# A kernel built without sound at all can have no test device, whatever is installed: Ubuntu's azure kernels are
+# built that way (Launchpad 1970586, "No sound support on Linux AWS/Azure kernels"), which is what GitHub's hosted
+# runners run - zero sound modules in the tree and no CONFIG_SND_ALOOP in the build config. Nothing here can fix
+# that, so the suites that need a device are left out and the job says so. This is a question about the kernel and
+# not about the kind of runner: a machine whose kernel has sound and whose loopback card is missing still fails
+# below, loudly, because there the provisioning is broken rather than impossible.
+sound_modules=$(find "/lib/modules/$(uname -r)" -path '*sound*' -name '*.ko*' 2> /dev/null | wc -l)
+if [ ! -d /proc/asound ] && [ "$sound_modules" -eq 0 ]; then
+    echo "this kernel has no sound support: no /proc/asound, no sound modules, " \
+        "CONFIG_SND_ALOOP $(grep -s SND_ALOOP "/boot/config-$(uname -r)" || echo absent)"
+    echo "::notice::the audio device suites cannot run on this kernel and are left out; everything else runs"
+    if [ -n "${GITHUB_ENV:-}" ]; then echo "RECKLESS_AUDIO_DEVICES=none" >> "$GITHUB_ENV"; fi
+    exit 0
+fi
+
 # The packages: the two development headers, jackd and setfacl.
 missing=()
 pkg-config --exists alsa 2> /dev/null || missing+=(libasound2-dev)
