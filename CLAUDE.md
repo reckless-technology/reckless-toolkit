@@ -137,18 +137,24 @@ working for every consumer: `sign`'s bundle kinds, the identity check and the ex
   `Co-Authored-By: Claude <model> <noreply@anthropic.com>` trailer.
 - **`main` takes pull requests only**, enforced by the ruleset "main takes pull requests": a pull request whose `CI`
   check is green on a branch up to date with `main`, merged by rebase alone (squash and merge commits are GitHub's own
-  commits, under its identity), no force push, no deletion, no bypass. `git switch -c <topic>`, push, `gh pr create
+  commits, under its identity), no force push, no deletion, no bypass. The repository allows rebase merges alone and
+  auto-merge. The ruleset was found missing on 2026-10-25 - lost when the repository was made anew in public - and
+  restored from sudoku's, which is the same: if a `gh pr merge --auto` ever merges at once, check
+  `gh api repos/reckless-technology/reckless-toolkit/rules/branches/main` first. `git switch -c <topic>`, push, `gh pr create
   --fill`, `gh pr merge --rebase --auto`; a green pull request is merged without asking (Jonny's standing permission).
   If `main` moves, rebase the branch and force-push it. The pre-push hook refuses a push to `main`.
 
 ## CI
 
-`.github/workflows/build.yml`, on the organisation's own runners only - `[self-hosted, Linux, X64]`, `[self-hosted,
-Windows, X64]` (MSVC through vswhere and `VsDevCmd.bat`), `[self-hosted, macOS, ARM64]` for the builds and `[light]` for
-the short jobs (`changes`, `format`, `doxygen`, `ci`: `reckless-ci-lin-0-alt`, a second runner on lin-0 with no default
-labels, and lin-1's runner) - never a hosted image. Jobs: `changes` (the commits' identity, `check-docs.py --tracked`,
+`.github/workflows/build.yml`, on GitHub's hosted images, each pinned - `ubuntu-24.04`, `windows-2025` (MSVC through
+vswhere and `VsDevCmd.bat`) and `macos-15`, a fresh machine for every job. This repository is public, and the
+organisation's self-hosted pool does not serve public repositories (a job queued for it would wait for ever); the
+workflow's opening comment says so. The hosted Linux kernel has no sound support, so `tools/audio-test-devices.sh`
+installs the ALSA and JACK headers - the back ends compile - and the device suites are left out there
+(`RECKLESS_AUDIO_DEVICES=none`): the Linux device suites run on a developer's machine and in vst-plugins' CI, on the
+organisation's own runners. Jobs: `changes` (the commits' identity, `check-docs.py --tracked`,
 and whether code changed), `linux` (gcc, every suite, the device suite with `RECKLESS_AUDIO_REQUIRE=ALSA,JACK` after
-`tools/audio-test-devices.sh`, the window suites under `xvfb-run` with `RECKLESS_REQUIRE_WINDOW`), `windows` (MSVC,
+`tools/audio-test-devices.sh` wherever the kernel has sound, the window suites under `xvfb-run` with `RECKLESS_REQUIRE_WINDOW`), `windows` (MSVC,
 `RECKLESS_AUDIO_REQUIRE=ASIO` on the SDK fetched by name and hash), `macos` (universal arm64 and x86_64, every binary
 read with `lipo` and `vtool` for both slices and the 13.3 floor, `RECKLESS_AUDIO_REQUIRE=CoreAudio`,
 `RECKLESS_REQUIRE_WINDOW`), `minimal` (no GUI, no audio device layer), `consumers` (Linux: `tools/check-consumers.sh`
@@ -159,8 +165,6 @@ builds a few of its targets - vst-plugins' `reckless_update_shared` and `reckles
 product's, a header a product's shadows, or a moved function fails here), `coverage` (gcc, gcovr on `core/`, `gfx/` but
 its Skia canvas, `look/`, `view/`, `net/`, `update/` and `licence/`, red under the floor `--fail-under-line` names),
 `format`, `doxygen` and `CI`, the aggregate the ruleset requires. Documentation alone builds nothing.
-`RECKLESS_UPDATE_CHECK=off` everywhere. Kept trees under `build/ci-toolkit*` (checkout `clean: false`) but coverage's,
-`build/ci-toolkit-cov`, deleted before every configure since another branch's notes and counters in a kept tree stop
-gcovr; FetchContent's downloads in the runner's tool cache under `reckless-toolkit-deps/<compiler>-ninja-gtest<pin>`;
-`workflow_dispatch` with `fresh` rebuilds from nothing. `.github/dependabot.yml` watches the actions' majors; its
+`RECKLESS_UPDATE_CHECK=off` everywhere. Nothing is kept between runs: each job builds from nothing and fetches what it
+needs. `.github/dependabot.yml` watches the actions' majors; its
 commits must be made again under Jonny's identity before they can merge.
