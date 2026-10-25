@@ -29,6 +29,13 @@ toolkit's own 478 commits, reaching back through vst-plugins' `common/` and the 
 fetched into one another and `git log --follow` does not cross from one to the other: for anything before
 2026-10-24, read the archived repository.
 
+**Work in hand: the device layer is going native.** Both third-party libraries are on their way out - the audio and
+MIDI back ends become the platforms' own APIs, one at a time behind the seam in `audio/DeviceBackends.h`. Before
+touching anything under `audio/`, read **[docs/audio/native-backends.md](docs/audio/native-backends.md)**: it holds
+the decision and what it rests on, which API each platform ends up on, the order the work takes and how a back end is
+added, and the things already settled by measurement so they are not re-argued. The next one to write is ALSA's, on a
+Linux machine.
+
 ## The consumers
 
 | Product | Repository | State |
