@@ -40,6 +40,21 @@ if [ ! -d /proc/asound ] && [ "$sound_modules" -eq 0 ]; then
         "CONFIG_SND_ALOOP $(grep -s SND_ALOOP "/boot/config-$(uname -r)" || echo absent)"
     echo "::notice::the audio device suites cannot run on this kernel and are left out; everything else runs"
     if [ -n "${GITHUB_ENV:-}" ]; then echo "RECKLESS_AUDIO_DEVICES=none" >> "$GITHUB_ENV"; fi
+    # The headers all the same: compiling the toolkit's ALSA and JACK back ends needs no sound in the kernel, and
+    # without them the configure promises neither API, so the back ends go uncompiled and a break in either is first
+    # met by a product's build.
+    headers=()
+    pkg-config --exists alsa 2> /dev/null || headers+=(libasound2-dev)
+    pkg-config --exists jack 2> /dev/null || headers+=(libjack-jackd2-dev)
+    if [ ${#headers[@]} -gt 0 ]; then
+        if ! $can_sudo; then
+            echo "::error::the machine lacks ${headers[*]}: sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${headers[*]}" >&2
+            exit 1
+        fi
+        echo "installing ${headers[*]} with $user's passwordless sudo, for the back ends to compile"
+        sudo -n apt-get update -qq
+        sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${headers[@]}"
+    fi
     exit 0
 fi
 

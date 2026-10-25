@@ -209,7 +209,11 @@ ones - and no package, `depmod` or module parameter can make up for a module the
 
 So `tools/audio-test-devices.sh` asks what the kernel can do before it asks what is installed. Where there is no
 sound at all it says so, sets `RECKLESS_AUDIO_DEVICES=none` and the job leaves the device suites out, running every
-other suite as before - Skia, the views, the look, the net and update code, and the window suites under Xvfb. The
+other suite as before - Skia, the views, the look, the net and update code, and the window suites under Xvfb. It
+installs the ALSA and JACK headers all the same, since compiling needs no sound in the kernel: without them the
+configure promises neither API and the toolkit's own ALSA and JACK back ends go uncompiled, a break in either first met
+by a product's build - which is how the toolkit's hosted Linux job ran from the repository's going public until
+2026-10-25. The
 question is about the kernel and not the kind of runner, which keeps the property worth keeping: **a machine whose
 kernel has sound and whose loopback card is missing still fails**, because there the provisioning is broken rather
 than impossible. vst-plugins is private, runs on the organisation's own machines, and is therefore where the suite
