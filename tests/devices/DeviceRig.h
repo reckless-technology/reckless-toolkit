@@ -128,8 +128,8 @@ std::unique_ptr<DeviceRig> MakeAsioRig();
     @return           the rig */
 std::unique_ptr<DeviceRig> MakeWasapiRig(bool exclusive);
 
-/** Windows with the ASIO test driver: the registry views the binary gave RtAudio's driver list as it was built, put
-    back; elsewhere nothing. Called first thing in main (AsioRig.cpp says why). */
+/** Windows with the ASIO test driver: the registry views the binary gave the ASIO back end's driver list as it was
+   built, put back; elsewhere nothing. Called first thing in main (AsioRig.cpp says why). */
 void FinishAsioRegistration();
 
 /** What the ASIO test driver's registration did, for the header the suite prints; empty where there is none.

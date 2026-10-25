@@ -1165,8 +1165,8 @@ namespace reckless::audio::test::suite
     @return      the cases' exit code */
 inline int RunDeviceSuite(int argc, char **argv)
 {
-    // First, before anything else reads the registry: the views the ASIO test driver's registration gave RtAudio's
-    // driver list as the binary loaded, put back (AsioRig.cpp).
+    // First, before anything else reads the registry: the views the ASIO test driver's registration gave the ASIO back
+    // end's driver list as the binary loaded, put back (AsioRig.cpp).
     reckless::audio::test::FinishAsioRegistration();
     std::printf("Audio devices: %s; the build carries %s; the run requires %s\n",
                 reckless::audio::AudioLibraryVersions().c_str(), JoinList(reckless::audio::AudioApis()).c_str(),

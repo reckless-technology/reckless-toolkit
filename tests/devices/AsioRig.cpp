@@ -4,23 +4,23 @@
 // second a sawtooth, the same 256 samples every block - registered by this binary for itself, with no administrator and
 // nothing left behind on the machine.
 //
-// The registration is the hard part. RtAudio lists ASIO drivers through the SDK's host code (host/pc/asiolist.cpp),
-// which reads HKLM\SOFTWARE\ASIO for each driver's class and HKCR\CLSID\<class>\InprocServer32 for its DLL, once, as
-// the static driver list in RtAudio.cpp is built while the binary loads - before main, so before any test - and creates
-// a driver later with CoCreateInstance. A CI runner's account cannot write HKLM, and a process at the System integrity
-// level - a service's, as the runners' are - is not given COM's per-user classes. So, while that list is built:
-//   - the registry's two roots are seen through views of the binary's own: RegOverridePredefKey points
-//   HKEY_LOCAL_MACHINE
-//     and HKEY_CLASSES_ROOT, for this process alone, at keys in an application hive (RegLoadAppKey: a hive file in the
-//     temporary folder, private to the process, loaded with no privilege) holding the test driver's entries - and,
-//     copied beside them, the machine's own drivers' entries, so a person's interface still lists;
+// The registration is the hard part. The ASIO back end lists drivers through the SDK's host code
+// (host/pc/asiolist.cpp), which reads HKLM\SOFTWARE\ASIO for each driver's class and HKCR\CLSID\<class>\InprocServer32
+// for its DLL, once, as the back end's driver list (audio/win/AsioDevice.cpp) is built while the binary loads - before
+// main, so before any test - and creates a driver later with CoCreateInstance. A CI runner's account cannot write HKLM,
+// and a process at the System integrity level - a service's, as the runners' are - is not given COM's per-user classes.
+// So, while that list is built:
+//   - the registry's two roots are seen through views of the binary's own: RegOverridePredefKey points the local
+//     machine's and the classes' roots, for this process alone, at keys in an application hive (RegLoadAppKey: a hive
+//     file in the temporary folder, private to the process, loaded with no privilege) holding the test driver's
+//     entries - and, copied beside them, the machine's own drivers' entries, so a person's interface still lists;
 //   - the driver's class is found through an activation context - registration-free COM: a manifest naming the DLL and
 //     its class, activated on the main thread, which CoCreateInstance consults before the registry, at any integrity
 //     level - for every test after. The manifest is written beside the DLL: COM loads a class's DLL from the folder
 //     of the manifest that names it, and a manifest elsewhere sends it looking for the DLL there (0x8007007E, module
 //     not found), whatever directory the context is told its assembly is in.
 // This object does the first part from the library's initialisation segment (init_seg(lib)), which the C runtime runs
-// before every ordinary static initialiser, RtAudio's driver list among them; main puts the two roots back
+// before every ordinary static initialiser, the ASIO back end's driver list among them; main puts the two roots back
 // (FinishAsioRegistration) before anything else reads the registry. COM is started on the main thread before the
 // roots are overridden, so its own start never reads the views, and the activation context stays active for the
 // process's life.
@@ -40,7 +40,7 @@
 #include <objbase.h>
 
 // The file's one static object, the registration, made in the library's segment of the C runtime's initialisers -
-// ahead of every ordinary one, RtAudio's static driver list among them - so that list is built through the views.
+// ahead of every ordinary one, the ASIO back end's driver list among them - so that list is built through the views.
 #pragma warning(disable : 4073) // "initializers put in library initialization area": the point
 #pragma init_seg(lib)
 
@@ -48,7 +48,7 @@ namespace reckless::audio::test
 {
 namespace
 {
-constexpr const char    *kDriverName = "Reckless Test ASIO";  ///< the name RtAudio lists the test driver by
+constexpr const char    *kDriverName = "Reckless Test ASIO";  ///< the name the ASIO back end lists the test driver by
 constexpr const wchar_t *kDriverKey  = L"Reckless Test ASIO"; ///< the driver's key under the ASIO list in the registry
 constexpr const wchar_t *kClass      = L"{188135E1-D565-11d2-854F-00A0C99F5D19}"; ///< the SDK sample's own class
 
@@ -153,8 +153,8 @@ class Registration
         {
             c = c == L'/' ? L'\\' : c;
         }
-        // COM started on this, the main, thread before the roots are overridden: RtAudio's driver list starts it as
-        // it is built, and COM is not to meet the views. The list's own start is then a nested one.
+        // COM started on this, the main, thread before the roots are overridden: the back end's driver list starts it
+        // as it is built, and COM is not to meet the views. The list's own start is then a nested one.
         CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         if (!MakeViews() || !Override() || !Activate())
         {
@@ -163,7 +163,7 @@ class Registration
         registered_ = true;
     }
 
-    /** The two roots put back: RtAudio's list is built, and nothing else is to see the views. */
+    /** The two roots put back: the back end's list is built, and nothing else is to see the views. */
     void Finish()
     {
         if (overridden_)
@@ -187,7 +187,7 @@ class Registration
         DeleteFileW(manifest_.c_str());
         if (registered_)
         {
-            // The class created and released as RtAudio's driver list will create it - the class as its own
+            // The class created and released as the back end's driver list will create it - the class as its own
             // interface - through the activation context, the roots being the machine's again.
             CLSID     clsid  = {};
             IUnknown *driver = nullptr;
@@ -239,7 +239,8 @@ class Registration
             return "not registered: " + error_;
         }
         return "the SDK's sample driver (" + Narrow(dll_) + ") registered in-process as '" + kDriverName +
-               "': registry views over HKLM and HKCR from an application hive while RtAudio built its driver list (" +
+               "': registry views over HKLM and HKCR from an application hive while the ASIO back end built its driver "
+               "list (" +
                views_ +
                "), its class from an activation context, a manifest beside the DLL (created: " + Hex(created_) + "); " +
                std::to_string(machine_drivers_) + " of the machine's own drivers listed beside it";
@@ -332,8 +333,8 @@ class Registration
             RegCloseKey(real_asio);
         }
 
-        // The test driver: its entry under SOFTWARE\ASIO - its class and the name RtAudio lists it by - and its DLL
-        // under its class.
+        // The test driver: its entry under SOFTWARE\ASIO - its class and the name the back end lists it by - and its
+        // DLL under its class.
         result = RegCreateKeyExW(asio, kDriverKey, 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &entry, nullptr);
         if (result == ERROR_SUCCESS)
         {
@@ -521,13 +522,14 @@ class AsioRig final : public DeviceRig
                            "and a sawtooth on its first two inputs";
             return device;
         }
-        device.missing = std::string("the ASIO test driver was registered in-process but RtAudio does not list '") +
-                         kDriverName + "' (" + g_registration.Report() + ")";
+        device.missing =
+            std::string("the ASIO test driver was registered in-process but the ASIO back end does not list '") +
+            kDriverName + "' (" + g_registration.Report() + ")";
         return device;
     }
 
-    /** The driver asks to be reset, as one that has lost its device does: RtAudio closes the stream on a thread of its
-        own and reports the disconnection.
+    /** The driver asks to be reset, as one that has lost its device does: the back end tells the stream it failed, and
+       the engine closes it from its own and reports the disconnection.
         @param why  set to the reason when the driver's request function was not found
         @return     false when the request could not be made */
     bool Vanish(std::string &why) override
@@ -579,7 +581,7 @@ std::string AsioRegistrationReport()
 }
 
 /** The sample driver's two waves exactly as it makes them (driver/asiosample/asiosmpl.cpp, makeSine and makeSaw, with
-    its own value of pi), each sample then read as RtAudio reads an int16: over 32768. */
+    its own value of pi), each sample then read as the back end reads an int16: over 32768. */
 std::vector<std::vector<float>> AsioTestDriverWaves()
 {
     const double       pi     = 0.3141592654; // the sample driver's constant, as it has it
