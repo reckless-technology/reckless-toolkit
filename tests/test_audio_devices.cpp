@@ -116,18 +116,20 @@ TEST_P(AudioDevices, ProbesTheDevicesEachUnderANameOfItsOwn)
     }
 
     // And the test device is among them, with the channels and the rate its streams open.
-    const TestDevice device = rig_->Find(devices);
+    const TestDevice device = WithRunOverrides(rig_->Find(devices));
     RECKLESS_NEED_TEST_DEVICE(device);
     Table(api_ + ": the test device")
         .Row("what it is", device.about)
         .Row("output", device.output)
         .Row("input", device.input.empty() ? std::string("none") : device.input)
-        .Row("channels each way", Str(device.channels))
+        .Row("channels each way",
+             Str(device.channels) + " (from output " + Str(device.first_output + 1) +
+                 (device.input.empty() ? std::string() : ", input " + Str(device.first_input + 1)) + ")")
         .Row("rate, block", Str(device.sample_rate) + " Hz, " + Str(device.block_size))
         .Print();
     const int out = reckless::audio::FindDevice(devices, device.output, reckless::audio::Direction::kOutput);
     ASSERT_GE(out, 0);
-    EXPECT_GE(devices[static_cast<std::size_t>(out)].output_channels, device.channels);
+    EXPECT_GE(devices[static_cast<std::size_t>(out)].output_channels, device.first_output + device.channels);
     EXPECT_TRUE(devices[static_cast<std::size_t>(out)].Lists(device.sample_rate));
     if (!device.input.empty() && device.loop != Loop::kCorrelated)
     {
@@ -232,10 +234,30 @@ TEST_P(AudioDevices, RunsAStreamAtTheRateAndTheBlockItOpenedAt)
     const Timing       timing    = Measure(recorder, started, stopped, format.sample_rate, format.block_size);
     const double       slack     = device.rate_tolerance * timing.predicted + 2.0;
     const std::int64_t allowance = XrunAllowance(timing.callbacks) + LoadAllowance(device, timing.callbacks);
+    // Each input channel's level, printed and not judged - what a stream records depends on what is plugged in - so a
+    // person can see the input is the device asked for: a measurement microphone's room, not an idle input's hiss.
+    std::string levels = "none";
+    if (with_input && recorder.recorded_frames() > 0)
+    {
+        levels.clear();
+        for (int c = 0; c < device.channels; ++c)
+        {
+            double sum = 0.0;
+            for (std::size_t i = 0; i < recorder.recorded_frames(); ++i)
+            {
+                const double sample = recorder.recorded(c)[i];
+                sum += sample * sample;
+            }
+            const double mean = sum / static_cast<double>(recorder.recorded_frames());
+            levels += (c > 0 ? " / " : "") + (mean > 0.0 ? Fixed(10.0 * std::log10(mean), 1) : std::string("-inf"));
+        }
+        levels += " dBFS RMS";
+    }
     Table(api_ + ": a stream on " + device.output)
         .Row("rate asked / opened", Str(request.sample_rate) + " / " + Str(format.sample_rate) + " Hz")
         .Row("block asked / opened", Str(request.block_size) + " / " + Str(format.block_size))
         .Row("channels in / out", Str(format.input_channels) + " / " + Str(format.output_channels))
+        .Row("input level, each channel", levels)
         .Row("latency the API reports", Str(format.reported_latency) + " samples")
         .Row("first callback after", Fixed(timing.to_first_ms, 1) + " ms")
         .Row("callbacks counted / predicted",
@@ -283,9 +305,10 @@ TEST_P(AudioDevices, CarriesTheSamplesALoopBringsBack)
     {
         GTEST_SKIP() << api_ << "'s test device is output only: " << device.about;
     }
-    const Recorder::Play play    = device.loop == Loop::kExact        ? Recorder::Play::kIndices
-                                   : device.loop == Loop::kCorrelated ? Recorder::Play::kNoise
-                                                                      : Recorder::Play::kSilence;
+    const Recorder::Play play    = device.loop == Loop::kExact ? Recorder::Play::kIndices
+                                   : device.loop == Loop::kCorrelated || device.loop == Loop::kCable
+                                       ? Recorder::Play::kNoise
+                                       : Recorder::Play::kSilence;
     const StreamRequest  request = RequestFor(device, true);
     Recorder             recorder(device.channels, device.channels, play);
     const StreamCloser   closer(*system_); // before the Recorder goes, whatever fails
@@ -342,7 +365,7 @@ TEST_P(AudioDevices, CarriesTheSamplesALoopBringsBack)
         }
         EXPECT_LE(jumps, xruns);
     }
-    else if (device.loop == Loop::kCorrelated)
+    else if (device.loop == Loop::kCorrelated || device.loop == Loop::kCable)
     {
         // Through a mixer the signal comes back at some gain and some delay: the delay found from a window of the
         // noise played, then the correlation coefficient over everything after it.
@@ -374,15 +397,51 @@ TEST_P(AudioDevices, CarriesTheSamplesALoopBringsBack)
             yy += y * y;
         }
         const double r = xx > 0.0 && yy > 0.0 ? xy / std::sqrt(xx * yy) : 0.0;
-        Table(api_ + ": the loop through the mixer")
-            .Row("loopback delay", Str(static_cast<std::int64_t>(lag)) + " samples (" +
-                                       Fixed(1e3 * static_cast<double>(lag) / rate, 2) + " ms)")
-            .Row("correlation", Fixed(r, 4) + " (at least 0.9)")
-            .Row("gain", yy > 0.0 ? Fixed(10.0 * std::log10(yy / xx), 2) + " dB" : std::string("silence"))
+        // Through a cable the round trip is the API's: the block the output buffers, the block the input gathered,
+        // and the latency it reports beyond them each way - the converters', the driver's and its safety offsets.
+        const std::int64_t predicted = 2 * static_cast<std::int64_t>(format.block_size) + format.reported_latency;
+        const bool         cable     = device.loop == Loop::kCable;
+        Table              table(api_ + (cable ? ": the loop through the cable" : ": the loop through the mixer"));
+        table.Row("loopback delay", Str(static_cast<std::int64_t>(lag)) + " samples (" +
+                                        Fixed(1e3 * static_cast<double>(lag) / rate, 2) + " ms)");
+        if (cable)
+        {
+            table.Row("the API's round trip", Str(predicted) + " samples: two blocks of " + Str(format.block_size) +
+                                                  " and the " + Str(format.reported_latency) + " it reports");
+        }
+        // Through a cable, each channel's fit by a short filter (FilteredCorrelation): the converters' band and a
+        // fraction of a sample's delay taken in, so only what the stream did wrong is left - and the second channel
+        // judged too, against its own noise, which a pair played crossed over fails.
+        const double fit0 = cable ? FilteredCorrelation(in0, recorded, 0, lag, start) : 0.0;
+        const double fit1 = cable ? FilteredCorrelation(in1, recorded, 1, lag, start) : 0.0;
+        table.Row("correlation", Fixed(r, 4) + (cable ? " sample for sample" : " (at least 0.9)"));
+        if (cable)
+        {
+            table.Row("through a 64-tap filter", Fixed(fit0, 5) + " / " + Fixed(fit1, 5) + " (each at least 0.99)");
+        }
+        table.Row("gain", yy > 0.0 ? Fixed(10.0 * std::log10(yy / xx), 2) + " dB" : std::string("silence"))
             .Row("xruns reported", Str(xruns))
             .Print();
-        EXPECT_GE(r, 0.9) << "the loopback capture does not carry what the stream played - is the endpoint muted, "
-                             "or did another sound play over it?";
+        if (cable)
+        {
+            EXPECT_GE(fit0, 0.99) << "the first channel back is not what was played, filtered - is the cable patched "
+                                     "as RECKLESS_COREAUDIO_LOOP says, and the input's gain up but not clipping?";
+            EXPECT_GE(fit1, 0.99) << "the second channel back is not what was played on it, filtered";
+        }
+        else
+        {
+            EXPECT_GE(r, 0.9) << "the loopback capture does not carry what the stream played - is the endpoint muted, "
+                                 "or did another sound play over it?";
+        }
+        if (cable)
+        {
+            // A converter's filters take a few samples the driver may not count: the round trip within a 64th of a
+            // second of what the API reports, and never sooner than its two blocks.
+            EXPECT_GE(static_cast<std::int64_t>(lag), 2 * static_cast<std::int64_t>(format.block_size))
+                << "the samples came back sooner than the two blocks they crossed";
+            EXPECT_LE(std::llabs(static_cast<std::int64_t>(lag) - predicted), static_cast<std::int64_t>(rate / 64))
+                << "the latency the API reports is not the round trip a cable measures";
+        }
     }
     else
     {
@@ -434,6 +493,96 @@ TEST_P(AudioDevices, CarriesTheSamplesALoopBringsBack)
 }
 
 // ---- Each API: the periods a stream asks for -----------------------------------------------------------------------
+
+TEST_P(AudioDevices, KeepsTheCablesDelayThroughSilence)
+{
+    // A capture plays, falls silent and plays again in one stream - Reckless IR Capture's noise periods, its gap and
+    // its sweep - and measures each against when it was played, so a stream that lost or gained a frame while it
+    // carried silence moves every response after it. Through a cable, bursts of the known noise with silence between
+    // them: each burst's delay found to a fraction of a frame by the peak of its matched filter, and every one the
+    // first's.
+    const TestDevice device = Find();
+    RECKLESS_NEED_TEST_DEVICE(device);
+    if (device.loop != Loop::kCable)
+    {
+        GTEST_SKIP() << "the delay through silence is measured through a cable, which " << api_
+                     << "'s test device is not";
+    }
+    Recorder     recorder(device.channels, device.channels, Recorder::Play::kBursts);
+    StreamFormat format;
+    {
+        const StreamCloser closer(*system_); // before the Recorder goes, whatever fails
+        ASSERT_TRUE(system_->Open(RequestFor(device, true), recorder)) << system_->LastError();
+        format = system_->Format();
+        ASSERT_TRUE(system_->Start()) << system_->LastError();
+        const double room = 0.9 * static_cast<double>(Recorder::kMaxFrames) / format.sample_rate;
+        RunFor(std::min(8.0, room));
+        system_->Stop();
+        system_->Close();
+    }
+    const std::size_t recorded = recorder.recorded_frames();
+    const auto       &in0      = recorder.recorded(0);
+    const auto        max_lag  = static_cast<std::int64_t>(format.sample_rate / 2);
+
+    // The matched filter of one burst at lag l: the burst played against what came back l frames later.
+    const auto filtered = [&](std::int64_t burst, std::int64_t lag) {
+        double sum = 0.0;
+        for (std::int64_t i = 0; i < kBurstFrames; ++i)
+        {
+            const std::int64_t at = burst * kBurstPeriod + i + lag;
+            sum += static_cast<double>(NoiseSample(burst * kBurstPeriod + i, 0)) * in0[static_cast<std::size_t>(at)];
+        }
+        return sum;
+    };
+    // The peak between `from` and `to`, interpolated: the delay to a fraction of a frame.
+    const auto delay_of = [&](std::int64_t burst, std::int64_t from, std::int64_t to) {
+        std::int64_t best_lag = from;
+        double       best     = 0.0;
+        for (std::int64_t lag = from; lag <= to; ++lag)
+        {
+            const double value = std::abs(filtered(burst, lag));
+            if (value > best)
+            {
+                best     = value;
+                best_lag = lag;
+            }
+        }
+        const double before = std::abs(filtered(burst, best_lag - 1)), after = std::abs(filtered(burst, best_lag + 1));
+        const double bend = before - 2.0 * best + after;
+        return static_cast<double>(best_lag) + (bend != 0.0 ? 0.5 * (before - after) / bend : 0.0);
+    };
+
+    std::vector<double> delays;
+    for (std::int64_t burst = 0; static_cast<std::size_t>((burst + 1) * kBurstPeriod + max_lag) <= recorded; ++burst)
+    {
+        if (delays.empty())
+        {
+            delays.push_back(delay_of(burst, 1, max_lag - 1));
+        }
+        else
+        {
+            const auto first_delay = static_cast<std::int64_t>(std::lround(delays.front()));
+            delays.push_back(delay_of(burst, first_delay - 64, first_delay + 64));
+        }
+    }
+    Table table(api_ + ": the cable's delay, burst by burst through silence");
+    for (std::size_t b = 0; b < delays.size(); ++b)
+    {
+        table.Row("burst " + Str(static_cast<std::int64_t>(b + 1)) + ", from frame " +
+                      Str(static_cast<std::int64_t>(b) * kBurstPeriod),
+                  Fixed(delays[b], 2) + " frames");
+    }
+    table.Row("xruns reported", Str(recorder.xruns())).Print();
+    ASSERT_GE(delays.size(), 3u) << "too few bursts came back to judge";
+    if (recorder.xruns() == 0)
+    {
+        for (std::size_t b = 1; b < delays.size(); ++b)
+        {
+            EXPECT_NEAR(delays[b], delays.front(), 0.05)
+                << "burst " << b + 1 << " came back at another delay: the stream lost or gained frames in the silence";
+        }
+    }
+}
 
 TEST_P(AudioDevices, BuffersThePeriodsTheRequestAsksFor)
 {
@@ -651,9 +800,8 @@ TEST_P(AudioDevices, CountsAnXrunAndPlaysOnAfterIt)
     }
 }
 
-// ---- MIDI: ALSA's sequencer --------------------------------------------------------------------------------------
+// ---- MIDI -----------------------------------------------------------------------------------------------------------
 
-#if defined(RECKLESS_AUDIO_TEST_ALSA_SEQ) || defined(__APPLE__)
 namespace
 {
 /** What a MIDI input delivered: each message's port, time and bytes, into storage made up front, read once the inputs
@@ -970,7 +1118,108 @@ TEST(MidiInputs, CarryWhatACoreMidiSourceSendsButWhatTheCoresIgnore)
     EXPECT_EQ(nothing.count(), 0);
 }
 #endif
-#endif
+
+TEST(MidiInputs, CarryWhatAPersonPlaysOnAKeyboard)
+{
+    // A real keyboard, played by a person at the machine: the input RECKLESS_MIDI_KEYBOARD names, opened by that name
+    // as a settings file keeps it, and what the person plays - notes held and let go, a wheel, a slider - arriving as
+    // whole MIDI 1.0 messages in the order played, on the index the input was opened under. No CI runner has a
+    // keyboard or a person, so it runs only where the variable is set.
+    const std::string name = Trim(Environment("RECKLESS_MIDI_KEYBOARD"));
+    if (name.empty())
+    {
+        GTEST_SKIP() << "RECKLESS_MIDI_KEYBOARD names no keyboard: this test is a person playing one";
+    }
+    const auto midi = reckless::audio::MakeMidiSystem("Reckless MIDI test");
+    ASSERT_NE(midi, nullptr);
+    Table inputs("MIDI: the inputs");
+    for (const std::string &input : midi->Inputs())
+    {
+        inputs.Row(input, input == name ? "the keyboard" : "");
+    }
+    inputs.Print();
+    Collected sink;
+    ASSERT_TRUE(midi->Open(name, 1, sink)) << midi->LastError();
+    constexpr int kSeconds = 20;
+    std::fprintf(stderr, "\n  >>> Play a few notes on '%s', then move a wheel or a slider: %d s <<<\n\n", name.c_str(),
+                 kSeconds);
+    std::fflush(stderr);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(kSeconds);
+    while (std::chrono::steady_clock::now() < until && sink.count() < Collected::kMost)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    midi->CloseAll();
+    const int counted = std::min(sink.count(), Collected::kMost);
+
+    // Each message read as what it is, the notes held paired with their release.
+    int                notes_on = 0, notes_released = 0, controls = 0;
+    std::vector<int>   held(16 * 128, 0);
+    Table              played("MIDI: what the keyboard sent (time since the one before, bytes, what it is)");
+    const std::int64_t first = counted > 0 ? sink.time_at(0) : 0;
+    for (int i = 0; i < counted; ++i)
+    {
+        const std::vector<std::uint8_t> &bytes = sink.message_at(i);
+        std::string                      hex;
+        for (const std::uint8_t b : bytes)
+        {
+            char text[4];
+            std::snprintf(text, sizeof text, "%02X ", b);
+            hex += text;
+        }
+        const int   kind    = bytes.empty() ? 0 : bytes[0] & 0xF0;
+        const int   channel = bytes.empty() ? 0 : bytes[0] & 0x0F;
+        std::string what    = "other";
+        if (bytes.size() == 3 && (kind == 0x90 || kind == 0x80))
+        {
+            const bool is_on = kind == 0x90 && bytes[2] > 0;
+            int       &note  = held[static_cast<std::size_t>(channel * 128 + bytes[1])];
+            if (is_on)
+            {
+                ++notes_on;
+                ++note;
+            }
+            else if (note > 0)
+            {
+                ++notes_released;
+                --note;
+            }
+            what = std::string(is_on ? "note on " : "note off ") + Str(static_cast<std::int64_t>(bytes[1]));
+        }
+        else if (kind == 0xB0 || kind == 0xE0 || kind == 0xD0 || kind == 0xA0)
+        {
+            ++controls;
+            what = kind == 0xB0   ? "controller " + Str(static_cast<std::int64_t>(bytes.size() > 1 ? bytes[1] : 0))
+                   : kind == 0xE0 ? std::string("pitch bend")
+                                  : std::string("pressure");
+        }
+        const std::int64_t since = i == 0 ? 0 : sink.time_at(i) - sink.time_at(i - 1);
+        played.Row("+" + Fixed(1e-6 * static_cast<double>(since), 1) + " ms", hex + " " + what);
+    }
+    played.Row("over", Fixed(1e-9 * static_cast<double>(counted > 0 ? sink.time_at(counted - 1) - first : 0), 2) + " s")
+        .Row("notes played / let go", Str(notes_on) + " / " + Str(notes_released))
+        .Row("wheels, sliders, pressure", Str(controls))
+        .Print();
+
+    ASSERT_GT(counted, 0) << "nothing arrived from '" << name << "' - was it played?";
+    EXPECT_GT(notes_on, 0) << "no note was played";
+    EXPECT_GT(notes_released, 0) << "no note played was let go";
+    for (int i = 0; i < counted; ++i)
+    {
+        const std::vector<std::uint8_t> &bytes = sink.message_at(i);
+        ASSERT_FALSE(bytes.empty());
+        EXPECT_GE(bytes[0], 0x80) << "message " << i + 1 << " does not begin with its status";
+        for (std::size_t b = 1; b < bytes.size(); ++b)
+        {
+            EXPECT_LT(bytes[b], 0x80) << "message " << i + 1 << " carries a status where its data belongs";
+        }
+        EXPECT_EQ(sink.port_at(i), 1);
+        if (i > 0)
+        {
+            EXPECT_GE(sink.time_at(i), sink.time_at(i - 1)) << "stamped in the order they came";
+        }
+    }
+}
 
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(AudioDevices);
 INSTANTIATE_TEST_SUITE_P(Apis, AudioDevices, ::testing::ValuesIn(TestedApis()), ApiTestName);
