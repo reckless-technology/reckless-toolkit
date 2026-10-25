@@ -834,6 +834,84 @@ class WasapiSystem final : public AudioSystem
         return side.client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, buffer, 0, &format.Format, nullptr);
     }
 
+    /** Raw mode asked of `client`, where this Windows and this driver offer it: the stream then runs with none of
+        the engine's own effects in its path. Worth asking for in the low-latency mode, since the effects chain both
+        adds latency of its own and holds the engine's period up, and nothing in a guitar amplifier wants Windows to
+        process its sound. It must be asked before the stream is initialised, which is the only time the property may
+        be set, and a refusal is no reason not to open: the stream simply runs with the effects, as it did before.
+        @param client  the client, not yet initialised */
+    static void AskForRawMode(ComPtr<IAudioClient> &client) noexcept
+    {
+        ComPtr<IAudioClient2> client2;
+        if (FAILED(client.As(&client2)))
+        {
+            return; // before Windows 8.1: there is no raw mode to ask for
+        }
+        AudioClientProperties properties{};
+        properties.cbSize     = sizeof(properties);
+        properties.bIsOffload = FALSE;
+        properties.eCategory  = AudioCategory_Other; // as it is without this call, so only the option below changes
+        properties.Options    = AUDCLNT_STREAMOPTIONS_RAW;
+        client2->SetClientProperties(&properties);
+    }
+
+    /** `side` opened at whatever period and format the engine is already running, on a client of its own. Where
+        another program holds the engine, a stream that asks for a period or a format of its own is refused outright
+        rather than mixed in, and this is the way to open anyway: a block the person did not choose is better than no
+        sound, and Format() reports what they were given rather than what they asked for. A failed initialise may
+        leave a client unusable, so this activates a fresh one rather than asking the refused one again.
+        @param endpoint  the render endpoint
+        @param side      the side, its client replaced
+        @param why       set to what went wrong
+        @return          true when it opened */
+    static bool OpenAtTheEnginesPeriod(const Endpoint &endpoint, Side &side, std::string &why)
+    {
+        side.client = Activate(endpoint);
+        ComPtr<IAudioClient3> client3;
+        if (side.client == nullptr || FAILED(side.client.As(&client3)))
+        {
+            why = "the engine is held by another program and this stream could not join it";
+            return false;
+        }
+        WAVEFORMATEX *engine_format = nullptr;
+        UINT32        engine_period = 0;
+        HRESULT       hr            = client3->GetCurrentSharedModeEnginePeriod(&engine_format, &engine_period);
+        if (FAILED(hr) || engine_format == nullptr || engine_period == 0)
+        {
+            why = Describe(FAILED(hr) ? hr : E_FAIL);
+            if (engine_format != nullptr)
+            {
+                CoTaskMemFree(engine_format);
+            }
+            return false;
+        }
+        // The engine's own format, not the endpoint's mix: where it is the format that is held, they differ, and what
+        // this stream writes has to be what the engine is running.
+        const std::optional<Encoding> encoding = EncodingOf(*engine_format);
+        if (encoding)
+        {
+            side.encoding = *encoding;
+            hr = client3->InitializeSharedAudioStream(AUDCLNT_STREAMFLAGS_EVENTCALLBACK, engine_period, engine_format,
+                                                      nullptr);
+        }
+        else
+        {
+            why = "the engine runs in a format this back end does not convert";
+            hr  = E_FAIL;
+        }
+        CoTaskMemFree(engine_format);
+        if (FAILED(hr))
+        {
+            if (why.empty())
+            {
+                why = Describe(hr);
+            }
+            return false;
+        }
+        side.period_frames = static_cast<int>(engine_period);
+        return true;
+    }
+
     /** A side initialised through IAudioClient3 at the driver's period that holds `block`, in the endpoint's mix
         format.
         @param endpoint  the endpoint
@@ -868,10 +946,17 @@ class WasapiSystem final : public AudioSystem
             why = Describe(hr);
             return false;
         }
+        AskForRawMode(side.client);
         const int period = wasapi::LowLatencyPeriod(block, static_cast<int>(step), static_cast<int>(smallest),
                                                     static_cast<int>(largest));
         hr = client3->InitializeSharedAudioStream(AUDCLNT_STREAMFLAGS_EVENTCALLBACK, static_cast<UINT32>(period), mix,
                                                   nullptr);
+        if (hr == AUDCLNT_E_ENGINE_PERIODICITY_LOCKED || hr == AUDCLNT_E_ENGINE_FORMAT_LOCKED)
+        {
+            // Another program holds the engine at a period, or a format, of its own. Open at the engine's instead of
+            // failing: the person gets sound at a block they did not choose, and Format() tells them which.
+            return OpenAtTheEnginesPeriod(endpoint, side, why);
+        }
         if (FAILED(hr))
         {
             why = Describe(hr);
