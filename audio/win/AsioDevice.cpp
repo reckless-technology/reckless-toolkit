@@ -21,7 +21,10 @@
 #endif
 #include <windows.h>
 
-// The SDK's host headers, after windows.h, which they need.
+// The SDK's host headers, after windows.h, which they need; asiosys.h first, in a block of its own, since asio.h reads
+// the platform switches it sets (a double for ASIOSampleRate among them) and includes it not.
+#include "asiosys.h"
+
 #include "asio.h"
 #include "asiodrivers.h"
 
