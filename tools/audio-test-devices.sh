@@ -64,6 +64,15 @@ if [ -z "$card" ]; then
         echo "the kernel has no snd-aloop; installing $extra"
         sudo -n apt-get update -qq
         sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$extra" || true
+        # The package's files land under /lib/modules/<kernel>, but modprobe reads modules.dep, which is only
+        # rebuilt by depmod: without this it still reports the module as not found in a directory that now has it.
+        sudo -n depmod -a || true
+    fi
+    if ! modinfo snd-aloop > /dev/null 2>&1; then
+        echo "::error::this kernel has no snd-aloop and $extra did not bring one. What is there:" >&2
+        find /lib/modules -name '*aloop*' 2>/dev/null | head -5 >&2 || true
+        ls /lib/modules 2>/dev/null >&2 || true
+        exit 1
     fi
     sudo -n modprobe snd-aloop
     command -v udevadm > /dev/null && sudo -n udevadm settle || true
