@@ -218,11 +218,11 @@ Audio`, `ASIO`, `JACK`, `ALSA`), and for those a missing device, or an API missi
 missing. CTest runs the suite alone (`RUN_SERIAL`), since a stream's timing is what it judges.
 
 The toolkit's own workflow (this repository's `.github/workflows/build.yml`) runs it on the three platforms, and
-vst-plugins' workflows run it again in its tree, where the toolkit is a submodule:
+vst-plugins' workflows run it again in its tree, where the toolkit is a subtree:
 
 | job | requires | where |
 |---|---|---|
-| the toolkit's build.yml `linux` | ALSA, JACK | either Linux runner, after `tools/audio-test-devices.sh` |
+| the toolkit's build.yml `linux` | ALSA, JACK, where the kernel has sound | a hosted runner, after `tools/audio-test-devices.sh` |
 | the toolkit's build.yml `windows` | ASIO | either Windows runner |
 | the toolkit's build.yml `macos` | CoreAudio | the Mac runner |
 | vst-plugins' build.yml `tests` | ALSA, JACK | either Linux runner, after its copy of `tools/audio-test-devices.sh` |
@@ -232,6 +232,66 @@ vst-plugins' workflows run it again in its tree, where the toolkit is a submodul
 The toolkit's `coverage` and `minimal` jobs leave the suite out (the coverage floor measures code the suite does not
 reach, and `minimal` builds no device layer), and so do vst-plugins' `coverage` and its Linux plugin build, leaving it
 to its tests job. Windows Audio is required nowhere: neither Windows runner has a render endpoint.
+
+## No sound in the kernel at all
+
+This repository is public, so its jobs run on GitHub's hosted images, and **an Ubuntu azure kernel is built with no
+sound support whatever**: a hosted runner measured zero sound modules in `/lib/modules`, no `/proc/asound`, and no
+`CONFIG_SND_ALOOP` in `/boot/config-$(uname -r)`. Launchpad 1970586, "No sound support on Linux AWS/Azure kernels
+(but supported on GCP)", is the cause - the option is set for Ubuntu's GCP kernels and not for its AWS and Azure
+ones - and no package, `depmod` or module parameter can make up for a module the kernel was never built with.
+`linux-modules-extra-$(uname -r)` installs cleanly there and carries nothing matching `aloop`.
+
+So `tools/audio-test-devices.sh` asks what the kernel can do before it asks what is installed. Where there is no
+sound at all it says so, sets `RECKLESS_AUDIO_DEVICES=none` and the job leaves the device suites out, running every
+other suite as before - Skia, the views, the look, the net and update code, and the window suites under Xvfb. The
+question is about the kernel and not the kind of runner, which keeps the property worth keeping: **a machine whose
+kernel has sound and whose loopback card is missing still fails**, because there the provisioning is broken rather
+than impossible. vst-plugins is private, runs on the organisation's own machines, and is therefore where the suite
+actually exercises a device.
+
+## Why a case can take a minute
+
+A case of this suite measures about a second of stream and can take fifty times that on the CI machines. What was
+measured on reckless-ci-lin-0, 2026-10-24, with gdb and `/proc/<pid>/task/*/wchan` every eight seconds:
+
+```
+37190 waits in futex_do_wait     the main thread, queued on a lock
+37310 waits in futex_do_wait     another thread, the same
+37328 waits in wait_for_avail    the audio callback thread, inside ALSA
+```
+
+Thirteen consecutive samples, ninety-six seconds, identical. `wait_for_avail` is where an ALSA PCM waits for buffer
+space or for data. `callbackEvent` holds `stream_.mutex` across `snd_pcm_readi` and `snd_pcm_writei`, and
+`stopStream` wants that same mutex - so when the loopback card stops producing or consuming frames, the callback
+thread parks in the kernel holding the lock and everything else queues behind it. `system_->Stop()` timed at 0.7 s
+to 48.6 s on one machine with one binary; the stream it had just measured was healthy every time (first callback
+0.0 ms, 48000 Hz within 3 %, no xruns, longest callback 13 us of 5333).
+
+Ruled out, each with evidence, so nobody spends the time again:
+
+- **One bad machine.** Timeouts hit lin-0, lin-1 and lin-2. An early reading that lin-0 was clean came from ctest
+  hiding a passing test's output.
+- **`snd_pcm_drain` on stop.** RtAudio drains only when the duplex handles are not linked, and a standalone probe
+  shows `snd_pcm_link(hw:Loopback,0, hw:Loopback,1)` returns LINKED, so it already takes the `snd_pcm_drop` path.
+- **Dropping the handles before taking the mutex**, one and then both: Stop still 42 s and 35 s. `snd_pcm_drop`
+  does not wake a thread already inside `wait_for_avail`.
+- **CPU speed** (the machines are within 10 % of each other), **contention between CI jobs** (reproduced with the
+  machine idle), **device enumeration** (22 ms), and **making or tearing down the rig, the system and the probe**
+  (all under 250 ms on a case that took 56 s).
+
+Contributing but not causing: **WirePlumber holds the loopback card's control device** on the runners, which is
+also why `modprobe -r snd-aloop` refuses. Stopping it took one case from 48.6 s to 26.3 s.
+
+What to try next, in order. **Do not let the callback thread block indefinitely**: `snd_pcm_wait` with a timeout
+before the read or write, or the PCM in non-blocking mode with a bounded poll, so the thread releases the mutex and
+`stopStream` can take it - a patch beside `cmake/PatchRtAudioAlsaThreads.cmake`. Failing that, **do not hold the
+mutex across the I/O**: the state that patch reads under the mutex could be an atomic, which is what the
+ThreadSanitizer fix wanted. And whichever lands, **keep the sound server off the test card** on every runner.
+
+Measure it the way this was measured: the suite is `RUN_SERIAL`, so run it with nothing else on the machine, and
+check `/proc/asound/card*/pcm*/sub0/status` reads `closed` before starting - a run that was killed leaves a
+substream behind and the next run inherits its cost.
 
 ## What each runner needs
 
