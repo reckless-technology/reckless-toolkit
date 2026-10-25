@@ -66,6 +66,8 @@ class Heartbeat
     {
     }
 
+    /** Stops the beat and waits for its thread: sets #stopping_ under #mutex_, wakes the thread and joins it, so
+        nothing of it outlives the case it was timing. */
     ~Heartbeat()
     {
         {
@@ -104,6 +106,8 @@ class Phase
     {
     }
 
+    /** Ends the phase and prints how long it took, to stderr, but only where it took at least #kQuiet: a phase of a
+        few milliseconds is not what anyone reading these lines is looking for. */
     ~Phase()
     {
         const auto took =
