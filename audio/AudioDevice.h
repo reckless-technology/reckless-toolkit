@@ -99,8 +99,13 @@ struct DeviceInfo
 
 /** The stream to open: the input device (empty for none) and the output device, the run of each one's channels to
     open - from `first_*`, `*_count` of them, a callback seeing them as its channels 0 on - the rate, the block (the
-    frames a callback carries; an API may give another, which the opened format says) and the name a server lists the
-    client under (JACK's). */
+    frames a callback carries; an API may give another, which the opened format says), the name a server lists the
+    client under (JACK's) and the periods the output buffers.
+
+    The periods are the product's to choose, where the API lets a stream choose them: the blocks the output device
+    holds ahead of the one being written, each a block's latency and a block's margin against a late callback. ALSA
+    takes them (at least two: one playing while the next is written); JACK's are its server's, and WASAPI, CoreAudio and
+    ASIO buffer as they do. 0 leaves them to the back end. */
 struct StreamRequest
 {
     std::string input_device;       ///< the input device's name, empty for none
@@ -112,10 +117,12 @@ struct StreamRequest
     int         sample_rate{48000}; ///< the rate to open at, in hertz
     int         block_size{512};    ///< the frames a callback carries; the API may give another
     std::string client_name;        ///< the name a server lists the client under, JACK's
+    int         periods{0};         ///< the blocks the output buffers, where the API lets a stream choose; 0: its own
 };
 
-/** What a stream opened as: its rate and block, the channels the callback sees each way, and the latency the API
-    reports beyond the block itself - input and output summed, in samples, 0 where it reports none. */
+/** What a stream opened as: its rate and block, the channels the callback sees each way, the latency the API reports
+    beyond the block itself - input and output summed, in samples, 0 where it reports none - and the periods its output
+    buffers where the API says. */
 struct StreamFormat
 {
     int sample_rate{0};      ///< the rate the stream runs at, in hertz
@@ -123,6 +130,7 @@ struct StreamFormat
     int input_channels{0};   ///< the input channels the callback sees, 0 with no input
     int output_channels{0};  ///< the output channels the callback sees
     int reported_latency{0}; ///< the latency the API reports beyond the block, in samples, input and output summed
+    int periods{0};          ///< the blocks the output buffers, where the API says; 0 where it does not
 };
 
 /** What runs a stream. */

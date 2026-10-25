@@ -432,6 +432,59 @@ TEST_P(AudioDevices, CarriesTheSamplesALoopBringsBack)
     }
 }
 
+// ---- Each API: the periods a stream asks for -----------------------------------------------------------------------
+
+TEST_P(AudioDevices, BuffersThePeriodsTheRequestAsksFor)
+{
+    if (api_ != "ALSA")
+    {
+        GTEST_SKIP() << api_
+                     << " buffers as it does: ALSA alone lets a stream choose its periods (StreamRequest::periods)";
+    }
+    const TestDevice device = Find();
+    RECKLESS_NEED_TEST_DEVICE(device);
+    if (device.loop != Loop::kExact)
+    {
+        GTEST_SKIP() << "the latency is read off an exact loop, which " << api_ << "'s test device is not";
+    }
+    // Each sample back names the frame it was played as, so the loop's latency is read to the frame: an output primed
+    // with a buffer of the periods asked for brings each frame back that many blocks later.
+    Table table(api_ + ": the periods a stream asks for (asked: opened, reported latency, loop latency, xruns)");
+    for (const int periods : {2, 3, 4})
+    {
+        StreamRequest request = RequestFor(device, true);
+        request.periods       = periods;
+        Recorder     recorder(device.channels, device.channels, Recorder::Play::kIndices);
+        StreamFormat format;
+        {
+            const StreamCloser closer(*system_); // before the Recorder goes, whatever fails
+            ASSERT_TRUE(system_->Open(request, recorder)) << system_->LastError();
+            format = system_->Format();
+            ASSERT_TRUE(system_->Start()) << system_->LastError();
+            std::string why;
+            ASSERT_TRUE(rig_->Started(kClient, why)) << why;
+            RunFor(0.6);
+            system_->Stop();
+            system_->Close();
+        }
+        const LoopScan scan = ScanLoop(recorder.recorded(0), recorder.recorded(1), recorder.recorded_frames());
+        ASSERT_LT(scan.first, recorder.recorded_frames()) << "nothing came back: the loop carried silence";
+        const std::int64_t loop = static_cast<std::int64_t>(scan.first) - scan.played_at_first;
+        table.Row(Str(periods), Str(format.periods) + ", " + Str(format.reported_latency) + " samples, " + Str(loop) +
+                                    " samples (" + Fixed(1e3 * static_cast<double>(loop) / format.sample_rate, 2) +
+                                    " ms), " + Str(recorder.xruns()));
+        EXPECT_EQ(format.periods, periods);
+        EXPECT_EQ(format.reported_latency, (periods - 1) * format.block_size) << periods << " periods";
+        EXPECT_EQ(scan.corrupt, 0);
+        if (recorder.xruns() == 0)
+        {
+            EXPECT_EQ(loop, static_cast<std::int64_t>(periods) * format.block_size) << periods << " periods";
+        }
+        EXPECT_LE(recorder.xruns(), XrunAllowance(static_cast<std::int64_t>(recorder.callbacks())));
+    }
+    table.Print();
+}
+
 // ---- Each API: a device that is not there --------------------------------------------------------------------------
 
 TEST_P(AudioDevices, RefusesADeviceThatIsNotThereAndOpensTheNextOne)
