@@ -33,8 +33,13 @@ constexpr unsigned int kRates[] = {4000,  5512,  8000,  9600,  11025, 16000,  22
 /** The UID every aggregate this back end makes begins with, so the listing leaves them out. */
 constexpr const char *kAggregatePrefix = "com.recklesstechnology.audio.stream-aggregate.";
 
-/** How long a nominal rate set is waited for before the open gives up on it. */
+/** How long a nominal rate set is waited for before the open gives up on it, and how long its latencies are waited
+    for to settle after it. */
 constexpr auto kRateWait = std::chrono::milliseconds(2000);
+
+/** How long what a device reports of its latency must hold still before it is taken as settled: the HAL moves it in
+    steps up to some 75 ms apart after a rate changes (AwaitLatencySettled). */
+constexpr auto kLatencySettle = std::chrono::milliseconds(150);
 
 /** The address of a property on an object's main element.
     @param selector  the property
@@ -107,6 +112,45 @@ std::vector<int> StreamChannels(AudioObjectID device, AudioObjectPropertyScope s
         channels.push_back(static_cast<int>(list->mBuffers[i].mNumberChannels));
     }
     return channels;
+}
+
+/** A device's streams one way.
+    @param device  the device
+    @param scope   kAudioObjectPropertyScopeInput or kAudioObjectPropertyScopeOutput
+    @return        the streams, in the device's order - the order of its IOProc's buffers; empty where it has none */
+std::vector<AudioObjectID> Streams(AudioObjectID device, AudioObjectPropertyScope scope)
+{
+    const AudioObjectPropertyAddress address = Address(kAudioDevicePropertyStreams, scope);
+    UInt32                           size    = 0;
+    if (AudioObjectGetPropertyDataSize(device, &address, 0, nullptr, &size) != noErr || size == 0)
+    {
+        return {};
+    }
+    std::vector<AudioObjectID> streams(size / sizeof(AudioObjectID));
+    if (AudioObjectGetPropertyData(device, &address, 0, nullptr, &size, streams.data()) != noErr)
+    {
+        return {};
+    }
+    return streams;
+}
+
+/** Whether a stream hands its IOProc buffers the back end reads: 32-bit float, interleaved, native-endian linear PCM -
+    the HAL's own format for every mixable stream, which a stream another process has hogged for a format of its own
+    (an encoded passthrough, an integer format) need not be.
+    @param stream  the stream
+    @return        true for 32-bit float */
+bool IsFloatStream(AudioObjectID stream) noexcept
+{
+    const AudioObjectPropertyAddress address = Address(kAudioStreamPropertyVirtualFormat);
+    AudioStreamBasicDescription      format{};
+    UInt32                           size = sizeof(format);
+    if (AudioObjectGetPropertyData(stream, &address, 0, nullptr, &size, &format) != noErr)
+    {
+        return false;
+    }
+    return format.mFormatID == kAudioFormatLinearPCM && (format.mFormatFlags & kAudioFormatFlagIsFloat) != 0 &&
+           (format.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0 &&
+           (format.mFormatFlags & kAudioFormatFlagIsBigEndian) == 0 && format.mBitsPerChannel == 32;
 }
 
 /** The sum of a stream list's channels.
@@ -435,8 +479,18 @@ class CoreAudioSystem final : public AudioSystem
         }
 
         std::string why;
-        const int   rate = request.sample_rate > 0 ? request.sample_rate : output->info.DefaultSampleRate();
-        if (!SetRate(rate, why) || !SetBlock(request.block_size, why) ||
+        const int   rate         = request.sample_rate > 0 ? request.sample_rate : output->info.DefaultSampleRate();
+        bool        rate_changed = false;
+        if (!SetRate(rate, rate_changed, why))
+        {
+            Close();
+            return Refuse("'" + output->info.name + "' would not open on CoreAudio: " + why);
+        }
+        if (rate_changed || aggregate_ != kAudioObjectUnknown)
+        {
+            AwaitLatencySettled();
+        }
+        if (!SetBlock(request.block_size, why) ||
             !MapChannels(first_input, with_input ? request.input_count : 0, request.first_output, request.output_count,
                          why) ||
             !Attach(why))
@@ -468,6 +522,7 @@ class CoreAudioSystem final : public AudioSystem
         {
             return true;
         }
+        has_called_.store(false, std::memory_order_release);
         running_.store(true, std::memory_order_release);
         if (AudioDeviceStart(device_, proc_) != noErr)
         {
@@ -606,15 +661,18 @@ class CoreAudioSystem final : public AudioSystem
     }
 
     /** The device's nominal rate set to `rate` where it runs at another, and waited for.
-        @param rate  the rate, in hertz
-        @param why   set to the reason when it will not run at it
-        @return      true when it runs at `rate` */
-    bool SetRate(int rate, std::string &why)
+        @param rate     the rate, in hertz
+        @param changed  set to true where the device ran at another and was set to `rate`
+        @param why      set to the reason when it will not run at it
+        @return         true when it runs at `rate` */
+    bool SetRate(int rate, bool &changed, std::string &why)
     {
+        changed = false;
         if (static_cast<int>(NominalRate(device_) + 0.5) == rate)
         {
             return true;
         }
+        changed                                  = true;
         const AudioObjectPropertyAddress address = Address(kAudioDevicePropertyNominalSampleRate);
         const Float64                    wanted  = rate;
         if (AudioObjectSetPropertyData(device_, &address, 0, nullptr, sizeof(wanted), &wanted) != noErr)
@@ -633,6 +691,61 @@ class CoreAudioSystem final : public AudioSystem
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         return true;
+    }
+
+    /** Everything the device reports of its latency: its own latency and safety offset each way, and each of its
+        streams' latency.
+        @return  the values, in a fixed order */
+    std::vector<UInt32> LatencyReport() const
+    {
+        std::vector<UInt32> report;
+        for (const AudioObjectPropertyScope scope : {kAudioObjectPropertyScopeInput, kAudioObjectPropertyScopeOutput})
+        {
+            for (const AudioObjectPropertySelector selector :
+                 {kAudioDevicePropertyLatency, kAudioDevicePropertySafetyOffset})
+            {
+                const AudioObjectPropertyAddress address = Address(selector, scope);
+                UInt32                           frames  = 0;
+                UInt32                           size    = sizeof(frames);
+                AudioObjectGetPropertyData(device_, &address, 0, nullptr, &size, &frames);
+                report.push_back(frames);
+            }
+            for (const AudioObjectID stream : Streams(device_, scope))
+            {
+                const AudioObjectPropertyAddress address = Address(kAudioStreamPropertyLatency);
+                UInt32                           frames  = 0;
+                UInt32                           size    = sizeof(frames);
+                AudioObjectGetPropertyData(stream, &address, 0, nullptr, &size, &frames);
+                report.push_back(frames);
+            }
+        }
+        return report;
+    }
+
+    /** Until what the device reports of its latency has held still for kLatencySettle, at most kRateWait: after its
+        rate changes, or an aggregate is made, the HAL moves the nominal rate first and the latencies after it, in steps
+        some 60 to 75 ms apart - an aggregate of a UMC1820 and a UMIK-2 taken from 96 to 44.1 kHz read 262, then 244,
+        then 162 frames over 80 ms once its nominal rate had come - so latencies read when the rate comes are the old
+        rate's, or a mix. */
+    void AwaitLatencySettled() const
+    {
+        const auto          until  = std::chrono::steady_clock::now() + kRateWait;
+        std::vector<UInt32> last   = LatencyReport();
+        auto                steady = std::chrono::steady_clock::now();
+        while (std::chrono::steady_clock::now() < until)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            std::vector<UInt32> report = LatencyReport();
+            if (report != last)
+            {
+                last   = std::move(report);
+                steady = std::chrono::steady_clock::now();
+            }
+            else if (std::chrono::steady_clock::now() - steady >= kLatencySettle)
+            {
+                return;
+            }
+        }
     }
 
     /** The device's buffer set to the block asked, held to its range, and read back.
@@ -685,6 +798,21 @@ class CoreAudioSystem final : public AudioSystem
         if (static_cast<int>(input_places_.size()) != inputs || static_cast<int>(output_places_.size()) != outputs)
         {
             why = "its streams do not hold the channels asked for";
+            return false;
+        }
+        // The IOProc reads and writes 32-bit float: a stream in use that hands over anything else is refused, rather
+        // than its samples misread.
+        const std::vector<AudioObjectID> input_streams  = Streams(device_, kAudioObjectPropertyScopeInput);
+        const std::vector<AudioObjectID> output_streams = Streams(device_, kAudioObjectPropertyScopeOutput);
+        const auto all_float = [](const std::vector<Place> &places, const std::vector<AudioObjectID> &streams) {
+            return std::all_of(places.begin(), places.end(), [&streams](const Place &place) {
+                return place.stream < streams.size() && IsFloatStream(streams[place.stream]);
+            });
+        };
+        if (!all_float(input_places_, input_streams) || !all_float(output_places_, output_streams))
+        {
+            why = "a stream it would play or record through is not 32-bit float - is another program holding it in a "
+                  "format of its own?";
             return false;
         }
         // Room for twice the block, should the HAL hand over more than it was asked for once.
@@ -741,12 +869,30 @@ class CoreAudioSystem final : public AudioSystem
         }
     }
 
-    /** The latency the device reports one way, beyond the buffer: its own and its safety offset.
+    /** The latency the device reports one way, beyond the buffer: its own, its safety offset, and the latency of the
+        stream the stream's first channel that way is in - a built-in device's processing is there (690 samples on a
+        MacBook Pro's speakers, 1439 on its microphone, at 48 kHz), where a USB interface's streams report none.
         @param scope  input or output
         @return       the latency, in frames */
-    int Latency(AudioObjectPropertyScope scope) const noexcept
+    int Latency(AudioObjectPropertyScope scope) const
     {
-        int                               total       = 0;
+        int                       total  = 0;
+        const std::vector<Place> &places = scope == kAudioObjectPropertyScopeInput ? input_places_ : output_places_;
+        if (!places.empty())
+        {
+            const std::vector<AudioObjectID> streams = Streams(device_, scope);
+            if (places.front().stream < streams.size())
+            {
+                const AudioObjectPropertyAddress address = Address(kAudioStreamPropertyLatency);
+                UInt32                           frames  = 0;
+                UInt32                           size    = sizeof(frames);
+                if (AudioObjectGetPropertyData(streams[places.front().stream], &address, 0, nullptr, &size, &frames) ==
+                    noErr)
+                {
+                    total += static_cast<int>(frames);
+                }
+            }
+        }
         const AudioObjectPropertySelector selectors[] = {kAudioDevicePropertyLatency, kAudioDevicePropertySafetyOffset};
         for (const AudioObjectPropertySelector selector : selectors)
         {
@@ -837,12 +983,16 @@ class CoreAudioSystem final : public AudioSystem
         {
             system.pending_xrun_.store(true, std::memory_order_release); // a cycle the callback never saw
         }
+        system.has_called_.store(true, std::memory_order_release);
         system.in_flight_.fetch_sub(1);
         return noErr;
     }
 
-    /** The HAL's property listener, on a thread of its own: a processor overload is an xrun for the next callback, and
-        a device that is no longer alive is the stream failing.
+    /** The HAL's property listener, on a thread of its own: a processor overload is an xrun for the next callback -
+        but not one before the first IOProc, which is the HAL's I/O thread starting: at a cycle of a third of a
+        millisecond (32 frames at 88.2 or 96 kHz, 16 at 48 kHz) the HAL reports one overload at cycle 0 of nearly
+        every stream, an IOProc that does nothing but clear its buffers included, and none after it; nothing the
+        callback made was lost - and a device that is no longer alive is the stream failing.
         @param object     the device whose property changed
         @param count      the properties changed
         @param addresses  their addresses
@@ -854,7 +1004,8 @@ class CoreAudioSystem final : public AudioSystem
         auto &system = *static_cast<CoreAudioSystem *>(self);
         for (UInt32 i = 0; i < count; ++i)
         {
-            if (addresses[i].mSelector == kAudioDeviceProcessorOverload)
+            if (addresses[i].mSelector == kAudioDeviceProcessorOverload &&
+                system.has_called_.load(std::memory_order_acquire))
             {
                 system.pending_xrun_.store(true, std::memory_order_release);
             }
@@ -945,6 +1096,7 @@ class CoreAudioSystem final : public AudioSystem
     std::atomic<bool>            running_{false};      ///< true from Start until Stop; false plays silence
     std::atomic<int>             in_flight_{0};        ///< IOProcs under way
     std::atomic<bool>            pending_xrun_{false}; ///< an xrun to tell the next callback of
+    std::atomic<bool>            has_called_{false};   ///< true once an IOProc has run since the Start
     std::atomic<bool>            failed_{false};       ///< true once the stream's failure has been told
     mutable std::mutex           error_mutex_;         ///< guards `last_error_`
     std::string                  last_error_;          ///< the last error, for a person to read
