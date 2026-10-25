@@ -183,15 +183,16 @@ FetchContent_MakeAvailable(monocypher)
 #   macOS    CoreAudio and CoreMIDI;
 #   Windows  ASIO, when the configure has the ASIO SDK, with WinMM's MIDI - WASAPI is the toolkit's own back end
 #            (audio/win/WasapiDevice.cpp), never RtAudio's;
-#   Linux    JACK, with ALSA's sequencer for MIDI - each where its development headers are installed - ALSA's audio
-#            being the toolkit's own back end (audio/linux/AlsaDevice.cpp), never RtAudio's. Three details
+#   Linux    ALSA's sequencer for MIDI alone, where its development headers are installed - ALSA's and JACK's audio
+#            being the toolkit's own back ends (audio/linux/AlsaDevice.cpp, JackDevice.cpp), never RtAudio's, which
+#            compiles none of its APIs here. Three details
 # are the toolkit's. RtAudio's ASIO back end compiles against the fetched Steinberg SDK - its headers and the three host
 # files every ASIO host compiles (asio.cpp, asiodrivers.cpp, asiolist.cpp) - and never against the copies of them
 # RtAudio's tarball carries in include/, which are not on any path; the one header of RtAudio's own that it asks for
 # there, iasiothiscallresolver.h, defines nothing on 64-bit Windows, the only Windows the toolkit builds, and is written
 # into the build tree in that form. JACK is linked at no point: libjack is loaded by name at run time
 # (audio/linux/JackLoader.cpp), so a machine without it runs on ALSA rather than failing to start - every JACK function
-# RtAudio calls is renamed to the loader's by a header forced into RtAudio.cpp (audio/linux/JackNames.h). And one fix of
+# the toolkit calls is renamed to the loader's by audio/linux/JackNames.h. And one fix of
 # upstream's after the pinned release is applied as the tarball is unpacked: ASIO's bufferSwitchTimeInfo callback,
 # which a driver may call whatever the host answers and which RtAudio left null (cmake/PatchRtAudio.cmake). Both
 # libraries compile without the toolkit's warning set, a fetched tree being no part of this one's to keep clean, and
@@ -279,33 +280,34 @@ if(RECKLESS_BUILD_AUDIO)
         endif()
         find_path(RECKLESS_JACK_INCLUDE_DIR jack/jack.h)
         if(RECKLESS_JACK_INCLUDE_DIR)
-            # Every JACK function RtAudio calls must be one the loader stands in for: a call JackNames.h lacks would
-            # bind to libjack at link time - or, for one jack/jack.h declares weak, to nothing at all, a null called
-            # the first time a stream opens. So the two lists are held together here, every configure.
+            # Every JACK function the toolkit calls must be one the loader stands in for: a call JackNames.h lacks
+            # would bind to libjack at link time - or, for one jack/jack.h declares weak, to nothing at all, a null
+            # called the first time a stream opens. So the calls of each file that meets JACK are held to the list
+            # here, every configure.
             set(jack_names_header "${CMAKE_CURRENT_SOURCE_DIR}/audio/linux/JackNames.h")
-            file(READ "${rtaudio_SOURCE_DIR}/RtAudio.cpp" rtaudio_text)
-            string(REGEX REPLACE "//[^\n]*" "" rtaudio_text "${rtaudio_text}")
-            string(REGEX MATCHALL "jack_[a-z_]+[ ]*\\(" jack_calls "${rtaudio_text}")
             file(READ "${jack_names_header}" jack_names)
-            foreach(call IN LISTS jack_calls)
-                string(REGEX REPLACE "[ (]" "" call "${call}")
-                string(FIND "${jack_names}" "#define ${call} " named)
-                if(named EQUAL -1)
-                    message(FATAL_ERROR "RtAudio ${RECKLESS_RTAUDIO_VERSION} calls ${call}, which the JACK loader does "
-                                        "not stand in for: add it to ${jack_names_header} and to JackLoader.cpp")
-                endif()
+            foreach(jack_source audio/linux/JackDevice.cpp tests/devices/JackRig.cpp)
+                set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                             "${CMAKE_CURRENT_SOURCE_DIR}/${jack_source}")
+                file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${jack_source}" jack_text)
+                string(REGEX REPLACE "//[^\n]*" "" jack_text "${jack_text}")
+                string(REGEX MATCHALL "jack_[a-z_]+[ ]*\\(" jack_calls "${jack_text}")
+                foreach(call IN LISTS jack_calls)
+                    string(REGEX REPLACE "[ (]" "" call "${call}")
+                    string(FIND "${jack_names}" "#define ${call} " named)
+                    if(named EQUAL -1)
+                        message(FATAL_ERROR "${jack_source} calls ${call}, which the JACK loader does not stand in "
+                                            "for: add it to ${jack_names_header} and to audio/linux/JackLoader.cpp")
+                    endif()
+                endforeach()
             endforeach()
             # The loader is the toolkit's own code, so it carries the toolkit's warnings, in a library of its own that
-            # rtaudio links (and so is placed after it on every link line).
+            # the JACK back end (audio/linux/JackDevice.cpp, in reckless_audio_devices below) and the JACK rig link.
             add_library(reckless_jack_loader STATIC "${CMAKE_CURRENT_SOURCE_DIR}/audio/linux/JackLoader.cpp")
             target_include_directories(reckless_jack_loader PRIVATE "${RECKLESS_JACK_INCLUDE_DIR}")
             target_link_libraries(reckless_jack_loader PRIVATE reckless_warnings ${CMAKE_DL_LIBS})
             set_target_properties(reckless_jack_loader PROPERTIES POSITION_INDEPENDENT_CODE ON)
-            target_compile_definitions(rtaudio PRIVATE __UNIX_JACK__)
-            target_include_directories(rtaudio PRIVATE "${RECKLESS_JACK_INCLUDE_DIR}")
-            target_compile_options(rtaudio PRIVATE "SHELL:-include ${jack_names_header}")
-            target_link_libraries(rtaudio PRIVATE reckless_jack_loader)
-            list(APPEND RECKLESS_AUDIO_APIS "JACK (libjack loaded at run time)")
+            list(APPEND RECKLESS_AUDIO_APIS "JACK (the toolkit's own, libjack loaded at run time)")
         endif()
     endif()
     if(RECKLESS_AUDIO_APIS)
@@ -558,11 +560,17 @@ if(RECKLESS_BUILD_AUDIO)
         target_link_libraries(reckless_audio_devices PRIVATE ole32 avrt)
     endif()
     if(NOT APPLE AND NOT WIN32 AND ALSA_FOUND)
-        # ALSA, the toolkit's own back end on alsa-lib (audio/linux/AlsaDevice.cpp), listed ahead of RtAudio's and so
-        # serving the name in its place; RtAudio still compiles its own for JACK's sake until JACK moves too.
+        # ALSA, the toolkit's own back end on alsa-lib (audio/linux/AlsaDevice.cpp).
         target_sources(reckless_audio_devices PRIVATE audio/linux/AlsaDevice.cpp)
         target_link_libraries(reckless_audio_devices PRIVATE ALSA::ALSA)
         target_compile_definitions(reckless_audio_devices PRIVATE RECKLESS_AUDIO_ALSA)
+    endif()
+    if(TARGET reckless_jack_loader)
+        # JACK, the toolkit's own client (audio/linux/JackDevice.cpp), its calls through the run-time loader.
+        target_sources(reckless_audio_devices PRIVATE audio/linux/JackDevice.cpp)
+        target_include_directories(reckless_audio_devices SYSTEM PRIVATE "${RECKLESS_JACK_INCLUDE_DIR}")
+        target_link_libraries(reckless_audio_devices PRIVATE reckless_jack_loader)
+        target_compile_definitions(reckless_audio_devices PRIVATE RECKLESS_AUDIO_JACK)
     endif()
     if(WIN32 AND "ASIO" IN_LIST RECKLESS_AUDIO_APIS)
         # The ASIO SDK's host headers, for the one thing RtAudioDevice.cpp gives its host code: a list for ASIOExit to

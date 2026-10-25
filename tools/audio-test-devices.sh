@@ -5,7 +5,7 @@
 # reckless_audio_device_suite, needs the same: vst-plugins carries this script too.
 #
 # What the suite's two Linux APIs need, each checked by name and provisioned where the user's sudo needs no password:
-#   - the headers RtAudio's ALSA and JACK back ends compile against (libasound2-dev, libjack-jackd2-dev): without them
+#   - the headers the toolkit's ALSA and JACK back ends compile against (libasound2-dev, libjack-jackd2-dev): without them
 #     the configure promises neither API, the build carries neither, and a run that requires them fails;
 #   - jackd (jackd2): the suite starts a JACK server of its own on the dummy driver for each test (no hardware, under a
 #     name no other server has, dying with the suite), so nothing here starts one. jackd2's package asks whether to
