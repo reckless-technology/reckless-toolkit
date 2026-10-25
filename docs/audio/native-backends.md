@@ -26,10 +26,10 @@ descriptor goes when CoreAudio moves, the last name it serves.
 | ALSA | the toolkit's, `audio/linux/AlsaDevice.cpp`; RtAudio no longer compiles its ALSA, and both ALSA patches are gone | 2026-10-25 |
 | JACK | the toolkit's, `audio/linux/JackDevice.cpp`, libjack loaded at run time (`JackLoader.cpp`); RtAudio compiles no API on Linux and is not listed there | 2026-10-25 |
 | ASIO | the toolkit's, `audio/win/AsioDevice.cpp`, on Steinberg's SDK; RtAudio compiles no API on Windows and is not listed there | 2026-10-25 |
-| CoreAudio | RtAudio | on a Mac |
+| CoreAudio | the toolkit's, `audio/mac/CoreAudioDevice.cpp`, on the HAL; an input on another device joined in a private aggregate; RtAudio listed nowhere | 2026-10-25 |
 | MIDI on Linux | the toolkit's, `audio/linux/AlsaMidi.cpp`, on ALSA's sequencer | 2026-10-25 |
 | MIDI on Windows | the toolkit's, `audio/win/WinMidi.cpp`, on WinMM; neither library fetched on Windows | 2026-10-25 |
-| MIDI on macOS | RtMidi | with CoreAudio, on a Mac |
+| MIDI on macOS | RtMidi | CoreMIDI next, the last of RtAudio and RtMidi |
 
 ALSA, measured against RtAudio's on the same machine and the same loopback card
 ([device-tests.md](device-tests.md), "Why a case took a minute"): every device named as RtAudio named it, a stop in

@@ -35,8 +35,8 @@ touching anything under `audio/`, read **[docs/audio/native-backends.md](docs/au
 the decision and what it rests on, which API each platform ends up on, where it stands, the order the work takes and
 how a back end is added, and the things already settled by measurement so they are not re-argued. On Linux every
 API is the toolkit's own since 2026-10-25 - ALSA, JACK and the ALSA sequencer, with neither library fetched there - and on
-Windows - Windows Audio, ASIO and WinMM - neither library fetched on either; what remains is CoreAudio and CoreMIDI,
-on a Mac.
+Windows - Windows Audio, ASIO and WinMM - neither library fetched on either; and on macOS
+CoreAudio; what remains is CoreMIDI, the last of RtMidi and RtAudio.
 
 ## The consumers
 
