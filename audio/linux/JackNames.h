@@ -41,9 +41,17 @@
 #define jack_port_register reckless_jack_port_register
 /// libjack's `jack_port_unregister`, under the loader's name.
 #define jack_port_unregister reckless_jack_port_unregister
+/// libjack's `jack_set_buffer_size`, under the loader's name.
+#define jack_set_buffer_size reckless_jack_set_buffer_size
+/// libjack's `jack_set_buffer_size_callback`, under the loader's name.
+#define jack_set_buffer_size_callback reckless_jack_set_buffer_size_callback
 /// libjack's `jack_set_error_function`, under the loader's name.
 #define jack_set_error_function reckless_jack_set_error_function
 /// libjack's `jack_set_process_callback`, under the loader's name.
 #define jack_set_process_callback reckless_jack_set_process_callback
 /// libjack's `jack_set_xrun_callback`, under the loader's name.
 #define jack_set_xrun_callback reckless_jack_set_xrun_callback
+
+/** The loader's own answer, no libjack function: whether the libjack it loaded is PipeWire's (JackLoader.cpp).
+    @return  1 for PipeWire's libjack; 0 for JACK's own, or none */
+extern "C" int reckless_jack_is_pipewire(void);

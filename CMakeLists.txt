@@ -291,6 +291,7 @@ if(RECKLESS_BUILD_AUDIO)
                              "${CMAKE_CURRENT_SOURCE_DIR}/${jack_source}")
                 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${jack_source}" jack_text)
                 string(REGEX REPLACE "//[^\n]*" "" jack_text "${jack_text}")
+                string(REPLACE "reckless_jack_" "" jack_text "${jack_text}") # the loader's own names, called as such
                 string(REGEX MATCHALL "jack_[a-z_]+[ ]*\\(" jack_calls "${jack_text}")
                 foreach(call IN LISTS jack_calls)
                     string(REGEX REPLACE "[ (]" "" call "${call}")
