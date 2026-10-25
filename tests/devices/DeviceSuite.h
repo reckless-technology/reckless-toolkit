@@ -806,8 +806,17 @@ class CoreAudioRig final : public DeviceRig
                 device.block_size  = 256;
                 device.loop        = Loop::kNone;
                 device.xrun_by     = reckless::audio::test::XrunBy::kStall;
-                device.about       = "the default output, written with silence (no input: one would ask the person at "
-                                     "the machine for the microphone)";
+                // A hosted macOS runner's only output is a virtual machine's device, whose clock is a thread the
+                // hypervisor schedules: its late cycles are overloads the machine's load makes, not the layer's, as
+                // JACK's dummy driver's are (TestDevice::is_scheduler_timed). Real hardware is held to the strict
+                // count.
+                if (info.name.find("Apple Virtual Sound Device") != std::string::npos)
+                {
+                    device.is_scheduler_timed = true;
+                    device.rate_tolerance     = 0.10;
+                }
+                device.about = "the default output, written with silence (no input: one would ask the person at "
+                               "the machine for the microphone)";
                 return device;
             }
         }
