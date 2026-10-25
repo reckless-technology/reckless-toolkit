@@ -100,7 +100,9 @@ class Phase
     static constexpr std::chrono::milliseconds kQuiet{250};
 
     /** @param what  what is being timed, named as it would be said */
-    explicit Phase(std::string what) : what_(std::move(what)), started_(std::chrono::steady_clock::now()) {}
+    explicit Phase(std::string what) : what_(std::move(what)), started_(std::chrono::steady_clock::now())
+    {
+    }
 
     ~Phase()
     {
