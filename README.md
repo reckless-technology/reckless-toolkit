@@ -96,7 +96,7 @@ is the check `main` requires.
 |---|---|---|
 | `RECKLESS_TOOLKIT_BUILD_TESTS` | ON | The toolkit's suites, and GoogleTest, which a product's suites use too. |
 | `RECKLESS_TOOLKIT_GUI` | ON | The windowed parts: Skia (fetched), `reckless_gfx_skia`, the child window and the app platform. Off, nothing of Skia is fetched. |
-| `RECKLESS_BUILD_AUDIO` | ON | The audio device layer - the toolkit's own back ends, and on macOS and Windows RtAudio and RtMidi (fetched) where they are not yet - and its suites. |
+| `RECKLESS_BUILD_AUDIO` | ON | The audio device layer - the toolkit's own back ends, and on macOS RtAudio and RtMidi (fetched) until CoreAudio and CoreMIDI move - and its suites. |
 | `RECKLESS_ASIO`, `RECKLESS_ASIO_SDK_DIR` | ON, empty | Windows: ASIO devices on Steinberg's ASIO SDK, fetched by version and hash, or the unzipped SDK the directory names. |
 | `RECKLESS_TOOLKIT_FETCH_ASIO_SDK` | OFF | Fetch the ASIO SDK on every platform, for a product's notices, compiling none of it. |
 | `RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES` | OFF | Fetch RtAudio's and RtMidi's sources on every platform, for a product's notices, where the toolkit builds neither (Linux). |
@@ -171,7 +171,7 @@ these scripts through the environment of its release job; the scripts never prin
 | `window/` | The child window a panel is shown in (an NSView, an HWND, an X11 window) and the shell round a panel (`ShellView.h`), with the licence's card. |
 | `skia/` | Skia, prebuilt from a pinned skia-pack release, and the targets on it. |
 | `app/` | An app's platform layer: the application, where a window goes, the audio settings' widgets, a post to the main thread from any other, the clipboard, and the menu bar with its shortcuts (`MenuBar.h`, drawn on Linux by `MenuBarView.h`) - [docs/app/platform.md](docs/app/platform.md); and a desktop app's shell on it - its window and loop, its root, theme, widgets, resources and update check ([docs/app/app-shell.md](docs/app/app-shell.md)). |
-| `audio/` | The audio device layer: the toolkit's own back ends on Windows Audio (WASAPI), ALSA and JACK, RtAudio's on CoreAudio and ASIO, MIDI on ALSA's sequencer (the toolkit's own) and elsewhere RtMidi, the settings an app keeps and an offline device. |
+| `audio/` | The audio device layer: the toolkit's own back ends on Windows Audio (WASAPI), ASIO, WinMM, ALSA, the ALSA sequencer and JACK, and on macOS RtAudio's CoreAudio and RtMidi's CoreMIDI until they move, the settings an app keeps and an offline device. |
 | `net/` | HTTP on the platform's own stack, URLs, SHA-256 and a loopback listener for a sign-in's redirect. |
 | `update/` | The update check against the company's website: the check (`UpdateCheck.h`), a product's description and the one factory its checker comes from (`UpdateProduct.h`), and the Updates menu every product offers (`UpdatesMenu.h`) - [docs/update/update-check.md](docs/update/update-check.md). |
 | `licence/` | A licence's Ed25519 signature checked offline, the machine's store, and the build's demo switch (`DemoMode.h`). |
