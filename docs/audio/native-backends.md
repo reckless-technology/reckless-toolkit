@@ -79,9 +79,12 @@ Nektar Impact LX88+ on USB ([device-tests.md](device-tests.md), "On a Mac with a
   0.28 ms each out: 74 and 14 frames at 48 kHz, 146 and 26 at 96), where its converters' delay is fixed in samples -
   so the measured round trip is 21 to 37 frames more than reported at 44.1 and 48 kHz and 41 to 70 frames less at
   88.2 and 96, within 0.8 ms either way. RtAudio counted the device latency alone, without the safety offsets, which
-  is about 110 frames short at every rate. Between one stream and the next the round trip moves by one USB
-  high-speed microframe (125 µs: 6 frames at 48 kHz, 12 at 96) - how the driver lines its input and output packets
-  up at a start - and within a stream it never moves.
+  is about 110 frames short at every rate. Within a stream the round trip never moves. Between one stream and the
+  next it moves by up to one USB high-speed microframe (125 µs: 6 frames at 48 kHz, 12 at 96) - how the driver lines
+  its input and output packets up at a start - but for one case: the first stream at 48 kHz after the device has run
+  at 96 comes back 24 to 30 frames sooner than any other (1197 frames at 512, against 1221 to 1228), every time, and
+  the next one is ordinary again. A bare HAL stream, one click on an output and no toolkit code, does exactly the
+  same, so it is the driver's; Reckless IR Capture, which trims each response at its own onset, does not see it.
 - **Duplex across two devices**, the UMC1820's outputs and a miniDSP UMIK-2's inputs joined in the back end's private
   aggregate, at 44.1, 48 and 96 kHz: the rate and block asked, no xruns, the input the UMIK-2's (its -55 dBFS room,
   not the UMC1820's -100 dBFS idle inputs), and the aggregate gone with the stream.
