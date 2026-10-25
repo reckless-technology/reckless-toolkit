@@ -17,7 +17,9 @@
 #   - read and write on the card's nodes in /dev/snd for this user. They are root:audio 0660, and a runner's user may
 #     not be in the audio group (reckless-ci-lin-0's `runner` is not): an ACL entry for the user on the loopback card's
 #     own nodes - its control and its PCMs, nothing of another card - given with setfacl (the acl package), each run,
-#     since the nodes are made afresh when the module loads.
+#     since the nodes are made afresh when the module loads;
+#   - ALSA's sequencer for the MIDI suite: its module (snd-seq) loaded where it is not, and its node, /dev/snd/seq,
+#     opened to the user the same way.
 # Where a step needs a sudo that wants a password, the script stops with the command for a person to run.
 #
 # Usage, from anywhere:  tools/audio-test-devices.sh
@@ -125,8 +127,21 @@ if [ -z "$card" ]; then
     [ -n "$card" ] || { echo "::error::snd-aloop loaded but no loopback card appeared in /proc/asound/cards" >&2; exit 1; }
 fi
 
-# This user's read and write on the card's own nodes.
-nodes=(/dev/snd/controlC"$card" /dev/snd/pcmC"$card"D*)
+# ALSA's sequencer, which the MIDI suite's own port and the back end's input share: its module loaded where it is not
+# (a machine whose desktop never asked for MIDI may not have it), and its node opened to this user beside the card's.
+if [ ! -e /dev/snd/seq ]; then
+    if ! $can_sudo; then
+        echo "::error::no ALSA sequencer (/dev/snd/seq): sudo modprobe snd-seq" >&2
+        exit 1
+    fi
+    sudo -n modprobe snd-seq
+    command -v udevadm > /dev/null && sudo -n udevadm settle || true
+    for _ in $(seq 50); do [ -e /dev/snd/seq ] && break; sleep 0.1; done
+    [ -e /dev/snd/seq ] || { echo "::error::snd-seq loaded but /dev/snd/seq did not appear" >&2; exit 1; }
+fi
+
+# This user's read and write on the card's own nodes, and on the sequencer's.
+nodes=(/dev/snd/controlC"$card" /dev/snd/pcmC"$card"D* /dev/snd/seq)
 for node in "${nodes[@]}"; do
     [ -e "$node" ] || continue
     if [ ! -r "$node" ] || [ ! -w "$node" ]; then
@@ -141,6 +156,6 @@ for node in "${nodes[@]}"; do
     [ -r "$node" ] && [ -w "$node" ] || { echo "::error::$user still cannot open $node" >&2; exit 1; }
 done
 
-echo "ALSA: the loopback card is card $card ($(sed -n "s/^ *$card \[[^]]*\]: //p" /proc/asound/cards | head -1)), its nodes open to $user: ${nodes[*]}"
+echo "ALSA: the loopback card is card $card ($(sed -n "s/^ *$card \[[^]]*\]: //p" /proc/asound/cards | head -1)), its nodes and the sequencer's open to $user: ${nodes[*]}"
 echo "JACK: $(command -v jackd) ($(jackd --version 2> /dev/null | head -1 || echo 'version unknown')); the suite starts its own server"
 echo "user: $user, groups: $(id -nG)"
