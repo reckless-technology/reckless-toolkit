@@ -271,4 +271,33 @@ inline int FindDevice(const std::vector<DeviceInfo> &devices, std::string_view n
     }
     return -1;
 }
+
+/** `devices` named apart, as FindDevice needs them: a device whose name an earlier one with channels the same way
+    already carries takes that name with its ordinal after it - "Loopback (Loopback PCM) (2)", ALSA's loopback card's
+    second device - the lowest from 2 that is free; an input and an output of one name keep it. This is how RtAudio's
+    devices were named apart when the settings in the field were written, so every back end names its devices so.
+    @param devices  the devices, in the API's order, each under the name the API gives it; renamed in place */
+inline void NameApart(std::vector<DeviceInfo> &devices)
+{
+    for (std::size_t i = 0; i < devices.size(); ++i)
+    {
+        const auto taken = [&devices, i](const std::string &name) {
+            for (std::size_t j = 0; j < i; ++j)
+            {
+                const bool same_way = (devices[j].input_channels > 0 && devices[i].input_channels > 0) ||
+                                      (devices[j].output_channels > 0 && devices[i].output_channels > 0);
+                if (same_way && devices[j].name == name)
+                {
+                    return true;
+                }
+            }
+            return false;
+        };
+        const std::string given = devices[i].name;
+        for (int ordinal = 2; taken(devices[i].name); ++ordinal)
+        {
+            devices[i].name = given + " (" + std::to_string(ordinal) + ")";
+        }
+    }
+}
 } // namespace reckless::audio
