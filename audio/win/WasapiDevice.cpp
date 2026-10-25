@@ -1247,4 +1247,47 @@ std::unique_ptr<AudioSystem> MakeWasapiSystem(wasapi::Mode mode)
 {
     return std::make_unique<WasapiSystem>(mode);
 }
+
+namespace
+{
+/** Windows Audio's three modes, in the order a Standalone lists them. */
+constexpr wasapi::Mode kModes[] = {wasapi::Mode::kShared, wasapi::Mode::kLowLatency, wasapi::Mode::kExclusive};
+
+/** The three modes' names.
+    @return  the names, in the order a Standalone lists them */
+std::vector<std::string> ApiNames()
+{
+    std::vector<std::string> names;
+    for (const wasapi::Mode mode : kModes)
+    {
+        names.emplace_back(wasapi::NameOf(mode));
+    }
+    return names;
+}
+
+/** A system for one of ApiNames().
+    @param name  the API's name
+    @return      the system, owned by the caller; nullptr for a name that is no WASAPI mode's */
+std::unique_ptr<AudioSystem> MakeSystem(const std::string &name)
+{
+    if (const std::optional<wasapi::Mode> mode = wasapi::ModeNamed(name))
+    {
+        return MakeWasapiSystem(*mode);
+    }
+    return nullptr;
+}
+
+/** What this back end is. There is no library and so no version: it is Windows' own interface, called directly.
+    @return  the text */
+std::string Library()
+{
+    return "Windows Audio (WASAPI)";
+}
+} // namespace
+
+const AudioBackend &WasapiBackend()
+{
+    static const AudioBackend backend{&Library, &ApiNames, &MakeSystem};
+    return backend;
+}
 } // namespace reckless::audio

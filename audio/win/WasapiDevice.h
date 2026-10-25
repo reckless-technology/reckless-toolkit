@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "AudioDevice.h"
+#include "DeviceBackends.h"
 #include "WasapiFormats.h"
 
 namespace reckless::audio
@@ -43,4 +44,10 @@ namespace reckless::audio
     @param mode  shared, low latency or exclusive
     @return      the system, owned by the caller */
 std::unique_ptr<AudioSystem> MakeWasapiSystem(wasapi::Mode mode);
+
+/** This back end as DeviceBackends.h chooses between them: the three modes' names, in the order a Standalone lists
+    them, and a system for one of them. Listed ahead of every other Windows back end, since Windows Audio is what a
+    machine with no ASIO driver has.
+    @return  the descriptor, one object for the program's life */
+const AudioBackend &WasapiBackend();
 } // namespace reckless::audio

@@ -27,8 +27,8 @@
 
 #include "AudioSettings.h"
 #include "CountAllocations.h"
+#include "DeviceBackends.h"
 #include "DeviceRig.h"
-#include "RtAudioDevice.h"
 #include "Text.h"
 
 #include <gtest/gtest.h>
