@@ -819,11 +819,10 @@ class AlsaSystem final : public AudioSystem
                 continue;
             }
 
-            int count                  = 0;
-            descriptors_[count].fd     = wake_;
-            descriptors_[count].events = POLLIN;
-            ++count;
-            const int out_at = room < block_ ? count : -1;
+            descriptors_[0].fd     = wake_;
+            descriptors_[0].events = POLLIN;
+            int       count        = 1;
+            const int out_at       = room < block_ ? count : -1;
             if (out_at >= 0)
             {
                 count += snd_pcm_poll_descriptors(out_.pcm, &descriptors_[static_cast<std::size_t>(count)],

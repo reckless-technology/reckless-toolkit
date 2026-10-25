@@ -135,8 +135,7 @@ jobs:
         uses: ./.github/actions/cpp
         with:
           gui: "true"
-      # The device suite's two Linux APIs: the ALSA headers the toolkit's back end and the JACK headers RtAudio compile
-      # against, jackd, setfacl, ALSA's loopback card loaded and its nodes opened to the job's user, with the runner's
+      # The device suite's two Linux APIs: the ALSA and JACK headers the toolkit's back ends compile against, jackd, setfacl, ALSA's loopback card loaded and its nodes opened to the job's user, with the runner's
       # passwordless sudo. Before the configure, which promises ALSA and JACK only where it finds their headers.
       - name: Audio test devices (ALSA loopback card, JACK)
         run: tools/audio-test-devices.sh

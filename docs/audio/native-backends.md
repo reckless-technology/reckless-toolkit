@@ -24,9 +24,9 @@ and `cmake/PatchRtAudio.cmake` with it.
 |---|---|---|
 | Windows Audio, its three modes | the toolkit's, `audio/win/WasapiDevice.cpp` | before 2026-10-25 |
 | ALSA | the toolkit's, `audio/linux/AlsaDevice.cpp`; RtAudio no longer compiles its ALSA, and both ALSA patches are gone | 2026-10-25 |
-| JACK | RtAudio, through `audio/linux/JackLoader.cpp` | next |
+| JACK | the toolkit's, `audio/linux/JackDevice.cpp`, libjack loaded at run time (`JackLoader.cpp`); RtAudio compiles no API on Linux and is not listed there | 2026-10-25 |
 | CoreAudio, ASIO | RtAudio | on a Mac, and on Windows |
-| MIDI everywhere | RtMidi | after each platform's audio |
+| MIDI everywhere | RtMidi | after each platform's audio; the ALSA sequencer is next on Linux |
 
 ALSA, measured against RtAudio's on the same machine and the same loopback card
 ([device-tests.md](device-tests.md), "Why a case took a minute"): every device named as RtAudio named it, a stop in
@@ -35,6 +35,11 @@ under a millisecond where RtAudio's took seconds, the loop's latency 768 samples
 an input buffer of at least 4096 frames since PipeWire's `default` hands its input over a 1024-frame quantum at a time,
 and a device's free direction listed where another program holds the other - the UMC1820's inputs, which RtAudio
 dropped while PipeWire played through it.
+
+JACK, measured against RtAudio's on the suite's dummy-driver server: the same block, rate, loop (bit for bit, 1024
+samples) and xrun recovery to the sample, and the server stopped under a running stream told to the callback within
+5 ms, the stream closed in under 25 ms and opened again once the server was back. A device's ports are its client's
+by exact name, where RtAudio's pattern counted any client whose name held the device's.
 
 Nothing above the seam has to change: `AudioDevice.h`'s `AudioSystem` (nine pure virtuals) and `MidiSystem` (four)
 were already written against no library, and no test names a back end.

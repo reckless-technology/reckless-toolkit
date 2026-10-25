@@ -1,10 +1,10 @@
 // JACK's test device: a JACK server of the suite's own, on the dummy driver - no hardware, its period timed by the
-// system clock - under a name no other server has, started for each test and stopped after it, and dying with the
-// suite however the suite ends. Its "system" client has three capture ports and five playback ports, a signature no
-// desktop's server has, so a test that finds them knows it reached this server and not a PipeWire graph or a person's
-// JACK. A stream's outputs are wired to its own inputs through the server for the loop, and the server is stopped under
-// a running stream for the failure. The server is reached through the same libjack, loaded by name, that RtAudio uses
-// (audio/linux/JackLoader.cpp): JackNames.h gives this file's calls the loader's names too.
+// system clock - under a name no other server has, started for each test and stopped after it, and dying with the suite
+// however the suite ends. Its "system" client has three capture ports and five playback ports, a signature no desktop's
+// server has, so a test that finds them knows it reached this server and not a PipeWire graph or a person's JACK. A
+// stream's outputs are wired to its own inputs through the server for the loop, and the server is stopped under a
+// running stream for the failure. The server is reached through the same libjack, loaded by name, that the JACK back
+// end uses (audio/linux/JackLoader.cpp): JackNames.h gives this file's calls the loader's names too.
 #include "JackNames.h"
 
 #include <cerrno>
@@ -99,7 +99,7 @@ class JackRig final : public DeviceRig
         static int count = 0;
         name_            = "reckless-test-" + std::to_string(getpid()) + "-" + std::to_string(++count);
         log_             = "/tmp/" + name_ + ".log";
-        // Every client of this process - RtAudio's and the rig's own - reaches this server, and none starts one.
+        // Every client of this process - the stream's and the rig's own - reaches this server, and none starts one.
         setenv("JACK_DEFAULT_SERVER", name_.c_str(), 1);
         setenv("JACK_NO_START_SERVER", "1", 1);
         jack_set_error_function(&Quiet);
@@ -187,8 +187,8 @@ class JackRig final : public DeviceRig
         return ok;
     }
 
-    /** The server stopped as a person stops it, with SIGTERM: it tells its clients it is going, and RtAudio closes the
-        stream on a thread of its own and reports the disconnection.
+    /** The server stopped as a person stops it, with SIGTERM: it tells its clients it is going, and the JACK back end
+        tells the stream it failed.
         @param why  set to the reason when the server is not running
         @return     false when the server is not running */
     bool Vanish(std::string &why) override

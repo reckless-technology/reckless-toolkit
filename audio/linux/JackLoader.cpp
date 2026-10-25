@@ -1,12 +1,12 @@
-// libjack, loaded by name the first time RtAudio asks anything of JACK: nothing in the program is linked to it, so a
-// machine without it starts as any other and runs on ALSA (the root CMakeLists.txt says why). Each function RtAudio
-// calls - JackNames.h gives them this file's names - is looked up in the library once and called through; with no
-// library, or one without the function, each answers as libjack does when it cannot serve: no client, no ports, a
-// failure code, nothing done. RtAudio then finds no JACK server and lists no JACK device.
+// libjack, loaded by name the first time anything asks of JACK: nothing in the program is linked to it, so a machine
+// without it starts as any other and runs on ALSA (the root CMakeLists.txt says why). Each function the toolkit calls -
+// JackNames.h gives them this file's names - is looked up in the library once and called through; with no library, or
+// one without the function, each answers as libjack does when it cannot serve: no client, no ports, a failure code,
+// nothing done. The JACK back end (JackDevice.cpp) then finds no JACK server and lists no JACK device.
 //
 // The library is opened by its versioned name, libjack.so.0 - the run-time package's, JACK's own or PipeWire's - and
 // by its unversioned one after, which only a development package installs. It stays open for the process's life, as
-// RtAudio's clients and the server's threads into them may outlive any one stream.
+// a client and the server's threads into it may outlive any one stream.
 #include "JackNames.h"
 
 #include <dlfcn.h>
@@ -14,7 +14,7 @@
 
 namespace
 {
-/** libjack's functions as RtAudio calls them, each null where the library or the symbol is missing. */
+/** libjack's functions as the toolkit calls them, each null where the library or the symbol is missing. */
 struct Jack
 {
     decltype(&reckless_jack_activate)               activate               = nullptr; ///< `jack_activate`
@@ -22,6 +22,7 @@ struct Jack
     decltype(&reckless_jack_client_open)            client_open            = nullptr; ///< `jack_client_open`
     decltype(&reckless_jack_connect)                connect                = nullptr; ///< `jack_connect`
     decltype(&reckless_jack_deactivate)             deactivate             = nullptr; ///< `jack_deactivate`
+    decltype(&reckless_jack_free)                   free                   = nullptr; ///< `jack_free`
     decltype(&reckless_jack_get_buffer_size)        get_buffer_size        = nullptr; ///< `jack_get_buffer_size`
     decltype(&reckless_jack_get_ports)              get_ports              = nullptr; ///< `jack_get_ports`
     decltype(&reckless_jack_get_sample_rate)        get_sample_rate        = nullptr; ///< `jack_get_sample_rate`
@@ -48,7 +49,8 @@ template <typename Function> void Find(void *library, const char *name, Function
     function = library != nullptr ? reinterpret_cast<Function>(dlsym(library, name)) : nullptr;
 }
 
-/** libjack opened by its versioned name and else its unversioned one, and each function RtAudio calls looked up in it.
+/** libjack opened by its versioned name and else its unversioned one, and each function the toolkit calls looked up
+    in it.
     @return  the functions, each null where the library or the symbol is missing */
 Jack Load()
 {
@@ -63,6 +65,7 @@ Jack Load()
     Find(library, "jack_client_open", jack.client_open);
     Find(library, "jack_connect", jack.connect);
     Find(library, "jack_deactivate", jack.deactivate);
+    Find(library, "jack_free", jack.free);
     Find(library, "jack_get_buffer_size", jack.get_buffer_size);
     Find(library, "jack_get_ports", jack.get_ports);
     Find(library, "jack_get_sample_rate", jack.get_sample_rate);
@@ -147,6 +150,17 @@ extern "C"
     {
         const auto function = Library().deactivate;
         return function != nullptr ? function(client) : -1;
+    }
+
+    /** libjack's `jack_free`: memory libjack handed out - a port list - given back to the allocator that made it.
+        Nothing with no library, which can have handed out nothing.
+        @param pointer  what libjack returned; may be null */
+    void reckless_jack_free(void *pointer)
+    {
+        if (const auto function = Library().free)
+        {
+            function(pointer);
+        }
     }
 
     /** libjack's `jack_get_buffer_size`: the server's block.

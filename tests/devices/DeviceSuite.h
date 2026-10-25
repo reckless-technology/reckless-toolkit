@@ -685,7 +685,7 @@ class StreamCloser
 /**
     An AudioSystem round the real one that runs the engine's callback between two counts of the allocations the audio
     thread makes (CountAllocations.h), so a total of zero is an engine and a core that allocated nothing on the API's
-    own thread - RtAudio's work round the callback is not counted, the engine's and the core's is.
+    own thread - the back end's work round the callback is not counted, the engine's and the core's is.
 */
 class CountingAudioSystem final : public AudioSystem, private AudioCallback
 {
