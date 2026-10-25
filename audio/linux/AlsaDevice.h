@@ -38,8 +38,7 @@ namespace reckless::audio
     system allows it and runs at the normal priority where it does not.
 */
 
-/** This back end as DeviceBackends.h chooses between them: "ALSA", and a system for it. Listed ahead of RtAudio, whose
-    ALSA it replaces.
+/** This back end as DeviceBackends.h chooses between them: "ALSA", and a system for it.
     @return  the descriptor, one object for the program's life */
 const AudioBackend &AlsaBackend();
 } // namespace reckless::audio

@@ -290,9 +290,9 @@ jobs:
   # ---- The smallest configuration, and coverage ------------------------------------------------------------------
 
   # The toolkit with nothing windowed (RECKLESS_TOOLKIT_GUI off: no Skia fetched, no child window, no app platform) and
-  # no audio device layer (RECKLESS_BUILD_AUDIO off: no RtAudio or RtMidi), its suites on: the configuration a consumer
-  # that needs only the core, the network or the views asks for, so a target that grew a dependency on a
-  # windowed or device part fails here.
+  # no audio device layer (RECKLESS_BUILD_AUDIO off: no back end, no system audio library), its suites on: the
+  # configuration a consumer that needs only the core, the network or the views asks for, so a target that grew a
+  # dependency on a windowed or device part fails here.
   minimal:
     name: Linux, no GUI and no audio devices
     needs: changes

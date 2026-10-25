@@ -16,10 +16,6 @@ the toolkit hands up to a product as RECKLESS_TOOLKIT_PINS) and by its archive's
                                                    licence              host files (asio.cpp, asiodrivers.cpp,
                                                                         asiolist.cpp) compiled in, reckless_asio_host;
                                                                         its source never distributed in part or whole
-  RtAudio, RtMidi                                  RtAudio's MIT-style  in no binary: fetched only for a product's
-                                                                        notices (RECKLESS_TOOLKIT_FETCH_RTAUDIO_
-                                                                        SOURCES), the audio layer's back ends being
-                                                                        the toolkit's own
   Monocypher                                       BSD 2-clause or CC0  a licence's Ed25519 check (licence/)
   dr_flac, dr_mp3 (dr_libs)                        public domain or     audio files (core/AudioFiles.h)
                                                    MIT No Attribution

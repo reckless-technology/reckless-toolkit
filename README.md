@@ -99,7 +99,6 @@ is the check `main` requires.
 | `RECKLESS_BUILD_AUDIO` | ON | The audio device layer - the toolkit's own back ends on each platform's API - and its suites. |
 | `RECKLESS_ASIO`, `RECKLESS_ASIO_SDK_DIR` | ON, empty | Windows: ASIO devices on Steinberg's ASIO SDK, fetched by version and hash, or the unzipped SDK the directory names. |
 | `RECKLESS_TOOLKIT_FETCH_ASIO_SDK` | OFF | Fetch the ASIO SDK on every platform, for a product's notices, compiling none of it. |
-| `RECKLESS_TOOLKIT_FETCH_RTAUDIO_SOURCES` | OFF | Fetch RtAudio's and RtMidi's sources, for a product's notices; the toolkit builds neither. |
 | `RECKLESS_DEMO_MODE` | OFF | The build's demo switch (`licence/DemoMode.h`), a compile definition on `reckless_demo_mode`. |
 
 ### Targets

@@ -22,8 +22,8 @@
     An app's fonts: the series' serif at the series' sizes (app/AppTheme.h). */
 
 /** @namespace reckless::audio
-    The audio device layer (audio/): the device APIs on RtAudio and RtMidi, Windows Audio as the toolkit's own back
-    end, the settings an app keeps and a device with no hardware. */
+    The audio device layer (audio/): a back end of the toolkit's own for every device API on every platform, the
+    settings an app keeps and a device with no hardware. */
 
 /** @namespace reckless::audio::test
     The device suite's rigs: a deterministic test device on each real audio API (tests/devices). */
