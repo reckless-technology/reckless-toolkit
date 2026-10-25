@@ -1,12 +1,12 @@
-// Windows Audio's test device, in each of its three modes (audio/win/WasapiDevice.h): the machine's default
-// render endpoint. In the shared and low-latency modes it is played through and heard back by WASAPI's loopback
-// capture - the back end opens an input named after a render endpoint as the capture of the mix that endpoint plays -
-// so the samples come back through the audio engine's mixer, correlated rather than exact; in the low-latency mode the
-// render client is IAudioClient3's, opened by InitializeSharedAudioStream at the driver's period that holds the block,
-// a few milliseconds where a WaveRT driver offers small periods, against the classic shared mode's ten. The rig asks
-// the endpoint the same question and prints its periods. In the exclusive mode the stream has the endpoint to itself
-// and there is no mixer to hear it by: the device is output only. A machine with no active render endpoint - CI's
-// Windows runners, whose only endpoints are microphones - has no test device, and the tests skip with that reason.
+// Windows Audio's test device, in each of its two modes (audio/win/WasapiDevice.h): the machine's default render
+// endpoint. In the shared mode it is played through and heard back by WASAPI's loopback capture - the back end opens an
+// input named after a render endpoint as the capture of the mix that endpoint plays - so the samples come back through
+// the audio engine's mixer, correlated rather than exact; at the endpoint's mix rate the render client is
+// IAudioClient3's, opened by InitializeSharedAudioStream at the driver's period that holds the block, a few
+// milliseconds where a WaveRT driver offers small periods, against the engine's ten. The rig asks the endpoint the same
+// question and prints its periods. In the exclusive mode the stream has the endpoint to itself and there is no mixer to
+// hear it by: the device is output only. A machine with no active render endpoint - CI's Windows runners, whose only
+// endpoints are microphones - has no test device, and the tests skip with that reason.
 #include "DeviceRig.h"
 
 #include <algorithm>
@@ -93,9 +93,9 @@ std::string EndpointReport()
                 report += "shared-mode periods (IAudioClient3): the smallest " + std::to_string(smallest) +
                           " frames (" + text + "; default " + std::to_string(standard) + ", step " +
                           std::to_string(fundamental) + ", largest " + std::to_string(largest) + ") - " +
-                          (smallest < standard ? "small periods, which the low-latency mode opens at"
-                                               : "none under the default: the driver offers no small periods, and the "
-                                                 "low-latency mode runs at the default");
+                          (smallest < standard ? "small periods, which a stream at the mix rate opens at"
+                                               : "none under the default: the driver offers no small periods, and a "
+                                                 "stream at the mix rate runs at the default");
             }
             else
             {
@@ -104,7 +104,7 @@ std::string EndpointReport()
         }
         else
         {
-            report += "no IAudioClient3: no low-latency mode on this Windows";
+            report += "no IAudioClient3: no small periods on this Windows, the engine's period always";
         }
     }
     if (format != nullptr)

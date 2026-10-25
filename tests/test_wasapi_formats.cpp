@@ -23,13 +23,14 @@ using wasapi::Encoding;
 
 TEST(WasapiFormats, EachModeHasTheNameASettingsFileKeeps)
 {
-    for (const wasapi::Mode mode : {wasapi::Mode::kShared, wasapi::Mode::kLowLatency, wasapi::Mode::kExclusive})
+    for (const wasapi::Mode mode : {wasapi::Mode::kShared, wasapi::Mode::kExclusive})
     {
         EXPECT_EQ(wasapi::ModeNamed(wasapi::NameOf(mode)), mode);
     }
     EXPECT_EQ(wasapi::NameOf(wasapi::Mode::kShared), "Windows Audio") << "the name the settings kept before";
-    EXPECT_EQ(wasapi::NameOf(wasapi::Mode::kLowLatency), "Windows Audio (Low Latency Mode)");
     EXPECT_EQ(wasapi::NameOf(wasapi::Mode::kExclusive), "Windows Audio (Exclusive Mode)");
+    EXPECT_EQ(wasapi::ModeNamed("Windows Audio (Low Latency Mode)"), wasapi::Mode::kShared)
+        << "a mode of its own until 2026-10-25, what Windows Audio does now";
     EXPECT_FALSE(wasapi::ModeNamed("ASIO").has_value());
     EXPECT_FALSE(wasapi::ModeNamed("Windows Audio (Exclusive)").has_value());
 }
@@ -133,6 +134,16 @@ TEST(WasapiFormats, TheDevicesChannelsLandOnTheCallbackChannelsThatNameThem)
     EXPECT_EQ(a, (std::array<float, 3>{0.5f, 0.25f, -1.0f}));
     EXPECT_EQ(b, (std::array<float, 3>{-0.5f, -0.25f, 32767.0f / 32768.0f}));
     EXPECT_EQ(c, (std::array<float, 3>{0.0f, 0.0f, 0.0f}));
+}
+
+TEST(WasapiFormats, ASharedStreamTakesTheDriversPeriodAtTheEndpointsOwnRate)
+{
+    // At the endpoint's own rate nothing is converted, and a small period can be had; at another the engine converts,
+    // which it does at its own period.
+    EXPECT_EQ(wasapi::SharedRouteOf(48000, 48000), wasapi::SharedRoute::kDriversPeriod);
+    EXPECT_EQ(wasapi::SharedRouteOf(44100, 48000), wasapi::SharedRoute::kEnginesPeriod);
+    EXPECT_EQ(wasapi::SharedRouteOf(96000, 48000), wasapi::SharedRoute::kEnginesPeriod);
+    EXPECT_EQ(wasapi::SharedRouteOf(0, 48000), wasapi::SharedRoute::kEnginesPeriod) << "no rate: none to match";
 }
 
 TEST(WasapiFormats, ALowLatencyPeriodIsTheDriversSmallestThatHoldsTheBlock)

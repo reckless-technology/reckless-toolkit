@@ -22,7 +22,7 @@ and `cmake/PatchRtAudio.cmake` with it.
 
 | API | back end | since |
 |---|---|---|
-| Windows Audio, its three modes | the toolkit's, `audio/win/WasapiDevice.cpp` | before 2026-10-25 |
+| Windows Audio, its two modes | the toolkit's, `audio/win/WasapiDevice.cpp`; its low-latency mode folded into Windows Audio | before 2026-10-25; two modes 2026-10-25 |
 | ALSA | the toolkit's, `audio/linux/AlsaDevice.cpp`; RtAudio no longer compiles its ALSA, and both ALSA patches are gone | 2026-10-25 |
 | JACK | the toolkit's, `audio/linux/JackDevice.cpp`, libjack loaded at run time (`JackLoader.cpp`); RtAudio compiles no API on Linux and is not listed there | 2026-10-25 |
 | CoreAudio, ASIO | RtAudio | on a Mac, and on Windows |
@@ -61,11 +61,11 @@ were already written against no library, and no test names a back end.
 
 | Platform | Audio | MIDI |
 |---|---|---|
-| Windows | **ASIO**, on Steinberg's SDK directly, beside the toolkit's own **WASAPI** in its three modes | **WinMM** |
+| Windows | **ASIO**, on Steinberg's SDK directly, beside the toolkit's own **WASAPI** in its two modes | **WinMM** |
 | macOS | **CoreAudio**, HAL/AUHAL directly | **CoreMIDI** |
 | Linux | **ALSA** directly, beside a **JACK** client | **ALSA sequencer** |
 
-Two of those are already written: WASAPI (`audio/win/WasapiDevice.cpp`, the three modes) and the ASIO SDK's host
+Two of those are already written: WASAPI (`audio/win/WasapiDevice.cpp`, the two modes) and the ASIO SDK's host
 sources, which this build already compiles for RtAudio (`asio.cpp`, `asiodrivers.cpp`, `asiolist.cpp`).
 
 ASIO is **not** Windows' only back end. Most machines have no ASIO driver - onboard codecs, USB class-compliant
@@ -117,8 +117,8 @@ and asserts first-callback latency, the rate within 3 %, no xruns, the longest c
 
 ## Two things settled by evidence, worth not re-deciding
 
-**A buffer size cannot be chosen in WASAPI's shared mode**, and in the low-latency mode only where the driver offers
-more than one period. On the BEHRINGER UMC 1820 `GetSharedModeEnginePeriod` reports smallest, default, step and
+**A buffer size cannot be chosen in WASAPI's shared mode** but at the driver's small periods (IAudioClient3, at the
+endpoint's mix rate), and there only where the driver offers more than one period. On the BEHRINGER UMC 1820 `GetSharedModeEnginePeriod` reports smallest, default, step and
 largest all 480 frames, so a block of 256 opens at 480. Exclusive mode and ASIO honour it exactly. Measured, same
 binary, block asked 256: low latency 480, exclusive 256, ASIO 256.
 
@@ -130,10 +130,14 @@ layer must miss gracefully and fall back to the default device - decide per back
 Device", "<card name> (<PCM id>)"), and the ordinals are one function every back end calls, `AudioDevice.h`'s
 `NameApart`.
 
+**Windows Audio is one API, not two** (decided 2026-10-25): its shared mode opens at the driver's smallest period that
+holds the block wherever the stream runs at the endpoint's mix rate and Windows and the driver offer it, and at the
+engine's period otherwise, converting - so the block setting works where it can and falls back where it cannot, and
+there is no separate mode that reads as broken on a driver of one period. "Windows Audio (Low Latency Mode)" in a
+settings file reads as "Windows Audio" (`AudioSettings.h`), and asking for it by name makes Windows Audio
+(`WasapiFormats.h`'s `ModeNamed`).
+
 ## Open, not yet decided
 
-- Whether to collapse "Windows Audio" and "Windows Audio (Low Latency Mode)" into one API whose block dropdown works
-  and falls back to the engine's period. It would remove a mode that reads as broken, but the names are stored in
-  settings as the `api` field, so it needs a migration.
 - Whether MIDI keeps to input only. `MidiSystem` has no outputs, and the suite has a `sequence` plugin that might
   one day want them; adding them later changes the interface and all three implementations.

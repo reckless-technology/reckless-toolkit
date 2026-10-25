@@ -170,3 +170,21 @@ TEST(AudioDeviceNames, ALaterDeviceOfAnEarliersNameTheSameWayCarriesItsOrdinal)
     EXPECT_EQ(reckless::audio::FindDevice(devices, "Loopback (Loopback PCM) (2)", reckless::audio::Direction::kInput),
               1);
 }
+
+TEST(AudioSettings, TheFormerLowLatencyModeReadsAsWindowsAudio)
+{
+    // A mode of its own until 2026-10-25, folded into Windows Audio, which now opens at the driver's small periods
+    // wherever it can: a file that kept the old name opens on Windows Audio, its devices and block as they were.
+    const auto read = reckless::audio::SettingsOfDocument(
+        json::Parse(
+            R"json({"api": "Windows Audio (Low Latency Mode)", "output_device": "Speakers", "block_size": 128})json")
+            .value);
+    ASSERT_TRUE(read.has_value());
+    EXPECT_EQ(read->api, "Windows Audio");
+    EXPECT_EQ(read->output_device, std::optional<std::string>("Speakers"));
+    EXPECT_EQ(read->block_size, std::optional<int>(128));
+    const auto exclusive =
+        reckless::audio::SettingsOfDocument(json::Parse(R"json({"api": "Windows Audio (Exclusive Mode)"})json").value);
+    ASSERT_TRUE(exclusive.has_value());
+    EXPECT_EQ(exclusive->api, "Windows Audio (Exclusive Mode)") << "the exclusive mode is a mode still";
+}

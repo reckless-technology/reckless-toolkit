@@ -1,7 +1,7 @@
 # The audio layer on the real APIs
 
 The audio layer (`audio/`) reaches the machine's interfaces through the back ends `DeviceBackends.h` chooses between:
-the toolkit's own on Windows Audio (WASAPI, in three modes), ALSA and JACK, and RtAudio's on CoreAudio and ASIO until
+the toolkit's own on Windows Audio (WASAPI, in two modes), ALSA and JACK, and RtAudio's on CoreAudio and ASIO until
 each moves (`native-backends.md`). Two suites hold it. `audio`
 (`reckless_audio_test`) runs the engine on the offline device and needs no hardware; `audio_devices`
 (`reckless_audio_device_test`, `tests/test_audio_devices.cpp`) opens every API the build carries on a
@@ -49,7 +49,7 @@ correlation coefficient over everything after it must reach 0.9, the gain printe
 | API | device | made by | loop | xrun | goes away |
 |---|---|---|---|---|---|
 | CoreAudio | the default output, written with silence | the machine (the Mac runner's speakers) | none: an input would ask the person at the machine for the microphone | a stalled callback | - |
-| Windows Audio, and its Low Latency Mode | the default render endpoint, heard back by WASAPI's loopback capture | the machine (none on CI) | correlated | a stalled callback | - |
+| Windows Audio | the default render endpoint, heard back by WASAPI's loopback capture | the machine (none on CI) | correlated | a stalled callback | - |
 | Windows Audio (Exclusive Mode) | the default render endpoint, the stream's alone | the machine (none on CI) | none: no mixer for a loopback to hear | a stalled callback | - |
 | ASIO | the SDK's sample driver: 16 in, 16 out, 16-bit, 256 frames, 44.1 or 48 kHz, a sine on its first input and a sawtooth on its second | the suite: built from the fetched SDK and registered by the binary itself | the inputs, exactly as the driver makes them | the driver's resync request | the driver's reset request |
 | JACK | `jackd` on the dummy driver, 48 kHz, 1024 frames, 3 capture and 5 playback ports, under a name of its own | the suite: a server for each test | exact: the stream's outputs wired to its own inputs through the server | a stalled callback | the server stopped with SIGTERM, then started again |
@@ -75,15 +75,17 @@ layer lists the second as `Loopback (Loopback PCM) (2)` (a later device sharing 
 carries its ordinal: `AudioDevice.h`'s `NameApart`), so a stream can name playback on one and capture on the other. The capture side of a loopback pair
 opens as many channels as its playback side, so the engine's test opens two inputs and no key there.
 
-**Windows Audio.** WASAPI is the suite's own back end (`audio/win/WasapiDevice.h`), three APIs to the suite, one
-rig for each (`devices/WasapiRig.cpp`): Windows Audio, shared, event-driven at the engine's period; its Low Latency Mode,
-shared through `IAudioClient3`'s `InitializeSharedAudioStream` at the driver's smallest period that holds the block -
-a few milliseconds where the driver offers small periods, as Microsoft's inbox HD Audio driver does, the engine's ten
-where it offers only that, as many vendors' drivers do; and its Exclusive Mode, the endpoint the stream's alone,
+**Windows Audio.** WASAPI is the suite's own back end (`audio/win/WasapiDevice.h`), two APIs to the suite, one
+rig for each (`devices/WasapiRig.cpp`): Windows Audio, shared, event-driven - at the endpoint's mix rate through
+`IAudioClient3`'s `InitializeSharedAudioStream` at the driver's smallest period that holds the block, a few
+milliseconds where the driver offers small periods, as Microsoft's inbox HD Audio driver does, the engine's ten where it
+offers only that, as many vendors' drivers do; at any other rate at the engine's period, the engine converting (until
+2026-10-25 the small periods were a third API, "Windows Audio (Low Latency Mode)", which settings now read as Windows
+Audio); and its Exclusive Mode, the endpoint the stream's alone,
 event-driven at the block asked for, held to the device's minimum period (`GetDevicePeriod`) and its alignment. The
-callback is the render endpoint's period in every mode, with no ring or resampler between them. In the two shared modes
-an input named after a render endpoint is that endpoint's loopback - WASAPI's capture of the mix it plays, opened with
-`AUDCLNT_STREAMFLAGS_LOOPBACK` - so those two rigs hear their stream back through the mixer; an exclusive stream
+callback is the render endpoint's period in both modes, with no ring or resampler between them. In the shared mode an
+input named after a render endpoint is that endpoint's loopback - WASAPI's capture of the mix it plays, opened with
+`AUDCLNT_STREAMFLAGS_LOOPBACK` - so its rig hears the stream back through the mixer; an exclusive stream
 bypasses the mixer and its rig is output only. WASAPI tells a render stream of no underrun, so the back end reports
 an xrun when a period event comes more than two and a half periods after the last - which a stalled callback makes in
 every mode - and when the capture ring runs dry or overfills. The rig prints the endpoint's mix format and its
@@ -296,20 +298,20 @@ moved the same way.
   `LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu build/tests/reckless_audio_device_test`. PipeWire, where it runs,
   lists the loopback card among its devices too, and opens it only while something plays to it.
 - **Windows**, inside the Visual Studio developer environment (`CLAUDE.md`'s `VsDevCmd.bat` line): ASIO needs
-  nothing. **Windows Audio is tested here and nowhere else**, in all three of its modes - on a machine with speakers,
+  nothing. **Windows Audio is tested here and nowhere else**, in both of its modes - on a machine with speakers,
   headphones or a virtual cable as its default playback device:
 
   ```
-  set RECKLESS_AUDIO_REQUIRE=Windows Audio,Windows Audio (Low Latency Mode),Windows Audio (Exclusive Mode)
+  set RECKLESS_AUDIO_REQUIRE=Windows Audio,Windows Audio (Exclusive Mode)
   build\tests\reckless_audio_device_test.exe --gtest_filter=*WindowsAudio*
   ```
 
   It plays a second or two of quiet noise (30 dB under full scale) through the default playback device in each mode,
   the exclusive one taking the device from every other program for its tests. Look for: the test device's table naming
-  the endpoint, its mix format and its shared-mode periods; each stream's block asked and opened - the engine's period
-  in the shared mode, the driver's in the low-latency mode, the block asked (or the device's minimum) in the exclusive
-  mode - and its rate by the clock within 3 % of the mix rate; the loop's correlation at least 0.9 in the two shared
-  modes (a muted endpoint, or another sound playing over the test, fails it); a stall reported as an xrun; and nothing
+  the endpoint, its mix format and its shared-mode periods; each stream's block asked and opened - the driver's period
+  that holds it in the shared mode at the mix rate (the engine's where the driver offers no smaller), the block asked
+  (or the device's minimum) in the exclusive mode - and its rate by the clock within 3 % of the mix rate; the loop's
+  correlation at least 0.9 in the shared mode (a muted endpoint, or another sound playing over the test, fails it); a stall reported as an xrun; and nothing
   allocated in the engine's callbacks. vst-plugins' command-line player shows a mode on a device of one's choosing -
   its block, latency and xruns, a duplex stream's among them: `reckless_standalone_cli gate --api "Windows Audio
   (Exclusive Mode)" --output "<a render endpoint>" --input "<a capture endpoint>|none" --block 128`.

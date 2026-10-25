@@ -890,7 +890,7 @@ inline std::unique_ptr<DeviceRig> MakeRig(const std::string &api)
     }
 #endif
 #if defined(_WIN32)
-    if (api == "Windows Audio" || api == "Windows Audio (Low Latency Mode)")
+    if (api == "Windows Audio")
     {
         return reckless::audio::test::MakeWasapiRig(false);
     }

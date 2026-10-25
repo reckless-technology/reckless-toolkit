@@ -124,7 +124,7 @@ std::unique_ptr<DeviceRig> MakeJackRig();
 std::unique_ptr<DeviceRig> MakeAsioRig();
 
 /** The rig of one of Windows Audio's modes, made in WasapiRig.cpp.
-    @param exclusive  true for the exclusive mode, output only; false for the shared and low-latency modes
+    @param exclusive  true for the exclusive mode, output only; false for the shared mode
     @return           the rig */
 std::unique_ptr<DeviceRig> MakeWasapiRig(bool exclusive);
 

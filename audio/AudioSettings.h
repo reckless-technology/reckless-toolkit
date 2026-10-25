@@ -10,6 +10,7 @@
 #include "Json.h"
 #include "JsonFile.h"
 #include "PresetFiles.h"
+#include "WasapiFormats.h"
 
 namespace reckless::audio
 {
@@ -105,7 +106,8 @@ inline core::json::Value SettingsDocument(const AudioSettings &s)
 }
 
 /** The file's document read back; nothing for one that is not an object. A member of the wrong kind is unset; a rate
-    or a block that is not a positive whole number is unset; a channel that is not a whole number from 0 is skipped.
+    or a block that is not a positive whole number is unset; a channel that is not a whole number from 0 is skipped. An
+    API the series has folded into another is read as that one: "Windows Audio (Low Latency Mode)" as "Windows Audio".
     @param document  the file's parsed document
     @return          the settings, or nothing when `document` is not an object */
 inline std::optional<AudioSettings> SettingsOfDocument(const core::json::Value &document)
@@ -142,7 +144,11 @@ inline std::optional<AudioSettings> SettingsOfDocument(const core::json::Value &
         return channels;
     };
     AudioSettings s;
-    s.api           = text("api").value_or("");
+    s.api = text("api").value_or("");
+    if (s.api == wasapi::kFormerLowLatencyName)
+    {
+        s.api = std::string(wasapi::kSharedName); // a mode of its own until 2026-10-25, what Windows Audio does now
+    }
     s.output_device = text("output_device");
     s.input_device  = text("input_device");
     s.sample_rate   = whole("sample_rate");

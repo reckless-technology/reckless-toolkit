@@ -38,9 +38,8 @@ TEST(AudioApis, AreTheOnesTheConfigurePromised)
     EXPECT_EQ(apis, PromisedApis());
 
     // Every API the run requires is one of the series', and one this build carries.
-    const std::vector<std::string> series = {
-        "CoreAudio", "Windows Audio", "Windows Audio (Low Latency Mode)", "Windows Audio (Exclusive Mode)", "ASIO",
-        "JACK",      "ALSA"};
+    const std::vector<std::string> series = {"CoreAudio", "Windows Audio", "Windows Audio (Exclusive Mode)",
+                                             "ASIO",      "JACK",          "ALSA"};
     for (const std::string &api : RequiredApis())
     {
         EXPECT_NE(std::find(series.begin(), series.end(), api), series.end())
