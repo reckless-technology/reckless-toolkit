@@ -1,4 +1,4 @@
-// The audio layer on the real APIs (audio/RtAudioDevice.cpp, the suite's AudioSystem on RtAudio): for every API
+// The audio layer on the real APIs (audio/DeviceBackends.h, whichever back end serves each API): for every API
 // the build carries - CoreAudio, Windows Audio (WASAPI, in its shared, low-latency and exclusive modes), ASIO, JACK,
 // ALSA - its device list, a stream run at a rate the
 // device offers with its callbacks counted against what the rate and the block predict and the rate read by the clock,
@@ -23,7 +23,7 @@ TEST(AudioApis, AreTheOnesTheConfigurePromised)
 {
     const std::vector<std::string> apis = reckless::audio::AudioApis();
     Table("the build's audio APIs")
-        .Row("RtAudio carries", JoinList(apis))
+        .Row("the build carries", JoinList(apis))
         .Row("the configure promised", JoinList(PromisedApis()))
         .Row("the run requires", JoinList(RequiredApis()))
         .Row("libraries", reckless::audio::AudioLibraryVersions())
@@ -258,7 +258,7 @@ TEST_P(AudioDevices, RunsAStreamAtTheRateAndTheBlockItOpenedAt)
     EXPECT_EQ(timing.fewest, format.block_size);
     EXPECT_EQ(timing.most, format.block_size);
 
-    // Every block carried the channels it opened, laid out as RtAudioDevice promises, on the API's own thread.
+    // Every block carried the channels it opened, laid out as every back end promises, on the API's own thread.
     EXPECT_EQ(recorder.layout_faults(), 0) << recorder.first_layout_fault();
     EXPECT_EQ(recorder.on_test_thread(), 0);
     EXPECT_LE(recorder.xruns(), allowance);

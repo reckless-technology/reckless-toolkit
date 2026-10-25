@@ -25,8 +25,10 @@ namespace reckless::audio
     simply vanish, and only on an optimised build. Explicit assembly also fixes the order, which decides which back
     end wins a name two of them offer, and puts the whole set in one readable place.
 
-    Order is preference, most preferred first, and it is what AudioApis() returns: a Standalone offers the person that
-    order and DefaultAudioApi() takes the first that has an output. The order lives in DeviceBackends.cpp.
+    The list's order decides which back end serves a name two of them offer: the first. The order a Standalone offers
+    the names in - and DefaultAudioApi() tries them in - is the series' own, apart from it (AudioApis()), so a native
+    back end listed ahead of RtAudio takes RtAudio's name without moving it ahead of RtAudio's others. Both orders live
+    in DeviceBackends.cpp.
 */
 struct AudioBackend
 {

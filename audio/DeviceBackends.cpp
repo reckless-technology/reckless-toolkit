@@ -5,11 +5,18 @@
 // takes its name - two back ends may offer the same name, and the first in the list wins - so each API moves over on
 // its own, with the device suite run against both to compare them. RtAudio's descriptor goes when the last name it
 // serves has moved, and with it the three patches under cmake/.
+//
+// So the list's order says which back end serves a name, and the order a Standalone offers the names in is the
+// series' own (kPreference), apart from it: native ALSA listed ahead of RtAudio must not put ALSA ahead of RtAudio's
+// JACK.
 
 #include "DeviceBackends.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <iterator>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "RtAudioDevice.h"
@@ -17,13 +24,31 @@
 #if defined(_WIN32)
 #include "win/WasapiDevice.h"
 #endif
+#if defined(RECKLESS_AUDIO_ALSA)
+#include "linux/AlsaDevice.h"
+#endif
 
 namespace reckless::audio
 {
 namespace
 {
-/** Every audio back end this build carries, most preferred first; the order AudioApis() returns and the order a name
-    offered by two of them is resolved in. Built on first use, so no translation unit's statics have to be ready
+/** The series' APIs in the order a Standalone offers them (DeviceBackends.h's AudioApis says why); a name not here
+    comes after them, in the order the back ends offer it. */
+constexpr std::string_view kPreference[] = {
+    "CoreAudio", "Windows Audio", "Windows Audio (Low Latency Mode)", "Windows Audio (Exclusive Mode)", "ASIO",
+    "JACK",      "ALSA"};
+
+/** Where a name comes in kPreference.
+    @param name  an API's name
+    @return      its index, or the count past the last for a name not there */
+std::size_t RankOf(const std::string &name)
+{
+    const auto found = std::find(std::begin(kPreference), std::end(kPreference), name);
+    return static_cast<std::size_t>(found - std::begin(kPreference));
+}
+
+/** Every audio back end this build carries, the order a name offered by two of them is resolved in: the first serves
+    it. Built on first use, so no translation unit's statics have to be ready
     before another's.
     @return  the back ends, in preference order */
 const std::vector<const AudioBackend *> &AudioBackends()
@@ -32,6 +57,10 @@ const std::vector<const AudioBackend *> &AudioBackends()
 #if defined(_WIN32)
         // The suite's own WASAPI, in its three modes, ahead of ASIO: only a person with an ASIO driver wants ASIO.
         &WasapiBackend(),
+#endif
+#if defined(RECKLESS_AUDIO_ALSA)
+        // The toolkit's own ALSA, ahead of RtAudio's, which it replaces.
+        &AlsaBackend(),
 #endif
         &RtAudioBackend(),
     };
@@ -60,6 +89,8 @@ std::vector<std::string> AudioApis()
             }
         }
     }
+    std::stable_sort(names.begin(), names.end(),
+                     [](const std::string &a, const std::string &b) { return RankOf(a) < RankOf(b); });
     return names;
 }
 

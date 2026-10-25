@@ -183,40 +183,24 @@ FetchContent_MakeAvailable(monocypher)
 #   macOS    CoreAudio and CoreMIDI;
 #   Windows  ASIO, when the configure has the ASIO SDK, with WinMM's MIDI - WASAPI is the toolkit's own back end
 #            (audio/win/WasapiDevice.cpp), never RtAudio's;
-# Linux ALSA and JACK, with ALSA's sequencer for MIDI - each where its development headers are installed. Three details
+#   Linux    JACK, with ALSA's sequencer for MIDI - each where its development headers are installed - ALSA's audio
+#            being the toolkit's own back end (audio/linux/AlsaDevice.cpp), never RtAudio's. Three details
 # are the toolkit's. RtAudio's ASIO back end compiles against the fetched Steinberg SDK - its headers and the three host
 # files every ASIO host compiles (asio.cpp, asiodrivers.cpp, asiolist.cpp) - and never against the copies of them
 # RtAudio's tarball carries in include/, which are not on any path; the one header of RtAudio's own that it asks for
 # there, iasiothiscallresolver.h, defines nothing on 64-bit Windows, the only Windows the toolkit builds, and is written
 # into the build tree in that form. JACK is linked at no point: libjack is loaded by name at run time
 # (audio/linux/JackLoader.cpp), so a machine without it runs on ALSA rather than failing to start - every JACK function
-# RtAudio calls is renamed to the loader's by a header forced into RtAudio.cpp (audio/linux/JackNames.h). And three
-# changes are applied as the tarball is unpacked, each script saying why: one fix of upstream's after the pinned
-# release, ASIO's bufferSwitchTimeInfo callback, which a driver may call whatever the host answers and which RtAudio
-# left null (cmake/PatchRtAudio.cmake); and two of the toolkit's own to the ALSA back end - its stop threshold at the
-# buffer's size, where RtAudio left it past the boundary so a device ran on through an xrun no callback heard of, with
-# a duplex stream's playback primed with silence so it starts, and starts again, a buffer ahead
-# (cmake/PatchRtAudioAlsaXruns.cmake); and its stream's state read and written under the stream's mutex, which the
-# callback thread read unlocked while another thread wrote it, with the thread's run flag atomic
-# (cmake/PatchRtAudioAlsaThreads.cmake). Both libraries
-# compile without the toolkit's warning set, a fetched tree being no part of this one's to keep clean, and their headers
-# are SYSTEM to the code that includes them.
+# RtAudio calls is renamed to the loader's by a header forced into RtAudio.cpp (audio/linux/JackNames.h). And one fix of
+# upstream's after the pinned release is applied as the tarball is unpacked: ASIO's bufferSwitchTimeInfo callback,
+# which a driver may call whatever the host answers and which RtAudio left null (cmake/PatchRtAudio.cmake). Both
+# libraries compile without the toolkit's warning set, a fetched tree being no part of this one's to keep clean, and
+# their headers are SYSTEM to the code that includes them.
 if(RECKLESS_BUILD_AUDIO)
-    # The ALSA patches are versioned by their own hashes, so a change to one is applied again over a kept tree (the
-    # scripts say how), and editing one configures again.
-    set(rtaudio_alsa_patch "${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchRtAudioAlsaXruns.cmake")
-    file(SHA256 "${rtaudio_alsa_patch}" rtaudio_alsa_patch_version)
-    set(rtaudio_threads_patch "${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchRtAudioAlsaThreads.cmake")
-    file(SHA256 "${rtaudio_threads_patch}" rtaudio_threads_patch_version)
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rtaudio_alsa_patch}" "${rtaudio_threads_patch}")
     FetchContent_Declare(rtaudio
         URL      https://github.com/thestk/rtaudio/archive/refs/tags/${RECKLESS_RTAUDIO_VERSION}.tar.gz
         URL_HASH SHA256=7206c8b6cee43b474f43d64988fefaadfdcfc4264ed38d8de5f5d0e6ddb0a123
         PATCH_COMMAND "${CMAKE_COMMAND}" -DSRC=<SOURCE_DIR> -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchRtAudio.cmake"
-              COMMAND "${CMAKE_COMMAND}" -DSRC=<SOURCE_DIR> -DVERSION=${rtaudio_alsa_patch_version}
-                      -P "${rtaudio_alsa_patch}"
-              COMMAND "${CMAKE_COMMAND}" -DSRC=<SOURCE_DIR> -DVERSION=${rtaudio_threads_patch_version}
-                      -P "${rtaudio_threads_patch}"
         SOURCE_SUBDIR reckless-builds-this-itself)
     FetchContent_Declare(rtmidi
         URL      https://github.com/thestk/rtmidi/archive/refs/tags/${RECKLESS_RTMIDI_VERSION}.tar.gz
@@ -287,11 +271,11 @@ if(RECKLESS_BUILD_AUDIO)
     else()
         find_package(ALSA)
         if(ALSA_FOUND)
-            target_compile_definitions(rtaudio PRIVATE __LINUX_ALSA__)
-            target_link_libraries(rtaudio PRIVATE ALSA::ALSA)
+            # ALSA's audio is the toolkit's own (audio/linux/AlsaDevice.cpp, added to reckless_audio_devices below):
+            # RtAudio compiles no ALSA back end, and RtMidi still serves ALSA's sequencer.
             target_compile_definitions(rtmidi PRIVATE __LINUX_ALSA__)
             target_link_libraries(rtmidi PRIVATE ALSA::ALSA)
-            list(APPEND RECKLESS_AUDIO_APIS ALSA "ALSA sequencer")
+            list(APPEND RECKLESS_AUDIO_APIS "ALSA (the toolkit's own)" "ALSA sequencer")
         endif()
         find_path(RECKLESS_JACK_INCLUDE_DIR jack/jack.h)
         if(RECKLESS_JACK_INCLUDE_DIR)
@@ -554,8 +538,8 @@ target_link_libraries(reckless_app_shell
 # The audio device layer: header only but for the devices, namespace reckless::audio, included by bare name - the
 # device and MIDI interfaces (AudioDevice.h), the settings an app keeps (AudioSettings.h: reckless-technology/<name>/
 # audio.json) and an offline device for the suites (OfflineDevice.h). The devices themselves are reckless_audio_devices,
-# the one source that meets RtAudio and RtMidi, with Windows Audio, WASAPI as the toolkit's own back end
-# (audio/win/WasapiDevice.cpp).
+# the one source that meets RtAudio and RtMidi, with the toolkit's own back ends beside it: Windows Audio on WASAPI
+# (audio/win/WasapiDevice.cpp) and ALSA on alsa-lib (audio/linux/AlsaDevice.cpp).
 # ---------------------------------------------------------------------------------------------------------------
 add_library(reckless_common_audio INTERFACE)
 target_include_directories(reckless_common_audio INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/audio")
@@ -572,6 +556,13 @@ if(RECKLESS_BUILD_AUDIO)
         # its stream thread runs under.
         target_sources(reckless_audio_devices PRIVATE audio/win/WasapiDevice.cpp)
         target_link_libraries(reckless_audio_devices PRIVATE ole32 avrt)
+    endif()
+    if(NOT APPLE AND NOT WIN32 AND ALSA_FOUND)
+        # ALSA, the toolkit's own back end on alsa-lib (audio/linux/AlsaDevice.cpp), listed ahead of RtAudio's and so
+        # serving the name in its place; RtAudio still compiles its own for JACK's sake until JACK moves too.
+        target_sources(reckless_audio_devices PRIVATE audio/linux/AlsaDevice.cpp)
+        target_link_libraries(reckless_audio_devices PRIVATE ALSA::ALSA)
+        target_compile_definitions(reckless_audio_devices PRIVATE RECKLESS_AUDIO_ALSA)
     endif()
     if(WIN32 AND "ASIO" IN_LIST RECKLESS_AUDIO_APIS)
         # The ASIO SDK's host headers, for the one thing RtAudioDevice.cpp gives its host code: a list for ASIOExit to
