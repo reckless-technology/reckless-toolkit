@@ -203,7 +203,7 @@ if(RECKLESS_BUILD_AUDIO)
         FetchContent_Declare(rtaudio
             URL      https://github.com/thestk/rtaudio/archive/refs/tags/${RECKLESS_RTAUDIO_VERSION}.tar.gz
             URL_HASH SHA256=7206c8b6cee43b474f43d64988fefaadfdcfc4264ed38d8de5f5d0e6ddb0a123
-                SOURCE_SUBDIR reckless-builds-this-itself)
+            SOURCE_SUBDIR reckless-builds-this-itself)
         FetchContent_Declare(rtmidi
             URL      https://github.com/thestk/rtmidi/archive/refs/tags/${RECKLESS_RTMIDI_VERSION}.tar.gz
             URL_HASH SHA256=ef7bcda27fee6936b651c29ebe9544c74959d0b1583b716ce80a1c6fea7617f0
