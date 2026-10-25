@@ -48,7 +48,7 @@ correlation coefficient over everything after it must reach 0.9, the gain printe
 
 | API | device | made by | loop | xrun | goes away |
 |---|---|---|---|---|---|
-| CoreAudio | the default output, written with silence | the machine (the Mac runner's speakers) | none: an input would ask the person at the machine for the microphone | a stalled callback | - |
+| CoreAudio | the default output, written with silence | the machine: on the hosted macOS runner, the virtual machine's "Apple Virtual Sound Device", whose clock the hypervisor schedules, so the stream tests allow it one xrun in ten callbacks and a 10 % rate tolerance as they allow JACK's dummy driver | none: an input would ask the person at the machine for the microphone | a stalled callback | - |
 | Windows Audio | the default render endpoint, heard back by WASAPI's loopback capture | the machine (none on CI) | correlated | a stalled callback | - |
 | Windows Audio (Exclusive Mode) | the default render endpoint, the stream's alone | the machine (none on CI) | none: no mixer for a loopback to hear | a stalled callback | - |
 | ASIO | the SDK's sample driver: 16 in, 16 out, 16-bit, 256 frames, 44.1 or 48 kHz, a sine on its first input and a sawtooth on its second | the suite: built from the fetched SDK and registered by the binary itself | the inputs, exactly as the driver makes them | the driver's resync request | the driver's reset request |
