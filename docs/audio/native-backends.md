@@ -21,9 +21,8 @@ descriptor goes when CoreAudio moves, the last name it serves.
 ## Where it stands
 
 **Done, 2026-10-25: every API on every platform is the toolkit's own**, and RtAudio and RtMidi are compiled into no
-binary, nor fetched: the products' notices name neither. macOS has been run on real hardware on Apple silicon, below.
-What is left is the hardware a CI runner lacks elsewhere: Windows Audio and ASIO on a real interface, and MIDI from a
-real keyboard on Windows and Linux.
+binary, nor fetched: the products' notices name neither. macOS and Windows have both been run on real hardware, below.
+What is left is MIDI from a real keyboard on Windows and Linux.
 
 | API | back end | since |
 |---|---|---|
@@ -109,6 +108,58 @@ Three faults the hardware found, each fixed in the back end and held by the suit
   88.2 or 96 kHz, 16 at 48 - the HAL reports one processor overload at cycle 0, before the first IOProc, of nearly
   every stream, a bare IOProc that only clears its buffers included, and none after it. It is the HAL's I/O thread
   starting, and the back end leaves it unreported, as ALSA's leaves an xrun before its first callback.
+
+Windows Audio and ASIO, measured on the same BEHRINGER UMC1820 - its Thesycon driver and its own ASIO driver - with
+outputs 3 and 4 patched by cable to inputs 1 and 2, on Windows 11 ([device-tests.md](device-tests.md), "On Windows with
+an interface"):
+
+- **ASIO opens every block the driver offers, at every rate.** Twenty-four runs, 44.1, 48, 88.2 and 96 kHz against 32,
+  64, 128, 256, 512 and 1024 frames: the block opened exactly as asked in all twenty-four, the rate by the clock within
+  0.06 %, no xruns, and each channel's 64-tap fit 0.9995 or better. Windows Audio's exclusive mode opens the block
+  asked for too; **its shared mode cannot** - this driver reports `GetSharedModeEnginePeriod` smallest, default, step
+  and largest all 480 frames, so a block of 256 opens at 480, as the suite's own note already said of it.
+- **The round trip, against what each API reports.** ASIO and the exclusive mode report it honestly; the shared mode
+  does not, and cannot.
+
+  | API | block asked / opened | reports beyond the block | the cable measures | measured less reported |
+  |---|---|---|---|---|
+  | ASIO | 256 / 256 | 224 | 797 frames, 16.60 ms | +61 (1.27 ms) |
+  | Windows Audio (Exclusive Mode) | 256 / 256 | 768 | 1309 frames, 27.27 ms | +29 (0.60 ms) |
+  | Windows Audio | 256 / 480 | 480 | 2573 frames, 53.60 ms | **+1133 (23.60 ms)** |
+
+  **The shared mode leaves the audio engine's mixing out of what it reports.** `IAudioClient::GetStreamLatency` gives
+  each client its own path and nothing of the mixing between the render client and the capture one, so a cable measures
+  23.6 ms more than the mode reports. There is nothing to add it to: no call discloses it. The suite therefore holds
+  the shared mode only to a round trip no sooner than it reports
+  (`TestDevice::does_report_whole_round_trip`), and prints the shortfall rather than judging it. The exclusive mode,
+  which has no mixer, reported the same cable to 29 frames.
+- **What ASIO leaves unaccounted shrinks as the rate rises**, and does not move with the block: 58 to 70 frames at
+  44.1 kHz and 61 to 67 at 48 (about 1.5 and 1.4 ms), 17 to 28 at 88.2 and 5 to 6 at 96 (0.19 and 0.06 ms). Within one
+  rate it is the same at 32 frames as at 1024, which is what says it is the converters' own delay and not anything the
+  stream does.
+
+One fault the hardware found, in the back end, and two in the suite that hid it:
+
+- **ASIO reported the blocks twice.** `ASIOGetLatencies` is measured from the buffer switch, so its two figures already
+  contain the block each way - the SDK's `asio.h` has the input's as "usually the size of one block in sample frames,
+  plus device specific latencies" - where `StreamFormat::reported_latency` is the latency *beyond* the block. The back
+  end assigned the sum straight across, so a stream's reported round trip ran two blocks long: 60 frames out at 64,
+  445 at 256 and 1987 at 1024, the error growing with the block until the loop test failed on it. One block now comes
+  off each direction that is open, and what is left over is the constant above.
+- **The suite's ASIO rig hid every driver but its own.** It copies the machine's drivers into the registry view it
+  registers its test driver through, and copied them with `RegCopyTreeW`, which an application hive refuses
+  (`ERROR_ACCESS_DENIED`) - a result nothing checked. The keys were created, and counted, and arrived empty, so the
+  SDK read no class from them and dropped the lot: the header said "3 of the machine's own drivers listed beside it"
+  while the device list held the test driver alone. On no machine with a real ASIO driver had that driver ever listed.
+- **Neither Windows rig could be pointed at an interface.** Only CoreAudio's took a device and a cable from the
+  environment; Windows Audio's was the default render endpoint and ASIO's the sample driver, with no way to ask for
+  anything else. Both now take the same shape of variables, and the cable parser is one function all three rigs call
+  (`DeviceRig.h`'s `ApplyCable`) rather than a second and third copy of it.
+
+**A real ASIO driver cannot be asked for an xrun**, so `CountsAnXrunAndPlaysOnAfterIt` skips where
+`RECKLESS_ASIO_DEVICE` names one. On ASIO an xrun reaches the callback only as the driver's own resync request, and
+nothing in the API obliges a driver to send one: the UMC1820 carried on without a word through a callback stalled well
+past its block. The SDK's sample driver, which asks to order, is what holds that test.
 
 **CoreAudio has no exclusive mode here, on purpose.** Its exclusive access is hog mode
 (`kAudioDevicePropertyHogMode`), and it buys nothing a stream of this layer wants: the nominal rate is the hardware's

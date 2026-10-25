@@ -144,12 +144,7 @@ inline constexpr const char *kClient = "Reckless Device Test";
 
 // ---- What the run requires -----------------------------------------------------------------------------------------
 
-inline std::string Trim(const std::string &text)
-{
-    const auto first = text.find_first_not_of(" \t");
-    const auto last  = text.find_last_not_of(" \t");
-    return first == std::string::npos ? std::string() : text.substr(first, last - first + 1);
-}
+// Trim and Environment are DeviceRig.h's, shared with the rigs that are not in this header.
 
 inline std::vector<std::string> SplitList(const std::string &text)
 {
@@ -176,21 +171,6 @@ inline std::string JoinList(const std::vector<std::string> &items)
     return text.empty() ? std::string("none") : text;
 }
 
-/** An environment variable's value, empty where it is not set. */
-inline std::string Environment(const char *name)
-{
-    // MSVC deprecates getenv for _dupenv_s, whose copy a test has no use for.
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
-    const char *text = std::getenv(name);
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-    return text != nullptr ? std::string(text) : std::string();
-}
-
 /** The APIs RECKLESS_AUDIO_REQUIRE names: each must have its test device, or its tests fail. */
 inline const std::vector<std::string> &RequiredApis()
 {
@@ -201,7 +181,7 @@ inline const std::vector<std::string> &RequiredApis()
 /** A whole number from an environment variable, 0 where it is not set or is not one. */
 inline int EnvironmentNumber(const char *name)
 {
-    const std::string text = Trim(Environment(name));
+    const std::string text = Environment(name);
     if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos || text.size() > 9)
     {
         return 0;
@@ -941,9 +921,9 @@ class CoreAudioRig final : public DeviceRig
     TestDevice Find(const std::vector<DeviceInfo> &devices) override
     {
         TestDevice        device;
-        const std::string named       = Trim(Environment("RECKLESS_COREAUDIO_DEVICE"));
-        const std::string input_named = Trim(Environment("RECKLESS_COREAUDIO_INPUT"));
-        const std::string cable       = Trim(Environment("RECKLESS_COREAUDIO_LOOP"));
+        const std::string named       = Environment("RECKLESS_COREAUDIO_DEVICE");
+        const std::string input_named = Environment("RECKLESS_COREAUDIO_INPUT");
+        const std::string cable       = Environment("RECKLESS_COREAUDIO_LOOP");
         const DeviceInfo *output      = nullptr;
         const DeviceInfo *input       = nullptr;
         for (const DeviceInfo &info : devices)
@@ -1006,27 +986,10 @@ class CoreAudioRig final : public DeviceRig
                                                   : "duplex across two devices, joined in "
                                                     "the back end's private aggregate";
         }
-        if (!cable.empty())
+        if (!cable.empty() &&
+            !ApplyCable(device, cable, output->output_channels, input->input_channels, "RECKLESS_COREAUDIO_LOOP"))
         {
-            const auto colon        = cable.find(':');
-            const int  first_output = colon == std::string::npos ? 0 : std::atoi(cable.substr(0, colon).c_str());
-            const int  first_input  = colon == std::string::npos ? 0 : std::atoi(cable.substr(colon + 1).c_str());
-            if (first_output < 1 || first_input < 1 || first_output + 1 > output->output_channels ||
-                first_input + 1 > input->input_channels)
-            {
-                device.found   = false;
-                device.missing = "RECKLESS_COREAUDIO_LOOP is '" + cable +
-                                 "': it names two outputs and two inputs the devices have as \"<output>:<input>\", "
-                                 "counted from 1 - \"3:1\" for outputs 3 and 4 into inputs 1 and 2";
-                return device;
-            }
-            device.channels     = 2;
-            device.first_output = first_output - 1;
-            device.first_input  = first_input - 1;
-            device.loop         = Loop::kCable;
-            device.about = "outputs " + std::to_string(first_output) + " and " + std::to_string(first_output + 1) +
-                           " patched by cable to inputs " + std::to_string(first_input) + " and " +
-                           std::to_string(first_input + 1) + " (RECKLESS_COREAUDIO_LOOP), " + device.about;
+            return device;
         }
         return device;
     }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -64,8 +65,78 @@ struct TestDevice
     bool        is_scheduler_timed{false}; ///< whether the device's clock is a thread of the machine's, as above
     XrunBy      xrun_by{XrunBy::kNothing}; ///< how the device is made to report an xrun
     std::string no_xrun;                   ///< for XrunBy::kNothing: why an xrun cannot reach the callback
-    std::string about;                     ///< what the device is, printed with the tables
+    /** Whether what the API reports accounts for the whole path a cable measures. Where it does, a cable's round trip
+        is held to two blocks and the reported latency within a 64th of a second. Where it does not - Windows Audio's
+        shared mode, whose GetStreamLatency leaves out the audio engine's own mixing path - the round trip is held only
+        to being no sooner than what is reported, and the shortfall is printed rather than judged. */
+    bool        does_report_whole_round_trip{true};
+    std::string partial_latency; ///< for the above being false: what the API leaves out of the figure it reports
+    std::string about;           ///< what the device is, printed with the tables
 };
+
+/** The text with the spaces and tabs at either end taken off.
+    @param text  the text
+    @return      the text trimmed; empty where it is nothing but spaces */
+inline std::string Trim(const std::string &text)
+{
+    const auto first = text.find_first_not_of(" \t");
+    const auto last  = text.find_last_not_of(" \t");
+    return first == std::string::npos ? std::string() : text.substr(first, last - first + 1);
+}
+
+/** An environment variable's value, trimmed; empty where it is not set.
+    @param name  the variable's name
+    @return      its value, or empty */
+inline std::string Environment(const char *name)
+{
+    // MSVC deprecates getenv for _dupenv_s, whose copy a test has no use for.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    const char *text = std::getenv(name);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    return text != nullptr ? Trim(std::string(text)) : std::string();
+}
+
+/** A cable a person patched, as every rig's loop variable names it: "<output>:<input>", the first of two output
+    channels and the first of two inputs, counted from 1 - "3:1" for outputs 3 and 4 into inputs 1 and 2. It makes the
+    device's loop a cable's, so the stream, loop and silence tests run duplex through it.
+
+    One parser for CoreAudio's, Windows Audio's and ASIO's rigs: the variable's name differs, nothing else does.
+
+    @param device           the test device, whose channels, first channel each way, loop and description it sets
+    @param cable            the variable's value
+    @param output_channels  the output device's channels, which the pair must be within
+    @param input_channels   the input device's channels, which the pair must be within
+    @param variable         the variable's name, for the description and the reason it is refused
+    @return                 true where the cable was applied; false with `device.missing` set where it names no such
+                            pair, `device.found` cleared */
+inline bool ApplyCable(TestDevice &device, const std::string &cable, int output_channels, int input_channels,
+                       const char *variable)
+{
+    const auto colon        = cable.find(':');
+    const int  first_output = colon == std::string::npos ? 0 : std::atoi(cable.substr(0, colon).c_str());
+    const int  first_input  = colon == std::string::npos ? 0 : std::atoi(cable.substr(colon + 1).c_str());
+    if (first_output < 1 || first_input < 1 || first_output + 1 > output_channels || first_input + 1 > input_channels)
+    {
+        device.found   = false;
+        device.missing = std::string(variable) + " is '" + cable +
+                         "': it names two outputs and two inputs the devices have as \"<output>:<input>\", counted "
+                         "from 1 - \"3:1\" for outputs 3 and 4 into inputs 1 and 2";
+        return false;
+    }
+    device.channels     = 2;
+    device.first_output = first_output - 1;
+    device.first_input  = first_input - 1;
+    device.loop         = Loop::kCable;
+    device.about        = "outputs " + std::to_string(first_output) + " and " + std::to_string(first_output + 1) +
+                          " patched by cable to inputs " + std::to_string(first_input) + " and " +
+                          std::to_string(first_input + 1) + " (" + variable + "), " + device.about;
+    return true;
+}
 
 /** One API's test device: found, made, wired, and made to fail. Message thread throughout. */
 class DeviceRig

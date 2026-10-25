@@ -20,6 +20,7 @@
 #include <alsa/asoundlib.h>
 #endif
 
+using namespace reckless::audio::test; // the rigs' own: Environment, Trim, the test device
 using namespace reckless::audio::test::suite;
 
 // ---- The build's APIs ----------------------------------------------------------------------------------------------
@@ -408,6 +409,12 @@ TEST_P(AudioDevices, CarriesTheSamplesALoopBringsBack)
         {
             table.Row("the API's round trip", Str(predicted) + " samples: two blocks of " + Str(format.block_size) +
                                                   " and the " + Str(format.reported_latency) + " it reports");
+            table.Row("measured less reported",
+                      Str(static_cast<std::int64_t>(lag) - predicted) + " samples (" +
+                          Fixed(1e3 * (static_cast<double>(lag) - static_cast<double>(predicted)) / rate, 2) + " ms)" +
+                          (device.does_report_whole_round_trip
+                               ? std::string()
+                               : ", and the figure leaves out " + device.partial_latency));
         }
         // Through a cable, each channel's fit by a short filter (FilteredCorrelation): the converters' band and a
         // fraction of a sample's delay taken in, so only what the stream did wrong is left - and the second channel
@@ -425,7 +432,7 @@ TEST_P(AudioDevices, CarriesTheSamplesALoopBringsBack)
         if (cable)
         {
             EXPECT_GE(fit0, 0.99) << "the first channel back is not what was played, filtered - is the cable patched "
-                                     "as RECKLESS_COREAUDIO_LOOP says, and the input's gain up but not clipping?";
+                                     "as this API's loop variable says, and the input's gain up but not clipping?";
             EXPECT_GE(fit1, 0.99) << "the second channel back is not what was played on it, filtered";
         }
         else
@@ -439,8 +446,19 @@ TEST_P(AudioDevices, CarriesTheSamplesALoopBringsBack)
             // second of what the API reports, and never sooner than its two blocks.
             EXPECT_GE(static_cast<std::int64_t>(lag), 2 * static_cast<std::int64_t>(format.block_size))
                 << "the samples came back sooner than the two blocks they crossed";
-            EXPECT_LE(std::llabs(static_cast<std::int64_t>(lag) - predicted), static_cast<std::int64_t>(rate / 64))
-                << "the latency the API reports is not the round trip a cable measures";
+            if (device.does_report_whole_round_trip)
+            {
+                EXPECT_LE(std::llabs(static_cast<std::int64_t>(lag) - predicted), static_cast<std::int64_t>(rate / 64))
+                    << "the latency the API reports is not the round trip a cable measures";
+            }
+            else
+            {
+                // The API leaves part of the path out of the figure it reports (TestDevice::partial_latency), so the
+                // round trip cannot be predicted from it - only that it is never sooner than what is reported.
+                EXPECT_GE(static_cast<std::int64_t>(lag), predicted)
+                    << "the samples came back sooner than the latency the API reports, which already leaves out "
+                    << device.partial_latency;
+            }
         }
     }
     else
@@ -1125,7 +1143,7 @@ TEST(MidiInputs, CarryWhatAPersonPlaysOnAKeyboard)
     // as a settings file keeps it, and what the person plays - notes held and let go, a wheel, a slider - arriving as
     // whole MIDI 1.0 messages in the order played, on the index the input was opened under. No CI runner has a
     // keyboard or a person, so it runs only where the variable is set.
-    const std::string name = Trim(Environment("RECKLESS_MIDI_KEYBOARD"));
+    const std::string name = Environment("RECKLESS_MIDI_KEYBOARD");
     if (name.empty())
     {
         GTEST_SKIP() << "RECKLESS_MIDI_KEYBOARD names no keyboard: this test is a person playing one";
