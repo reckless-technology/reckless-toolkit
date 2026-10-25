@@ -12,9 +12,29 @@ what it is, which API names it can open on this machine, and how to make a syste
 by hand in `DeviceBackends.cpp`.
 
 That is what makes this a migration rather than a rewrite. **A native back end is listed ahead of RtAudio's and takes
-its name**, so one API moves at a time and the device suite can be run against either. RtAudio's descriptor goes when
-the last name it serves has moved, and `cmake/PatchRtAudio.cmake`, `cmake/PatchRtAudioAlsaXruns.cmake` and
-`cmake/PatchRtAudioAlsaThreads.cmake` go with it.
+its name**, so one API moves at a time and the device suite can be run against either. The order a Standalone offers
+the names in is the series' own (`kPreference` in `DeviceBackends.cpp`), apart from which back end serves each, so a
+native back end listed first does not jump its name ahead of RtAudio's others. Once a name has moved, RtAudio stops
+compiling that API's back end and its patches go. RtAudio's descriptor goes when the last name it serves has moved,
+and `cmake/PatchRtAudio.cmake` with it.
+
+## Where it stands
+
+| API | back end | since |
+|---|---|---|
+| Windows Audio, its three modes | the toolkit's, `audio/win/WasapiDevice.cpp` | before 2026-10-25 |
+| ALSA | the toolkit's, `audio/linux/AlsaDevice.cpp`; RtAudio no longer compiles its ALSA, and both ALSA patches are gone | 2026-10-25 |
+| JACK | RtAudio, through `audio/linux/JackLoader.cpp` | next |
+| CoreAudio, ASIO | RtAudio | on a Mac, and on Windows |
+| MIDI everywhere | RtMidi | after each platform's audio |
+
+ALSA, measured against RtAudio's on the same machine and the same loopback card
+([device-tests.md](device-tests.md), "Why a case took a minute"): every device named as RtAudio named it, a stop in
+under a millisecond where RtAudio's took seconds, the loop's latency 768 samples at 256 frames where RtAudio's was
+1280, and an xrun recovered in one restart. Settled on the way: an output buffer of three periods (RtAudio's was four),
+an input buffer of at least 4096 frames since PipeWire's `default` hands its input over a 1024-frame quantum at a time,
+and a device's free direction listed where another program holds the other - the UMC1820's inputs, which RtAudio
+dropped while PipeWire played through it.
 
 Nothing above the seam has to change: `AudioDevice.h`'s `AudioSystem` (nine pure virtuals) and `MidiSystem` (four)
 were already written against no library, and no test names a back end.
@@ -60,7 +80,7 @@ in a callback is allocation and locks, and the suite already holds the callback 
 ## The order, and why
 
 1. **ALSA.** First: it is the one that is broken, the loopback rig is already in the suite, and it retires two of the
-   three patches.
+   three patches. Done, 2026-10-25.
 2. **CoreAudio.** Low risk, and the wrappers are thin shims over it.
 3. **ASIO.** The SDK is pinned at 2.3.4 and `tests/devices/AsioRig.cpp` already drives its sample driver.
 4. **JACK.** Smallest, and `audio/linux/JackLoader.cpp` already dlopens libjack so a machine without it still starts.
@@ -88,7 +108,9 @@ binary, block asked 256: low latency 480, exclusive 256, ASIO 256.
 and `FindDevice` matches on the name with the channel layout, ordinals appended where two devices share one. A native
 back end will not name the same hardware the same way. Each one must either reproduce that naming or the settings
 layer must miss gracefully and fall back to the default device - decide per back end, and note that v1.1.0 shipped on
-2026-10-24, so there are settings in the field.
+2026-10-24, so there are settings in the field. WASAPI and ALSA reproduce it, ALSA to the letter ("Default ALSA
+Device", "<card name> (<PCM id>)"), and the ordinals are one function every back end calls, `AudioDevice.h`'s
+`NameApart`.
 
 ## Open, not yet decided
 

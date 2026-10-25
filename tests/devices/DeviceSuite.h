@@ -392,7 +392,7 @@ inline float NoiseSample(std::int64_t frame, int channel)
 
 /**
     What a stream test opens a stream on: each callback stamped and counted, its block and its channel pointers checked
-    against the layout RtAudioDevice promises (every channel's frames after the channel before's), a signal played and
+    against the layout every back end promises (every channel's frames after the channel before's), a signal played and
     the first two inputs recorded - all into storage sized when it is built, so the audio thread allocates nothing.
     Read only once the stream has stopped, but for the count.
 */
@@ -542,7 +542,7 @@ class Recorder final : public AudioCallback
         return xruns_[i] != 0;
     }
 
-    /** @return the callbacks whose channels were not laid out as RtAudioDevice promises */
+    /** @return the callbacks whose channels were not laid out as every back end promises */
     std::int64_t layout_faults() const noexcept
     {
         return layout_faults_;
@@ -580,7 +580,7 @@ class Recorder final : public AudioCallback
     }
 
   private:
-    /** The block's channels as RtAudioDevice lays them out: the counts the stream opened, every pointer there, each
+    /** The block's channels as every back end lays them out: the counts the stream opened, every pointer there, each
         channel's frames after the channel before's in one buffer each way. The first fault is described (a fixed
         string, chosen not built).
         @param inputs           the block's input pointers
@@ -818,7 +818,7 @@ class CoreAudioRig final : public DeviceRig
 
 /** ALSA's test device: the kernel's loopback card (snd-aloop), whose playback on device 0 comes back as capture on
     device 1, subdevice by subdevice, bit for bit - the CI job loads it and gives its user the card's nodes. Its two
-    devices carry one name in RtAudio's list, the second with its ordinal (RtAudioDevice.h). */
+    devices carry one name, and the second is listed with its ordinal (AudioDevice.h's NameApart). */
 class AlsaRig final : public DeviceRig
 {
   public:
@@ -850,7 +850,7 @@ class AlsaRig final : public DeviceRig
         device.block_size     = 256;
         device.loop           = Loop::kExact;
         device.rate_tolerance = 0.03;
-        device.xrun_by        = reckless::audio::test::XrunBy::kStall; // RtAudio's ALSA back end, patched by the build
+        device.xrun_by        = reckless::audio::test::XrunBy::kStall; // the device stops, and is started again
         device.about = "snd-aloop: playback on hw:Loopback,0 comes back as capture on hw:Loopback,1, bit for bit";
         return device;
     }

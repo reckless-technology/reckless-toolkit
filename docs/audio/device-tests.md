@@ -1,7 +1,8 @@
 # The audio layer on the real APIs
 
-The audio layer (`audio/`) reaches the machine's interfaces through RtAudio: `RtAudioDevice.cpp` is the suite's
-`AudioSystem` on CoreAudio, Windows Audio (WASAPI, the suite's own in three modes), ASIO, JACK and ALSA. Two suites hold it. `audio`
+The audio layer (`audio/`) reaches the machine's interfaces through the back ends `DeviceBackends.h` chooses between:
+the toolkit's own on Windows Audio (WASAPI, in three modes) and ALSA, and RtAudio's on CoreAudio, ASIO and JACK until
+each moves (`native-backends.md`). Two suites hold it. `audio`
 (`reckless_audio_test`) runs the engine on the offline device and needs no hardware; `audio_devices`
 (`reckless_audio_device_test`, `tests/test_audio_devices.cpp`) opens every API the build carries on a
 deterministic test device and holds what really happens there. This note is the second: what it holds, the device it
@@ -50,7 +51,7 @@ correlation coefficient over everything after it must reach 0.9, the gain printe
 | Windows Audio (Exclusive Mode) | the default render endpoint, the stream's alone | the machine (none on CI) | none: no mixer for a loopback to hear | a stalled callback | - |
 | ASIO | the SDK's sample driver: 16 in, 16 out, 16-bit, 256 frames, 44.1 or 48 kHz, a sine on its first input and a sawtooth on its second | the suite: built from the fetched SDK and registered by the binary itself | the inputs, exactly as the driver makes them | the driver's resync request | the driver's reset request |
 | JACK | `jackd` on the dummy driver, 48 kHz, 1024 frames, 3 capture and 5 playback ports, under a name of its own | the suite: a server for each test | exact: the stream's outputs wired to its own inputs through the server | a stalled callback | the server stopped with SIGTERM, then started again |
-| ALSA | the kernel's loopback card (`snd-aloop`): playback on its device 0 comes back as capture on its device 1 | the CI job (`tools/audio-test-devices.sh`) | exact | a stalled callback, RtAudio patched to report it (below) | - |
+| ALSA | the kernel's loopback card (`snd-aloop`): playback on its device 0 comes back as capture on its device 1 | the CI job (`tools/audio-test-devices.sh`) | exact | a stalled callback (below) | - |
 
 **JACK.** `devices/JackRig.cpp` starts `jackd --no-realtime --name reckless-test-<pid>-<n> -d dummy -r 48000 -p 1024 -C
 3 -P 5` for each test and stops it after, with `JACK_DEFAULT_SERVER` naming it and `JACK_NO_START_SERVER` set, so every
@@ -69,7 +70,7 @@ after the Stop, the loop's samples bit for bit, an xrun made reported - is held 
 
 **ALSA.** The loopback card's two devices carry one name, `Loopback (Loopback PCM)`, since both PCMs are named so; the
 layer lists the second as `Loopback (Loopback PCM) (2)` (a later device sharing a name with an earlier one the same way
-carries its ordinal), so a stream can name playback on one and capture on the other. The capture side of a loopback pair
+carries its ordinal: `AudioDevice.h`'s `NameApart`), so a stream can name playback on one and capture on the other. The capture side of a loopback pair
 opens as many channels as its playback side, so the engine's test opens two inputs and no key there.
 
 **Windows Audio.** WASAPI is the suite's own back end (`audio/win/WasapiDevice.h`), three APIs to the suite, one
@@ -93,69 +94,33 @@ ring and its margin - is `audio/WasapiFormats.h`, which the `audio` suite holds 
 
 ## ALSA: an xrun reported, and played on from
 
-RtAudio 6.0.1 opens every ALSA PCM with its stop threshold at `ULONG_MAX`, past the boundary: a playback buffer that runs
-dry plays the silence RtAudio has ALSA fill it with, a capture buffer that fills is written over, and the device runs on
-as if nothing had happened. RtAudio's own handling of an xrun - the `-EPIPE` branches of its read and write, which flag
-`RTAUDIO_INPUT_OVERFLOW` or `RTAUDIO_OUTPUT_UNDERFLOW` to the next callback and prepare the device again - never ran, and
-a callback stalled for 30 ms, past the 21 ms of a 4 x 256-frame buffer at 48 kHz, was reported as nothing. The build
-patches it as the tarball unpacks, beside the ASIO fix (`cmake/PatchRtAudioAlsaXruns.cmake`, each change marked in the
-code; the next section's patch follows it):
+ALSA is the toolkit's own back end (`audio/linux/AlsaDevice.cpp`; `AlsaDevice.h` says what it does). Its output buffer
+is three periods, its input's at least 4096 frames, and every PCM is opened with its stop threshold at the buffer's
+size, ALSA's default: a playback buffer that runs dry, or a capture buffer that fills, stops the device in the `XRUN`
+state, and the stream's thread meets it as `-EPIPE` from its next call (or as an error a poll reports). The recovery is
+one path whatever the devices are:
 
-- **The stop threshold is the buffer's size**, ALSA's default and the one aplay keeps: a playback buffer that runs dry,
-  or a capture buffer that fills, stops the device in the `XRUN` state; the next write or read fails with `-EPIPE`; and
-  RtAudio's existing branches flag the xrun to the next callback and prepare the device. The silence filling stays: it
-  keeps what a playback has played silent behind it.
-- **A duplex stream's playback is primed with a buffer of silence** before the stream starts, and again whenever an xrun
-  has stopped and prepared it. A stream that reads and writes is paced by its capture - each pass reads a period, which
-  waits for one, and writes a period, which finds room - so its playback keeps the level it started at. Started on its
-  first write's one period, as RtAudio starts a playback, it would run dry at the next period's end, and every period
-  after: an xrun a period. Primed, it starts a buffer ahead of the device, the latency the release had, whose
-  free-running playback landed its late writes a buffer on.
-- With the priming, **a capture linked to its playback** (`snd_pcm_link`: one card's two directions started and stopped
-  as one - the loopback card's are) finds the pair running at its first read. Its read would otherwise try to start the
-  pair with nothing to play, which a stop threshold under the boundary refuses with `-EPIPE`.
-- **An overrun is named**, as an underrun already was: RtAudio's warning for it carried whatever error came before -
-  which `RtAudioDevice`, reading a warning's text for a disconnection ("No such device"), could take for one.
+- **Both directions are dropped and prepared again**, the playback primed with a buffer of silence and the two started
+  - together where they are linked (`snd_pcm_link`: one card's two directions, as the loopback card's are), each on its
+  own where they are two cards. A suspend (`-ESTRPIPE`) is resumed where the driver can and recovered so where it
+  cannot.
+- **The next callback is told** (`xrun` true), and plays on a buffer ahead of the device, as the stream did from its
+  start.
 
-The recovery, path by path - the same on the loopback card and on a real one, the card's clock in place of the
-loopback's timer:
+The priming is what keeps a stream from reporting xruns it never had. Each pass waits until the input has a block and
+the output room for one, and a stream primed full finds room exactly as a block has played, on the input's clock where
+the two share one. What a listener hears of an xrun is silence for as long as the device was stopped, then the primed
+buffer's silence. The suite holds both ends of it on the loopback card: `CountsAnXrunAndPlaysOnAfterIt` stalls a
+callback for 30 ms and asks for the xrun at the next callback, none before it, and the stream at its rate from 300 ms
+on, read over two seconds, and through its loop one frame after another to the end.
 
-- **Playback alone:** the write that finds the device stopped fails, its block is dropped, the device is prepared, and
-  the next write starts it again (RtAudio's start threshold is one period); the writes after find room and refill the
-  buffer at once, nothing pacing them but the device. ALSA's ordinary recovery, as aplay's.
-- **Capture alone:** the read that finds the device stopped fails, the device is prepared, and the next read starts it
-  again.
-- **Duplex, linked:** an xrun either way stops both directions. The next read fails, both are prepared, the playback is
-  primed - which starts both - and the next pass runs a buffer ahead of the device, as the stream did from its start.
-  The block read last before the xrun is handed to the callback once more, the read that would have replaced it having
-  failed.
-- **Duplex, two cards:** each direction stops and starts on its own; the playback is primed whenever it is prepared.
+## ALSA: the stream's thread, and why it never waits inside ALSA
 
-On a real card a stop, a prepare and a start are a few register writes, a USB interface's a restart of its streams, a
-few milliseconds more. What a listener hears is silence for as long as the device was stopped, and on a duplex stream the
-primed buffer's silence after it. The suite holds both ends of it on the loopback card: `CountsAnXrunAndPlaysOnAfterIt`
-stalls a callback for 30 ms and asks for the xrun at the next callback, none before it - a playback started on one
-period would report one at its first periods - and the stream at its rate from 300 ms on, read over two seconds, and
-through its loop one frame after another to the end.
-
-## ALSA: the stream's state shared between its threads
-
-RtAudio 6.0.1's ALSA back end reads the stream's state on its callback thread without the stream's mutex - at the top of
-every pass, to decide whether to wait for a start - while `RtApi::openStream`, after the thread has started, writes it,
-and `stopStream` and `abortStream` write it just before they take the mutex; `closeStream` clears the flag the thread
-loops on as a plain `bool` the thread reads unlocked. ThreadSanitizer reports the first as a data race in
-`RtApiAlsa::callbackEvent`. The build patches it as the tarball unpacks, after the xrun patch
-(`cmake/PatchRtAudioAlsaThreads.cmake`, each change marked in the code):
-
-- **The callback thread reads the state under the mutex** every pass, waiting on the condition variable as before while
-  the stream is stopped, and unlocks before the program's callback runs, as the release does.
-- **Every write of the state holds the mutex** once the thread runs: `openStream`'s, `stopStream`'s and
-  `abortStream`'s now take it first; `startStream` already did; `closeStream` writes after joining the thread.
-- **The run flag is atomic:** `closeStream` clears it with an atomic store, and the thread's loop reads it with an atomic
-  load.
-
-`openStream` is the one change common to every back end: its write takes a mutex `RtApi`'s constructor initialises
-before any stream is opened. A product's ThreadSanitizer build needs no suppression for RtAudio.
+The stream's thread opens its PCMs non-blocking and waits in `poll` - on the side that lacks a block, and on an eventfd
+`Stop` writes - for at most two seconds, then reads, calls back and writes without blocking. Nothing holds a lock across
+a wait, so `Stop` sets a flag, wakes the poll and joins the thread: it returns as soon as the pass in hand finishes, and
+no callback runs after it. A wait that times out is the device gone quiet, and the stream failing. The case against
+waiting inside ALSA is "Why a case took a minute, while RtAudio served ALSA", below.
 
 ## ASIO: registering the test driver without an administrator
 
@@ -250,10 +215,11 @@ kernel has sound and whose loopback card is missing still fails**, because there
 than impossible. vst-plugins is private, runs on the organisation's own machines, and is therefore where the suite
 actually exercises a device.
 
-## Why a case can take a minute
+## Why a case took a minute, while RtAudio served ALSA
 
-A case of this suite measures about a second of stream and can take fifty times that on the CI machines. What was
-measured on reckless-ci-lin-0, 2026-10-24, with gdb and `/proc/<pid>/task/*/wchan` every eight seconds:
+A case of this suite measures about a second of stream, and under RtAudio's ALSA it could take fifty times that on the
+CI machines. Measured on reckless-ci-lin-0, 2026-10-24, with gdb and `/proc/<pid>/task/*/wchan` every eight seconds -
+thirteen consecutive samples, ninety-six seconds, identical:
 
 ```
 37190 waits in futex_do_wait     the main thread, queued on a lock
@@ -261,37 +227,36 @@ measured on reckless-ci-lin-0, 2026-10-24, with gdb and `/proc/<pid>/task/*/wcha
 37328 waits in wait_for_avail    the audio callback thread, inside ALSA
 ```
 
-Thirteen consecutive samples, ninety-six seconds, identical. `wait_for_avail` is where an ALSA PCM waits for buffer
-space or for data. `callbackEvent` holds `stream_.mutex` across `snd_pcm_readi` and `snd_pcm_writei`, and
-`stopStream` wants that same mutex - so when the loopback card stops producing or consuming frames, the callback
-thread parks in the kernel holding the lock and everything else queues behind it. `system_->Stop()` timed at 0.7 s
-to 48.6 s on one machine with one binary; the stream it had just measured was healthy every time (first callback
-0.0 ms, 48000 Hz within 3 %, no xruns, longest callback 13 us of 5333).
+RtAudio's `callbackEvent` held `stream_.mutex` across its blocking `snd_pcm_readi` and `snd_pcm_writei`, and
+`stopStream` wanted that same mutex: when the loopback card stopped producing or consuming frames, the callback thread
+parked in the kernel holding the lock and everything queued behind it. `Stop()` timed at 0.7 s to 48.6 s on one machine
+with one binary, the stream it had just measured healthy every time. Ruled out on the way, each with evidence: one bad
+machine, `snd_pcm_drain` on stop, dropping the handles before taking the mutex (`snd_pcm_drop` does not wake a thread
+already inside `wait_for_avail`), CPU speed, contention between CI jobs, device enumeration, and making or tearing down
+the rig. WirePlumber holding the loopback card's control device contributed (stopping it took one case from 48.6 s to
+26.3 s) without causing it.
 
-Ruled out, each with evidence, so nobody spends the time again:
+The toolkit's own back end waits in a bounded `poll` instead (above). The same cases on jonny-precision, 2026-10-25,
+RtAudio's ALSA first and the toolkit's after, one binary of each:
 
-- **One bad machine.** Timeouts hit lin-0, lin-1 and lin-2. An early reading that lin-0 was clean came from ctest
-  hiding a passing test's output.
-- **`snd_pcm_drain` on stop.** RtAudio drains only when the duplex handles are not linked, and a standalone probe
-  shows `snd_pcm_link(hw:Loopback,0, hw:Loopback,1)` returns LINKED, so it already takes the `snd_pcm_drop` path.
-- **Dropping the handles before taking the mutex**, one and then both: Stop still 42 s and 35 s. `snd_pcm_drop`
-  does not wake a thread already inside `wait_for_avail`.
-- **CPU speed** (the machines are within 10 % of each other), **contention between CI jobs** (reproduced with the
-  machine idle), **device enumeration** (22 ms), and **making or tearing down the rig, the system and the probe**
-  (all under 250 ms on a case that took 56 s).
+| case | RtAudio | the toolkit's |
+|---|---|---|
+| `RunsAStreamAtTheRateAndTheBlockItOpenedAt` | 1.56 s | 1.35 s |
+| `CarriesTheSamplesALoopBringsBack` | 14.1 s | 1.23 s |
+| `RefusesADeviceThatIsNotThereAndOpensTheNextOne` | 7.52 s | 0.38 s |
+| `CountsAnXrunAndPlaysOnAfterIt` | 14.2 s | 2.84 s |
+| the loop's latency, 256 frames at 48 kHz | 1280 samples (26.7 ms), 0 reported | 768 (16.0 ms), 512 reported |
 
-Contributing but not causing: **WirePlumber holds the loopback card's control device** on the runners, which is
-also why `modprobe -r snd-aloop` refuses. Stopping it took one case from 48.6 s to 26.3 s.
+A stream on PipeWire's `default` device, duplex, stopped in 9.6 s and 17.9 s under RtAudio and in under a millisecond
+under the toolkit's. Keep the sound server off the test card on every runner all the same, and measure the way this was
+measured: the suite is `RUN_SERIAL`, so run it with nothing else on the machine, and check
+`/proc/asound/card*/pcm*/sub0/status` reads `closed` before starting - a run that was killed leaves a substream behind
+and the next run inherits it.
 
-What to try next, in order. **Do not let the callback thread block indefinitely**: `snd_pcm_wait` with a timeout
-before the read or write, or the PCM in non-blocking mode with a bounded poll, so the thread releases the mutex and
-`stopStream` can take it - a patch beside `cmake/PatchRtAudioAlsaThreads.cmake`. Failing that, **do not hold the
-mutex across the I/O**: the state that patch reads under the mutex could be an atomic, which is what the
-ThreadSanitizer fix wanted. And whichever lands, **keep the sound server off the test card** on every runner.
-
-Measure it the way this was measured: the suite is `RUN_SERIAL`, so run it with nothing else on the machine, and
-check `/proc/asound/card*/pcm*/sub0/status` reads `closed` before starting - a run that was killed leaves a
-substream behind and the next run inherits its cost.
+**The loopback card's own clock** is the kernel's timer tick - 1 ms at `CONFIG_HZ=1000`, 48 frames at 48 kHz - so the
+card cannot carry a period much under two ticks: at 32 frames it runs at a few percent of its rate, and at 48 and 64 it
+underruns once a tick falls late. aplay shows the same on it (an I/O error at 32, underruns at 64), so a small period
+is measured on a real card or PipeWire's `default`, never here; the suite's 256 frames sit well clear.
 
 ## What each runner needs
 

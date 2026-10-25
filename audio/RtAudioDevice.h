@@ -32,7 +32,7 @@ namespace reckless::audio
 */
 
 /** RtAudio as one of the back ends DeviceBackends.h chooses between: the API names RtAudio is compiled with and can
-    open on this machine, in the series' order of preference (CoreAudio, ASIO, JACK, ALSA - Windows Audio is never
+    open on this machine, in the series' order of preference (CoreAudio, ASIO, JACK - Windows Audio and ALSA are never
     RtAudio's), and a system for one of them. A native back end that offers the same name is listed ahead of this one
     and takes it; this descriptor goes when the last name it serves has moved.
     @return  the descriptor, one object for the program's life */

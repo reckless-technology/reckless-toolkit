@@ -55,12 +55,11 @@ struct ApiName
 };
 
 /** Every API the series opens on RtAudio, in its order of preference; AudioApis() keeps those RtAudio is compiled with.
-    Windows Audio is the suite's own (win/WasapiDevice.h), never RtAudio's. */
+    Windows Audio and ALSA are the suite's own (win/WasapiDevice.h, linux/AlsaDevice.h), never RtAudio's. */
 constexpr ApiName kApis[] = {
     {RtAudio::MACOSX_CORE, "CoreAudio"},
     {RtAudio::WINDOWS_ASIO, "ASIO"},
     {RtAudio::UNIX_JACK, "JACK"},
-    {RtAudio::LINUX_ALSA, "ALSA"},
 };
 
 /** Whether the message thread is inside one of its own calls into RtAudio: an error RtAudio reports from within one
@@ -730,8 +729,9 @@ class RtMidiSystem final : public MidiSystem
     std::unique_ptr<RtMidiIn>          probe_;       ///< the input Inputs() lists ports through, made on first use
 };
 
-/** The API names RtAudio is compiled with and can open here, in the series' order of preference. Windows Audio is
-    never RtAudio's - the suite's own back end serves its three modes (win/WasapiDevice.h) - so it is not among them.
+/** The API names RtAudio is compiled with and can open here, in the series' order of preference. Windows Audio and
+    ALSA are never RtAudio's - the suite's own back ends serve them (win/WasapiDevice.h, linux/AlsaDevice.h) - so they
+    are not among them.
     @return  the names, most preferred first */
 std::vector<std::string> ApiNames()
 {
