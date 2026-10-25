@@ -54,6 +54,17 @@ if [ -z "$card" ]; then
         echo "::error::no ALSA loopback card: sudo modprobe snd-aloop" >&2
         exit 1
     fi
+    # GitHub's hosted images run an Azure kernel whose base package carries no snd-aloop: the module is in
+    # linux-modules-extra for that exact kernel, which the image does not install. A self-hosted machine has it
+    # already and installs nothing here. Without this the step fails with "Module snd-aloop not found in
+    # directory /lib/modules/<kernel>", which is what a public repository's hosted Linux job met the first time
+    # this ran outside the organisation's own machines.
+    if ! modinfo snd-aloop > /dev/null 2>&1; then
+        extra="linux-modules-extra-$(uname -r)"
+        echo "the kernel has no snd-aloop; installing $extra"
+        sudo -n apt-get update -qq
+        sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$extra" || true
+    fi
     sudo -n modprobe snd-aloop
     command -v udevadm > /dev/null && sudo -n udevadm settle || true
     for _ in $(seq 50); do
