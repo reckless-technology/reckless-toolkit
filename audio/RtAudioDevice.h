@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "AudioDevice.h"
+#include "DeviceBackends.h"
 
 namespace reckless::audio
 {
@@ -30,30 +31,15 @@ namespace reckless::audio
     until RtAudio has let go of the driver (RtAudioDevice.cpp says why each is needed).
 */
 
-/** The audio APIs this build carries, by the series' names, in the order a Standalone prefers them: CoreAudio; on
-    Windows the suite's own WASAPI in its three modes (win/WasapiDevice.h: Windows Audio, its Low Latency Mode and its
-    Exclusive Mode) before ASIO, since only a person with an ASIO driver wants it; JACK before ALSA, since on a PipeWire
-    desktop JACK is how a program joins the graph without fighting it for the card. Every other is RtAudio's.
-    @return  the names of the compiled APIs, most preferred first; empty when the build carries none of them */
-std::vector<std::string> AudioApis();
+/** RtAudio as one of the back ends DeviceBackends.h chooses between: the API names RtAudio is compiled with and can
+    open on this machine, in the series' order of preference (CoreAudio, ASIO, JACK, ALSA - Windows Audio is never
+    RtAudio's), and a system for one of them. A native back end that offers the same name is listed ahead of this one
+    and takes it; this descriptor goes when the last name it serves has moved.
+    @return  the descriptor, one object for the program's life */
+const AudioBackend &RtAudioBackend();
 
-/** The first of AudioApis() with a device that has an output, else the first of them, else none.
-    @return  an API's name, or an empty string when the build carries none */
-std::string DefaultAudioApi();
-
-/** API `name` (one of AudioApis()): a WASAPI mode on the suite's own back end, any other on RtAudio; null for a name
-    this build does not carry.
-    @param name  the API's name, as AudioApis() lists it
-    @return      the system, owned by the caller; nullptr for an unknown or uncompiled name */
-std::unique_ptr<AudioSystem> MakeAudioSystem(const std::string &name);
-
-/** The machine's MIDI inputs on RtMidi, each port it opens named after `client_name` (a Standalone's plugin name),
-    each message stamped with NowNanoseconds as RtMidi hands it over.
-    @param client_name  the name its ports carry, a Standalone's plugin name
-    @return             the system, owned by the caller */
-std::unique_ptr<MidiSystem> MakeMidiSystem(const std::string &client_name);
-
-/** The versions of the two libraries, for a player to print.
-    @return  the text "RtAudio <version>, RtMidi <version>", with the versions the libraries report */
-std::string AudioLibraryVersions();
+/** RtMidi as DeviceBackends.h's MIDI back end: the machine's MIDI inputs, each message stamped with NowNanoseconds as
+    RtMidi hands it over.
+    @return  the descriptor, one object for the program's life */
+const MidiBackend &RtMidiBackend();
 } // namespace reckless::audio

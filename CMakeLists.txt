@@ -562,7 +562,10 @@ target_include_directories(reckless_common_audio INTERFACE "${CMAKE_CURRENT_SOUR
 target_link_libraries(reckless_common_audio INTERFACE reckless_common_core)
 
 if(RECKLESS_BUILD_AUDIO)
-    add_library(reckless_audio_devices STATIC audio/RtAudioDevice.cpp)
+    # DeviceBackends.cpp is the only place that knows which back ends this build carries, and the one a product calls
+    # through: it assembles them by hand, since a self-registering back end in a translation unit nothing references
+    # is stripped from this static library by the linker (audio/DeviceBackends.h says so at length).
+    add_library(reckless_audio_devices STATIC audio/DeviceBackends.cpp audio/RtAudioDevice.cpp)
     target_link_libraries(reckless_audio_devices PUBLIC reckless_common_audio PRIVATE rtaudio rtmidi reckless_warnings)
     if(WIN32)
         # Windows Audio, the toolkit's own WASAPI back end in its three modes: COM, and the multimedia scheduler (avrt)

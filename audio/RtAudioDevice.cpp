@@ -9,7 +9,6 @@
 #include <exception>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -17,10 +16,6 @@
 
 #include <RtAudio.h>
 #include <RtMidi.h>
-
-#if defined(_WIN32)
-#include "win/WasapiDevice.h"
-#endif
 
 #if defined(RECKLESS_AUDIO_ASIO_HOST)
 #include "asiodrivers.h" // the ASIO SDK's host code (RtAudio.h has brought in windows.h, with NOMINMAX)
@@ -67,11 +62,6 @@ constexpr ApiName kApis[] = {
     {RtAudio::UNIX_JACK, "JACK"},
     {RtAudio::LINUX_ALSA, "ALSA"},
 };
-
-#if defined(_WIN32)
-/** Windows Audio's three modes, in the order a Standalone lists them, ahead of ASIO. */
-constexpr wasapi::Mode kWasapiModes[] = {wasapi::Mode::kShared, wasapi::Mode::kLowLatency, wasapi::Mode::kExclusive};
-#endif
 
 /** Whether the message thread is inside one of its own calls into RtAudio: an error RtAudio reports from within one
     is that call's - a probe, an open - and not the running stream failing. */
@@ -739,19 +729,15 @@ class RtMidiSystem final : public MidiSystem
     std::vector<std::unique_ptr<Port>> ports_;       ///< the open ports
     std::unique_ptr<RtMidiIn>          probe_;       ///< the input Inputs() lists ports through, made on first use
 };
-} // namespace
 
-std::vector<std::string> AudioApis()
+/** The API names RtAudio is compiled with and can open here, in the series' order of preference. Windows Audio is
+    never RtAudio's - the suite's own back end serves its three modes (win/WasapiDevice.h) - so it is not among them.
+    @return  the names, most preferred first */
+std::vector<std::string> ApiNames()
 {
     std::vector<RtAudio::Api> compiled;
     RtAudio::getCompiledApi(compiled);
     std::vector<std::string> names;
-#if defined(_WIN32)
-    for (const wasapi::Mode mode : kWasapiModes)
-    {
-        names.emplace_back(wasapi::NameOf(mode));
-    }
-#endif
     for (const ApiName &api : kApis)
     {
         if (std::find(compiled.begin(), compiled.end(), api.api) != compiled.end())
@@ -762,31 +748,11 @@ std::vector<std::string> AudioApis()
     return names;
 }
 
-std::string DefaultAudioApi()
+/** A system for one of ApiNames().
+    @param name  the API's name, as ApiNames() lists it
+    @return      the system, owned by the caller; nullptr for a name RtAudio does not serve here */
+std::unique_ptr<AudioSystem> MakeSystem(const std::string &name)
 {
-    const std::vector<std::string> apis = AudioApis();
-    for (const std::string &name : apis)
-    {
-        const std::unique_ptr<AudioSystem> system = MakeAudioSystem(name);
-        for (const DeviceInfo &device : system->Devices())
-        {
-            if (device.output_channels > 0)
-            {
-                return name;
-            }
-        }
-    }
-    return apis.empty() ? std::string() : apis.front();
-}
-
-std::unique_ptr<AudioSystem> MakeAudioSystem(const std::string &name)
-{
-#if defined(_WIN32)
-    if (const std::optional<wasapi::Mode> mode = wasapi::ModeNamed(name))
-    {
-        return MakeWasapiSystem(*mode);
-    }
-#endif
     std::vector<RtAudio::Api> compiled;
     RtAudio::getCompiledApi(compiled);
     for (const ApiName &api : kApis)
@@ -806,13 +772,38 @@ std::unique_ptr<AudioSystem> MakeAudioSystem(const std::string &name)
     return nullptr;
 }
 
-std::unique_ptr<MidiSystem> MakeMidiSystem(const std::string &client_name)
+/** The machine's MIDI inputs on RtMidi.
+    @param client_name  the name its ports carry, a Standalone's plugin name
+    @return             the system, owned by the caller */
+std::unique_ptr<MidiSystem> MakeMidi(const std::string &client_name)
 {
     return std::make_unique<RtMidiSystem>(client_name);
 }
 
-std::string AudioLibraryVersions()
+/** RtAudio's name and the version it reports.
+    @return  the text */
+std::string AudioLibrary()
 {
-    return "RtAudio " + RtAudio::getVersion() + ", RtMidi " + RtMidi::getVersion();
+    return "RtAudio " + RtAudio::getVersion();
+}
+
+/** RtMidi's name and the version it reports.
+    @return  the text */
+std::string MidiLibrary()
+{
+    return "RtMidi " + RtMidi::getVersion();
+}
+} // namespace
+
+const AudioBackend &RtAudioBackend()
+{
+    static const AudioBackend backend{&AudioLibrary, &ApiNames, &MakeSystem};
+    return backend;
+}
+
+const MidiBackend &RtMidiBackend()
+{
+    static const MidiBackend backend{&MidiLibrary, &MakeMidi};
+    return backend;
 }
 } // namespace reckless::audio
