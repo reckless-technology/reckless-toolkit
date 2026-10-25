@@ -742,6 +742,7 @@ class AlsaSystem final : public AudioSystem
         param.sched_priority = std::min(kPriority, sched_get_priority_max(SCHED_RR));
         static_cast<void>(pthread_setschedparam(pthread_self(), SCHED_RR, &param)); // a user allowed none runs as is
         pending_xrun_    = false;
+        has_called_      = false;
         const int result = Begin();
         started.set_value(result < 0 ? Describe(result) : std::string());
         if (result >= 0)
@@ -908,6 +909,7 @@ class AlsaSystem final : public AudioSystem
         }
         run->Process(in_.count > 0 ? inputs_.data() : nullptr, in_.count, outputs_.data(), out_.count, block_,
                      NowNanoseconds(), xrun);
+        has_called_ = true;
         return Write(block_, false);
     }
 
@@ -1027,8 +1029,8 @@ class AlsaSystem final : public AudioSystem
         return static_cast<std::uint8_t *>(areas[0].addr) + areas[0].first / 8 + offset * (areas[0].step / 8);
     }
 
-    /** The stream after an error: an xrun or a suspend, the devices started again (Begin) and the next callback told;
-        anything else, or a start that fails, the stream failing.
+    /** The stream after an error: an xrun or a suspend, the devices started again (Begin) and the next callback told -
+        once the callback has run; anything else, or a start that fails, the stream failing.
         @param error  the error a call returned
         @return       true when the stream runs on */
     bool Recover(int error) noexcept
@@ -1051,7 +1053,9 @@ class AlsaSystem final : public AudioSystem
         }
         if (error == -EPIPE)
         {
-            pending_xrun_ = true;
+            // Before the first callback, a device run dry is the stream starting - a sound server waking a suspended
+            // input while the primed output plays out - and not a dropout: nothing the callback made was lost.
+            pending_xrun_ = pending_xrun_ || has_called_;
             error         = Begin();
             if (error >= 0)
             {
@@ -1102,6 +1106,7 @@ class AlsaSystem final : public AudioSystem
     std::vector<const float *>   output_part_;    ///< the output channels from a transfer's first frame
     std::vector<pollfd>          descriptors_;    ///< what a wait polls: the wake and the sides' descriptors
     bool                         pending_xrun_{false}; ///< an xrun to tell the next callback of
+    bool                         has_called_{false};   ///< true once the callback has run since the Start
     StreamFormat                 format_;              ///< what the stream opened as
     bool                         open_{false};         ///< true from a successful Open until Close
     std::atomic<AudioCallback *> callback_{nullptr};   ///< what runs the stream; null while closed
