@@ -78,6 +78,10 @@ if [ -z "$card" ]; then
 ' ' ')"
         echo "  the package's own files: $(dpkg -L "$extra" 2>/dev/null | grep -ci aloop) matching aloop"
         echo "  sound modules present:   $(find /lib/modules -path '*sound*' -name '*.ko*' 2>/dev/null | wc -l)"
+        # The kernel's own build configuration, which settles it: a module the kernel was not built with cannot be
+        # installed by any package. Launchpad 1970586 is this exact thing - snd-aloop is built for Ubuntu's GCP
+        # kernels and not for its AWS and Azure ones.
+        echo "  CONFIG_SND_ALOOP:        $(grep -s SND_ALOOP "/boot/config-$(uname -r)" || echo 'absent from this kernel config')"
         echo "::error::this kernel has no snd-aloop and $extra did not bring one (the lines above say what is there)"
         exit 1
     fi
