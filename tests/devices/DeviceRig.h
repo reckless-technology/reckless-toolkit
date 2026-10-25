@@ -27,7 +27,9 @@ enum class Loop
                  ///< client's outputs wired to its own inputs
     kCorrelated, ///< the output comes back through a mixer - WASAPI's loopback capture of the endpoint's mix - the
                  ///< same signal at some gain and some delay
-    kKnownInput  ///< the input carries what the device makes itself: the ASIO test driver's sine and sawtooth
+    kKnownInput, ///< the input carries what the device makes itself: the ASIO test driver's sine and sawtooth
+    kCable       ///< the output comes back on the device's own inputs through a cable a person patched: through the
+                 ///< converters, the same signal at some gain, as late as the latency the API reports and two blocks
 };
 
 /** How the test device is made to report an overrun or underrun to a running stream. */
@@ -48,6 +50,8 @@ struct TestDevice
     std::string engine_input;         ///< the input the engine's test opens; empty for none
     bool        engine_key{true};     ///< whether the engine's key bus may take the inputs past the main pair
     int         channels{2};          ///< the channels each way a stream opens
+    int         first_output{0};      ///< the output device's first channel a stream opens, counted from 0
+    int         first_input{0};       ///< the input device's first channel a stream opens, counted from 0
     int         sample_rate{48000};   ///< the rate a stream opens at, in hertz
     int         block_size{256};      ///< the block a stream opens at, in samples
     Loop        loop{Loop::kNone};    ///< what a stream can show of the samples it carried
