@@ -23,7 +23,7 @@ For each API the build carries, and any the run requires that it lacks (one para
 | `PlaysACoreThroughTheEngineAllocatingNothingInTheCallback` | `StandaloneEngine` playing the Gate's core on the device for a second, `Idle` every 10 ms: running throughout, its callbacks as the rate and the block predict (less, for each xrun the run is allowed, the callbacks of the 300 ms a device has to start again), and not one allocation on the audio thread - the engine's callback runs between two counts of the thread's allocations (`CountAllocations.h`, through an `AudioSystem` that relays the callback), so the count is the engine's and the core's, on the API's own thread. |
 | `BuffersThePeriodsTheRequestAsksFor` | ALSA alone, the one API that lets a stream choose: streams asking for two, three and four periods (`StreamRequest::periods`) each open with them (`StreamFormat::periods`), report one block less than the buffer as their latency, and bring each frame back through the exact loop exactly that many blocks later, with no xruns. |
 | `RefusesADeviceThatIsNotThereAndOpensTheNextOne` | An output and an input that do not exist each refused, the error naming them, and the test device opening and running afterwards. |
-| `CountsAnXrunAndPlaysOnAfterIt` | An overrun or underrun reaching the callback - made by a callback that runs two blocks or 30 ms, whichever is longer (ALSA, JACK, CoreAudio), or reported by the device when the rig asks (ASIO) - with none reported before it (on a scheduled clock, at most one in ten callbacks), and the stream playing on after it as a stream from its start does: over the two seconds from 300 ms after the callback told of it - a window long enough that a loaded runner's moment of slowness as it resumes the device is a small part of it, where a stream that never resumes its rate is as far off as over any - the callbacks as the rate and the block predict (within the device's rate tolerance and two), the rate by the clock, the xruns a stream is allowed (at most two plus one per hundred callbacks, one in ten more on a scheduled clock), and the callbacks running until the stream is stopped; through an exact loop (ALSA, JACK), every sample back one that was played and the last 0.3 s of them one frame after another. Windows Audio skips it, saying why. |
+| `CountsAnXrunAndPlaysOnAfterIt` | An overrun or underrun reaching the callback - made by a callback that runs two blocks or 30 ms, whichever is longer (ALSA, JACK, CoreAudio), or reported by the device when the rig asks (ASIO) - with none reported before it (on a scheduled clock, at most one in ten callbacks), and the stream playing on after it as a stream from its start does: over the two seconds from 300 ms after the callback told of it - a window long enough that a loaded runner's moment of slowness as it resumes the device is a small part of it, where a stream that never resumes its rate is as far off as over any - the callbacks as the rate and the block predict (within the device's rate tolerance and two), the rate by the clock, the xruns a stream is allowed (at most two plus one per hundred callbacks, one in ten more on a scheduled clock), and the callbacks running until the stream is stopped; through an exact loop (ALSA, JACK), every sample back one that was played and the last 0.3 s of them one frame after another. Windows Audio skips it, saying why, and so does ASIO where RECKLESS_ASIO_DEVICE names a driver of the machine's own: an xrun reaches the callback there only as the driver's own resync request, which nothing obliges a real driver to send. |
 | `AStreamWhoseDeviceGoesAwayFailsAndIdleClosesIt` | Where the rig can take the device away under a running engine (JACK, ASIO): the failure reaching the engine from the API's thread, `Idle` closing the stream and saying why, the state failed, no callback after; then the device back and the next `Open` preparing the core again and playing. |
 | `MidiInputs.CarryWhatASequencerPortSendsButWhatTheCoresIgnore` | Linux alone, through ALSA's sequencer (`audio/linux/AlsaMidi.cpp`): a sequencer port of the test's own listed under RtMidi's name for it; a name that is nowhere refused, naming it; the port found by its name with other numbers after it, as a device plugged in again comes back; a note on and off, a controller and a pitch bend arriving as their bytes, on the index the input was opened under, stamped in order between their sending and their arrival; system exclusive, timing clock and active sensing left out; nothing after `CloseAll`. Skipped where the kernel has no sequencer, failed there when ALSA is required. |
 | `MidiInputs.CarryWhatAPersonPlaysOnAKeyboard` | Any platform, and only where `RECKLESS_MIDI_KEYBOARD` names an input - a person plays it: the inputs listed, that one opened by the name a settings file keeps, and for 20 s (or 64 messages) what the person plays printed as it is read - notes held and let go (a note off sent as a note on of velocity 0 arrives as sent), controllers, pitch bend - at least one note played and let go, every message whole (its status, then data bytes under 0x80), on the index it was opened under, stamped in order. |
@@ -51,9 +51,9 @@ correlation coefficient over everything after it must reach 0.9, the gain printe
 | API | device | made by | loop | xrun | goes away |
 |---|---|---|---|---|---|
 | CoreAudio | the default output, written with silence - or, by hand, a person's interface and its cable ("On a Mac with an interface", below) | the machine: on the hosted macOS runner, the virtual machine's "Apple Virtual Sound Device", whose clock the hypervisor schedules, so the stream tests allow it one xrun in ten callbacks and a 10 % rate tolerance as they allow JACK's dummy driver | none: an input would ask the person at the machine for the microphone | a stalled callback | - |
-| Windows Audio | the default render endpoint, heard back by WASAPI's loopback capture | the machine (none on CI) | correlated | a stalled callback | - |
-| Windows Audio (Exclusive Mode) | the default render endpoint, the stream's alone | the machine (none on CI) | none: no mixer for a loopback to hear | a stalled callback | - |
-| ASIO | the SDK's sample driver: 16 in, 16 out, 16-bit, 256 frames, 44.1 or 48 kHz, a sine on its first input and a sawtooth on its second | the suite: built from the fetched SDK and registered by the binary itself | the inputs, exactly as the driver makes them | the driver's resync request | the driver's reset request |
+| Windows Audio | the default render endpoint, heard back by WASAPI's loopback capture - or, by hand, a person's interface and its cable ("On Windows with an interface", below) | the machine (none on CI) | correlated, or a cable's | a stalled callback | - |
+| Windows Audio (Exclusive Mode) | the default render endpoint, the stream's alone - or, by hand, a person's interface and its cable | the machine (none on CI) | none: no mixer for a loopback to hear, but a cable comes back on a capture endpoint of its own | a stalled callback | - |
+| ASIO | the SDK's sample driver: 16 in, 16 out, 16-bit, 256 frames, 44.1 or 48 kHz, a sine on its first input and a sawtooth on its second - or, by hand, a driver of the machine's own and its cable | the suite: built from the fetched SDK and registered by the binary itself; the machine's own drivers listed beside it | the inputs, exactly as the driver makes them, or a cable's | the driver's resync request (the test driver's alone) | the driver's reset request (the test driver's alone) |
 | JACK | `jackd` on the dummy driver, 48 kHz, 1024 frames, 3 capture and 5 playback ports, under a name of its own | the suite: a server for each test | exact: the stream's outputs wired to its own inputs through the server | a stalled callback | the server stopped with SIGTERM, then started again |
 | ALSA | the kernel's loopback card (`snd-aloop`): playback on its device 0 comes back as capture on its device 1 | the CI job (`tools/audio-test-devices.sh`) | exact | a stalled callback (below) | - |
 
@@ -143,6 +143,14 @@ process at the System integrity level - a service's, as the runners' are - is no
   interface still lists - and points `HKEY_LOCAL_MACHINE` and `HKEY_CLASSES_ROOT` at it for this process with
   `RegOverridePredefKey`. COM is started on the main thread first, so its own start never reads the views. `main` puts the
   two roots back before anything else reads the registry, and the hive's file goes.
+
+  **The machine's drivers are copied value by value, never with `RegCopyTreeW`.** An application hive refuses that call
+  with `ERROR_ACCESS_DENIED`, and until 2026-10-25 its result was not checked: the copied keys were created, and
+  counted, but arrived empty, so the SDK read no class from them and dropped every one of the machine's own drivers.
+  The header said "3 of the machine's own drivers listed beside it" while the device list held the test driver alone,
+  on every machine with a real ASIO driver. Each driver's `CLSID` and `Description`, and the DLL path and
+  `ThreadingModel` under its class, are now written with `RegSetValueEx`, and a driver is counted only once its DLL
+  really landed.
 - **The class, from an activation context.** Registration-free COM: a manifest naming the DLL and its class
   (`comClass`), activated on the main thread for the process's life, which `CoCreateInstance` consults before the
   registry at any integrity level. The manifest is written beside the DLL, since COM loads a class's DLL from the folder
@@ -310,7 +318,65 @@ moved the same way.
   correlation at least 0.9 in the shared mode (a muted endpoint, or another sound playing over the test, fails it); a stall reported as an xrun; and nothing
   allocated in the engine's callbacks. vst-plugins' command-line player shows a mode on a device of one's choosing -
   its block, latency and xruns, a duplex stream's among them: `reckless_standalone_cli gate --api "Windows Audio
-  (Exclusive Mode)" --output "<a render endpoint>" --input "<a capture endpoint>|none" --block 128`.
+  (Exclusive Mode)" --output "<a render endpoint>" --input "<a capture endpoint>|none" --block 128`. With an
+  interface, see "On Windows with an interface" below.
+
+## On Windows with an interface
+
+CI's Windows runners have no sound at all, so Windows Audio's two modes and ASIO on real hardware are tested by a
+person, with the same shape of variables the CoreAudio rig takes (CI sets none of them):
+
+| variable | what it asks for |
+|---|---|
+| `RECKLESS_WASAPI_DEVICE` | the render endpoint, by its name as the back end lists it (`OUT 03-04 (BEHRINGER UMC 1820)`), in place of the default |
+| `RECKLESS_WASAPI_INPUT` | a capture endpoint for the cable to come back on (`IN 01-02 (BEHRINGER UMC 1820)`), which makes the stream duplex across the two in either mode |
+| `RECKLESS_WASAPI_LOOP` | `<output>:<input>`, counted from 1 within those endpoints: `1:1` for a stereo pair cabled to a stereo pair. It needs `RECKLESS_WASAPI_INPUT` - a render endpoint's loopback hears the mixer, not a cable |
+| `RECKLESS_ASIO_DEVICE` | an ASIO driver of the machine's own (`UMC ASIO Driver`) in place of the SDK's sample driver |
+| `RECKLESS_ASIO_LOOP` | `<output>:<input>` on that one device, counted from 1 - `3:1` for outputs 3 and 4 into inputs 1 and 2 |
+
+`RECKLESS_AUDIO_TEST_RATE` and `RECKLESS_AUDIO_TEST_BLOCK` hold the device at one rate and block, as on any platform.
+
+Windows reaches a multi-channel interface differently on each API, which decides how the cable is named: **ASIO sees
+one device** with every channel on it, so the loop is `3:1` as on CoreAudio; **Windows Audio sees a stereo endpoint per
+pair** (`OUT 03-04`, `IN 01-02`, beside the whole-device `OUT 01-10` and `IN 01-08`), so the pair is chosen by naming
+the endpoints and the loop within them is `1:1`.
+
+```
+set RECKLESS_AUDIO_REQUIRE=Windows Audio,Windows Audio (Exclusive Mode),ASIO
+set RECKLESS_WASAPI_DEVICE=OUT 03-04 (BEHRINGER UMC 1820)
+set RECKLESS_WASAPI_INPUT=IN 01-02 (BEHRINGER UMC 1820)
+set RECKLESS_WASAPI_LOOP=1:1
+set RECKLESS_ASIO_DEVICE=UMC ASIO Driver
+set RECKLESS_ASIO_LOOP=3:1
+build\tests\reckless_audio_device_test.exe
+```
+
+The cable carries quiet noise, 30 dB under full scale, on the patched outputs alone; set the inputs' gain so it comes
+back well over the noise floor and well under clipping (about -6 dB through a UMC1820 at its lowest gain). Look for, in
+each run: both channels' 64-tap fit at 0.9995 or better; every burst through silence at the first one's delay to a
+hundredth of a frame; no xruns; and the round trip against what the API reports, which the table now prints as
+"measured less reported".
+
+Two things a run on real hardware shows that CI cannot:
+
+- **The exclusive mode and ASIO report the round trip; the shared mode cannot.** Windows Audio's shared mode reports
+  each client's own latency and nothing of the audio engine's mixing between them, so a cable measures more than it
+  reports - 1133 frames, 23.6 ms, on a UMC1820 at 48 kHz. The suite holds the shared mode only to a round trip no
+  sooner than it reports (`TestDevice::does_report_whole_round_trip`), and prints the shortfall rather than judging it.
+- **A one-off microframe slip, seen once and not since.** In one run of `KeepsTheCablesDelayThroughSilence` on ASIO at
+  48 kHz and 64 frames, the first burst came back at the usual delay and the four after it 5.76 frames (one USB
+  high-speed microframe, 125 us) sooner, holding the new alignment to a hundredth of a frame - with no xrun reported,
+  which is exactly what that test exists to catch. It has not happened again in 34 further streams, 10 of them
+  consecutive repeats of that very case. A bare ASIO host of the same shape, no toolkit code, has never shifted
+  mid-stream either, so it is unattributed: do not relax the test for it, and if it returns, that is the thread to
+  pull. Separately, and more ordinarily, the *whole* stream's alignment moves between one stream and the next - a bare
+  host measured the same cable at 341.06 frames once and 371.06 on eleven other runs - which is the driver lining its
+  packets up at a start, as a Mac's does (native-backends.md).
+
+- **A real ASIO driver cannot be asked for an xrun.** On ASIO an xrun reaches the callback only as the driver's own
+  resync request, and nothing in the API obliges a driver to send one: a UMC1820 carried on without a word through a
+  stalled callback. `CountsAnXrunAndPlaysOnAfterIt` skips with that reason where `RECKLESS_ASIO_DEVICE` names a real
+  driver, and the SDK's sample driver, which asks to order, is what holds that test.
 
 ## On a Mac with an interface
 

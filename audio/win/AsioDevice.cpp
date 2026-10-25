@@ -723,11 +723,22 @@ class AsioSystem final : public AudioSystem
         {
             input_latency = output_latency = 0;
         }
-        format_.sample_rate      = static_cast<int>(rate);
-        format_.block_size       = block_;
-        format_.input_channels   = inputs;
-        format_.output_channels  = outputs;
-        format_.reported_latency = static_cast<int>((inputs > 0 ? input_latency : 0) + output_latency);
+        format_.sample_rate     = static_cast<int>(rate);
+        format_.block_size      = block_;
+        format_.input_channels  = inputs;
+        format_.output_channels = outputs;
+        // ASIOGetLatencies is measured from the buffer switch, so its two figures are a whole round trip and not the
+        // latency beyond the block that StreamFormat::reported_latency means: the SDK's own asio.h has the input's as
+        // "the 'age' of the first sample frame in the input buffer when the host reads it", "usually the size of one
+        // block in sample frames, plus device specific latencies", and the output's as the time until the next play
+        // buffer sounds, "either one block, if the host writes directly to a dma buffer, or two or more blocks if the
+        // buffer is 'latched'". One block therefore comes off each direction that is open, or the suite's two blocks
+        // count them twice. Measured on a UMC1820 cabled output to input: the driver's own total is the round trip to
+        // within 61 to 68 samples at 64, 256 and 1024 frames alike, where counting the blocks again put it 60, 445 and
+        // 1987 out, the error growing with the block. A driver that latches more than one output block keeps that
+        // extra block in the figure, which shows up as a larger constant residual, not as a growing error.
+        format_.reported_latency = static_cast<int>((inputs > 0 ? std::max(input_latency - block_, 0L) : 0L) +
+                                                    (outputs > 0 ? std::max(output_latency - block_, 0L) : 0L));
         return true;
     }
 

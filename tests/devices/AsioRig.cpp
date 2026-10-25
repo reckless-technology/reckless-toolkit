@@ -307,11 +307,19 @@ class Registration
                 {
                     continue;
                 }
-                const std::wstring clsid = GetString(real_entry, L"CLSID");
+                const std::wstring clsid       = GetString(real_entry, L"CLSID");
+                const std::wstring description = GetString(real_entry, L"Description");
                 if (RegCreateKeyExW(asio, name, 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &copy, nullptr) ==
                     ERROR_SUCCESS)
                 {
-                    RegCopyTreeW(real_entry, nullptr, copy);
+                    // Value by value, never RegCopyTreeW: an application hive refuses it (ERROR_ACCESS_DENIED), and
+                    // its failure left the copied keys there but empty - the SDK read no class from them and dropped
+                    // every one of the machine's drivers, so an interface's own driver was listed on no machine.
+                    SetString(copy, L"CLSID", clsid);
+                    if (!description.empty())
+                    {
+                        SetString(copy, L"Description", description);
+                    }
                     RegCloseKey(copy);
                 }
                 RegCloseKey(real_entry);
@@ -320,12 +328,23 @@ class Registration
                 if (!clsid.empty() &&
                     RegOpenKeyExW(HKEY_CLASSES_ROOT, path.c_str(), 0, KEY_READ, &real_server) == ERROR_SUCCESS)
                 {
-                    if (RegCreateKeyExW(hkcr_, path.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &server_copy,
-                                        nullptr) == ERROR_SUCCESS)
+                    // The DLL the SDK's findDrvPath reads as the class's default value, and the threading model COM
+                    // reads beside it.
+                    const std::wstring dll   = GetString(real_server, nullptr);
+                    const std::wstring model = GetString(real_server, L"ThreadingModel");
+                    if (!dll.empty() && RegCreateKeyExW(hkcr_, path.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr,
+                                                        &server_copy, nullptr) == ERROR_SUCCESS)
                     {
-                        RegCopyTreeW(real_server, nullptr, server_copy);
+                        const bool wrote = SetString(server_copy, nullptr, dll) == ERROR_SUCCESS;
+                        if (!model.empty())
+                        {
+                            SetString(server_copy, L"ThreadingModel", model);
+                        }
                         RegCloseKey(server_copy);
-                        ++machine_drivers_;
+                        if (wrote)
+                        {
+                            ++machine_drivers_; // counted once its DLL is really there, not once its key is
+                        }
                     }
                     RegCloseKey(real_server);
                 }
@@ -496,15 +515,18 @@ class AsioRig final : public DeviceRig
   public:
     TestDevice Find(const std::vector<DeviceInfo> &devices) override
     {
-        TestDevice device;
-        if (!g_registration.registered())
+        TestDevice        device;
+        const std::string named = Environment("RECKLESS_ASIO_DEVICE");
+        const std::string cable = Environment("RECKLESS_ASIO_LOOP");
+        if (named.empty() && !g_registration.registered())
         {
             device.missing = "the ASIO test driver could not be registered in-process: " + g_registration.error();
             return device;
         }
+        const std::string wanted = named.empty() ? std::string(kDriverName) : named;
         for (const DeviceInfo &info : devices)
         {
-            if (info.name != kDriverName)
+            if (info.name != wanted)
             {
                 continue;
             }
@@ -513,18 +535,44 @@ class AsioRig final : public DeviceRig
             device.input          = info.name;
             device.engine_input   = info.name;
             device.channels       = 2;
-            device.sample_rate    = 48000;
+            device.sample_rate    = named.empty() ? 48000 : info.DefaultSampleRate();
             device.block_size     = 256;
             device.loop           = Loop::kKnownInput;
             device.xrun_by        = XrunBy::kDevice;
             device.rate_tolerance = 0.03;
             device.about = "the SDK's sample driver, registered in-process: 16 in, 16 out, 16-bit, 256 frames, a sine "
                            "and a sawtooth on its first two inputs";
+            if (!named.empty())
+            {
+                // A person's own interface (RECKLESS_ASIO_DEVICE): its inputs carry whatever is wired to them, so
+                // without a cable there is nothing a loop can judge, and the driver's own xrun request is the test
+                // driver's alone.
+                own_driver_       = false;
+                device.engine_key = false;
+                device.channels   = std::min({info.output_channels, info.input_channels, 2});
+                device.loop       = Loop::kNone;
+                // On ASIO an xrun reaches the callback only as the driver's own resync request (AsioDevice.cpp's
+                // Message): nothing in the API obliges a driver to send one, and a stalled callback on real hardware
+                // goes unreported - measured on a UMC1820, which carried on without a word. The test driver asks for
+                // one to order, which is why it alone is XrunBy::kDevice.
+                device.xrun_by = XrunBy::kNothing;
+                device.no_xrun = "a real ASIO driver reports an xrun only if it chooses to ask for a resync, and this "
+                                 "one does not when a callback overruns; only the test driver can be asked for one";
+                device.about   = "the driver RECKLESS_ASIO_DEVICE names: " + std::to_string(info.input_channels) +
+                                 " in, " + std::to_string(info.output_channels) + " out";
+            }
+            if (!cable.empty() &&
+                !ApplyCable(device, cable, info.output_channels, info.input_channels, "RECKLESS_ASIO_LOOP"))
+            {
+                return device;
+            }
             return device;
         }
         device.missing =
-            std::string("the ASIO test driver was registered in-process but the ASIO back end does not list '") +
-            kDriverName + "' (" + g_registration.Report() + ")";
+            named.empty()
+                ? std::string("the ASIO test driver was registered in-process but the ASIO back end does not list '") +
+                      kDriverName + "' (" + g_registration.Report() + ")"
+                : "RECKLESS_ASIO_DEVICE names '" + named + "', which the ASIO back end lists no driver by";
         return device;
     }
 
@@ -534,6 +582,12 @@ class AsioRig final : public DeviceRig
         @return     false when the request could not be made */
     bool Vanish(std::string &why) override
     {
+        if (!own_driver_)
+        {
+            why = "a driver RECKLESS_ASIO_DEVICE names cannot be asked to reset: only the test driver takes the "
+                  "suite's requests";
+            return false;
+        }
         const Request request = DriverRequest();
         if (request == nullptr)
         {
@@ -558,6 +612,12 @@ class AsioRig final : public DeviceRig
         @return     false when the request could not be made */
     bool Xrun(std::string &why) override
     {
+        if (!own_driver_)
+        {
+            why = "a driver RECKLESS_ASIO_DEVICE names cannot be asked for an xrun: only the test driver takes the "
+                  "suite's requests";
+            return false;
+        }
         const Request request = DriverRequest();
         if (request == nullptr)
         {
@@ -567,6 +627,9 @@ class AsioRig final : public DeviceRig
         request(1);
         return true;
     }
+
+  private:
+    bool own_driver_{true}; ///< false once Find took the driver RECKLESS_ASIO_DEVICE names, which takes no request
 };
 } // namespace
 
