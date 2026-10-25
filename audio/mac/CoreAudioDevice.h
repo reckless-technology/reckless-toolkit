@@ -20,9 +20,10 @@ namespace reckless::audio
     output's own device comes in the same IOProc. An input on another device - a Mac's built-in microphone and speakers
     are two - is joined to the output in a private aggregate device for the stream's life, the output's clock the
     aggregate's and the input drift-compensated against it, so one IOProc carries both and CoreAudio keeps their clocks
-    together. A processor overload the HAL reports is an xrun told to the next callback; a device that dies under the
-    stream is the stream failing, told once (AudioCallback::StreamFailed). Stop stops the IOProc, which the HAL returns
-    from only once it no longer runs, and waits for any callback still counted in.
+    together. A processor overload the HAL reports is an xrun told to the next callback - but not one before the first,
+    which is the HAL's I/O thread starting at a tiny block, as ALSA's back end leaves one unreported; a device that dies
+    under the stream is the stream failing, told once (AudioCallback::StreamFailed). Stop stops the IOProc, which the
+    HAL returns from only once it no longer runs, and waits for any callback still counted in.
 
     Message thread throughout but for the IOProc and the property listeners, which run on the HAL's threads.
 */
