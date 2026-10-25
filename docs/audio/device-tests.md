@@ -18,13 +18,15 @@ For each API the build carries, and any the run requires that it lacks (one para
 | `ProbesTheDevicesEachUnderANameOfItsOwn` | The device list, printed: no two devices with channels the same way share a name (a name and a way are what a settings file finds a device by; an input and an output may share one), every device has channels, every rate is a rate, a second probe lists the same, every name is UTF-8, and the test device is there with the channels and the rate its streams open. |
 | `ListsADeviceNamedOutsideAsciiInUtf8` | CoreAudio alone: a device of the test's own - an aggregate of the default output, private to the test's process - named with an apostrophe and a letter past ASCII, as macOS names a person's earphones, found by that name in UTF-8, listed after its maker's as RtAudio listed it (RtAudio read CoreAudio's names in UTF-8 only with `UNICODE` defined, and in Mac OS Roman otherwise). |
 | `RunsAStreamAtTheRateAndTheBlockItOpenedAt` | A stream opened at a rate the device lists and run for 1.2 s: the rate, the block and the channels it opened; the callbacks counted against what the rate and the block predict from the first callback to the Stop (within the device's rate tolerance and two); the rate read by the clock past the first 200 ms, where an API may call back in a burst to fill its buffers (within the device's tolerance: 3 %, and 10 % for JACK's dummy driver, below); every callback carrying the block; every channel pointer where every back end lays it out (each channel's frames after the one before's); the callbacks on the API's thread, not the caller's; the xruns, at most two plus one per hundred callbacks, and on a device whose clock the machine schedules one in ten more; nothing calling back once `Stop` has returned - which the layer keeps on every API, each callback counted in and out and silence once the stream is stopped, `Stop` waiting until none is under way. The latency the API reports is printed. |
-| `CarriesTheSamplesALoopBringsBack` | Where the device loops its output back (below), a known signal out and the samples read back: bit for bit where the path is exact, correlated where a mixer sits in it, exactly the device's own signal where the device makes one. |
+| `CarriesTheSamplesALoopBringsBack` | Where the device loops its output back (below), a known signal out and the samples read back: bit for bit where the path is exact, correlated where a mixer sits in it, exactly the device's own signal where the device makes one. Through a cable a person patched (CoreAudio, "On a Mac with an interface" below), each channel's noise judged through a 64-tap filter fitted from what was played to what came back - the converters band-limit it and delay it by a fraction of a sample, which a sample-for-sample correlation would count against the loop - each fit at least 0.99, and the round trip within a 64th of a second of two blocks and the latency the API reports, never under the two blocks. |
+| `KeepsTheCablesDelayThroughSilence` | Through a cable alone: one stream of about 8 s playing bursts of the known noise - 16384 frames of every 65536, silence between - as Reckless IR Capture plays its noise periods, its gap and its sweep in one stream; each burst's delay found to a fraction of a frame by its matched filter's peak, and every burst's within 0.05 frames of the first's, so a stream that lost or gained a frame while it carried silence fails. |
 | `PlaysACoreThroughTheEngineAllocatingNothingInTheCallback` | `StandaloneEngine` playing the Gate's core on the device for a second, `Idle` every 10 ms: running throughout, its callbacks as the rate and the block predict (less, for each xrun the run is allowed, the callbacks of the 300 ms a device has to start again), and not one allocation on the audio thread - the engine's callback runs between two counts of the thread's allocations (`CountAllocations.h`, through an `AudioSystem` that relays the callback), so the count is the engine's and the core's, on the API's own thread. |
 | `BuffersThePeriodsTheRequestAsksFor` | ALSA alone, the one API that lets a stream choose: streams asking for two, three and four periods (`StreamRequest::periods`) each open with them (`StreamFormat::periods`), report one block less than the buffer as their latency, and bring each frame back through the exact loop exactly that many blocks later, with no xruns. |
 | `RefusesADeviceThatIsNotThereAndOpensTheNextOne` | An output and an input that do not exist each refused, the error naming them, and the test device opening and running afterwards. |
 | `CountsAnXrunAndPlaysOnAfterIt` | An overrun or underrun reaching the callback - made by a callback that runs two blocks or 30 ms, whichever is longer (ALSA, JACK, CoreAudio), or reported by the device when the rig asks (ASIO) - with none reported before it (on a scheduled clock, at most one in ten callbacks), and the stream playing on after it as a stream from its start does: over the two seconds from 300 ms after the callback told of it - a window long enough that a loaded runner's moment of slowness as it resumes the device is a small part of it, where a stream that never resumes its rate is as far off as over any - the callbacks as the rate and the block predict (within the device's rate tolerance and two), the rate by the clock, the xruns a stream is allowed (at most two plus one per hundred callbacks, one in ten more on a scheduled clock), and the callbacks running until the stream is stopped; through an exact loop (ALSA, JACK), every sample back one that was played and the last 0.3 s of them one frame after another. Windows Audio skips it, saying why. |
 | `AStreamWhoseDeviceGoesAwayFailsAndIdleClosesIt` | Where the rig can take the device away under a running engine (JACK, ASIO): the failure reaching the engine from the API's thread, `Idle` closing the stream and saying why, the state failed, no callback after; then the device back and the next `Open` preparing the core again and playing. |
 | `MidiInputs.CarryWhatASequencerPortSendsButWhatTheCoresIgnore` | Linux alone, through ALSA's sequencer (`audio/linux/AlsaMidi.cpp`): a sequencer port of the test's own listed under RtMidi's name for it; a name that is nowhere refused, naming it; the port found by its name with other numbers after it, as a device plugged in again comes back; a note on and off, a controller and a pitch bend arriving as their bytes, on the index the input was opened under, stamped in order between their sending and their arrival; system exclusive, timing clock and active sensing left out; nothing after `CloseAll`. Skipped where the kernel has no sequencer, failed there when ALSA is required. |
+| `MidiInputs.CarryWhatAPersonPlaysOnAKeyboard` | Any platform, and only where `RECKLESS_MIDI_KEYBOARD` names an input - a person plays it: the inputs listed, that one opened by the name a settings file keeps, and for 20 s (or 64 messages) what the person plays printed as it is read - notes held and let go (a note off sent as a note on of velocity 0 arrives as sent), controllers, pitch bend - at least one note played and let go, every message whole (its status, then data bytes under 0x80), on the index it was opened under, stamped in order. |
 | `MidiInputs.CarryWhatACoreMidiSourceSendsButWhatTheCoresIgnore` | macOS alone, through CoreMIDI (`audio/mac/CoreMidi.cpp`): a virtual source of the test's own on MIDI 1.0's protocol (`devices/MidiSourceMac.cpp`) listed by its name, a name that is nowhere refused, and Universal MIDI Packets sent to it - a note on and off, a controller and a pitch bend arriving as their MIDI 1.0 bytes on the index the input was opened under, system exclusive, timing clock and active sensing left out, nothing after `CloseAll`. Skipped where CoreMIDI makes no source, failed there when CoreAudio is required. |
 
 Every test prints the table it judges.
@@ -48,7 +50,7 @@ correlation coefficient over everything after it must reach 0.9, the gain printe
 
 | API | device | made by | loop | xrun | goes away |
 |---|---|---|---|---|---|
-| CoreAudio | the default output, written with silence | the machine: on the hosted macOS runner, the virtual machine's "Apple Virtual Sound Device", whose clock the hypervisor schedules, so the stream tests allow it one xrun in ten callbacks and a 10 % rate tolerance as they allow JACK's dummy driver | none: an input would ask the person at the machine for the microphone | a stalled callback | - |
+| CoreAudio | the default output, written with silence - or, by hand, a person's interface and its cable ("On a Mac with an interface", below) | the machine: on the hosted macOS runner, the virtual machine's "Apple Virtual Sound Device", whose clock the hypervisor schedules, so the stream tests allow it one xrun in ten callbacks and a 10 % rate tolerance as they allow JACK's dummy driver | none: an input would ask the person at the machine for the microphone | a stalled callback | - |
 | Windows Audio | the default render endpoint, heard back by WASAPI's loopback capture | the machine (none on CI) | correlated | a stalled callback | - |
 | Windows Audio (Exclusive Mode) | the default render endpoint, the stream's alone | the machine (none on CI) | none: no mixer for a loopback to hear | a stalled callback | - |
 | ASIO | the SDK's sample driver: 16 in, 16 out, 16-bit, 256 frames, 44.1 or 48 kHz, a sine on its first input and a sawtooth on its second | the suite: built from the fetched SDK and registered by the binary itself | the inputs, exactly as the driver makes them | the driver's resync request | the driver's reset request |
@@ -283,7 +285,8 @@ RECKLESS_AUDIO_REQUIRE=CoreAudio build/tests/reckless_audio_device_test   # a mi
 In vst-plugins' tree the suite is `build/tests/external/reckless-toolkit/reckless_audio_device_test`, the paths below
 moved the same way.
 
-- **macOS**: the default output plays silence for a few seconds; nothing asks for the microphone.
+- **macOS**: the default output plays silence for a few seconds; nothing asks for the microphone. With an interface,
+  see the next section.
 - **Linux**: run `tools/audio-test-devices.sh` once (it loads the loopback card and opens its nodes to you) and the
   suite with `RECKLESS_AUDIO_REQUIRE=ALSA,JACK`. On a desktop whose libjack is PipeWire's (`pipewire-jack` with its
   `ld.so.conf` entry), the suite's own server is out of reach and the JACK tests say so - "a server that is not this
@@ -308,3 +311,47 @@ moved the same way.
   allocated in the engine's callbacks. vst-plugins' command-line player shows a mode on a device of one's choosing -
   its block, latency and xruns, a duplex stream's among them: `reckless_standalone_cli gate --api "Windows Audio
   (Exclusive Mode)" --output "<a render endpoint>" --input "<a capture endpoint>|none" --block 128`.
+
+## On a Mac with an interface
+
+CI's Mac is a virtual machine with one virtual output, so a Mac's inputs, a duplex stream, an aggregate, a real
+converter and a real keyboard are tested by a person, with three variables the CoreAudio rig reads (CI sets none of
+them):
+
+| variable | what it asks for |
+|---|---|
+| `RECKLESS_COREAUDIO_DEVICE` | the output device, by its name as CoreAudio lists it (`BEHRINGER: UMC1820`), in place of the default output |
+| `RECKLESS_COREAUDIO_LOOP` | `<output>:<input>`, counted from 1: the first of two outputs patched by cable to two inputs of the device - `3:1` for outputs 3 and 4 into inputs 1 and 2 - which makes the test device's loop a cable's, so the stream, loop, silence and xrun tests run duplex through it |
+| `RECKLESS_COREAUDIO_INPUT` | an input device of another name (`miniDSP: UMIK-2`): the stream duplex across the two, joined in the back end's private aggregate |
+
+Any platform's rig takes two more, a rate and a block over the ones it chose, so an interface is held at each it
+offers: `RECKLESS_AUDIO_TEST_RATE` and `RECKLESS_AUDIO_TEST_BLOCK`. And `RECKLESS_MIDI_KEYBOARD`, on any platform,
+names a MIDI input for a person to play (`MidiInputs.CarryWhatAPersonPlaysOnAKeyboard`).
+
+```
+export RECKLESS_AUDIO_REQUIRE=CoreAudio RECKLESS_COREAUDIO_DEVICE="BEHRINGER: UMC1820" RECKLESS_COREAUDIO_LOOP=3:1
+build/tests/reckless_audio_device_test --gtest_filter='*CoreAudio*'
+for rate in 44100 48000 88200 96000; do for block in 32 64 128 256 512 1024; do
+    RECKLESS_AUDIO_TEST_RATE=$rate RECKLESS_AUDIO_TEST_BLOCK=$block \
+        build/tests/reckless_audio_device_test --gtest_filter='*CoreAudio*' | tee "umc-$rate-$block.log"
+done; done
+RECKLESS_COREAUDIO_INPUT="miniDSP: UMIK-2" build/tests/reckless_audio_device_test --gtest_filter='*CoreAudio*'
+RECKLESS_MIDI_KEYBOARD="Impact LX88+ MIDI1" build/tests/reckless_audio_device_test --gtest_filter='MidiInputs.*Person*'
+```
+
+The cable carries quiet noise, 30 dB under full scale, on the patched outputs alone; set the inputs' gain so it comes
+back well over the noise floor and well under clipping (about -2 dB through a UMC1820 at its lowest gain). The
+terminal the suite runs in needs the microphone (System Settings, Privacy and Security): an input it is refused records
+exact silence rather than failing, which the loop then fails on. A Mac with its lid shut and a display attached hands
+the built-in microphone's input over as silence too.
+
+Look for, in each run: the loop's delay through the cable against two blocks and the latency the API reports; both
+channels' 64-tap fit at 0.9997 or better; every burst through silence at the first one's delay to a hundredth of a
+frame; no xruns, but for the one the xrun test makes; and the stream test's input level that of the device asked
+for - a measurement microphone's room, not an idle input's hiss.
+
+What it found on 2026-10-25 - an M1 Pro on macOS 27, a UMC1820 cabled from outputs 3 and 4 to inputs 1 and 2, a
+UMIK-2 and a Nektar Impact LX88+ - is in [native-backends.md](native-backends.md): every rate and block clean, the round
+trip within 0.8 ms of what the driver reports, the aggregate's input the UMIK-2's, every name RtAudio's and RtMidi's,
+and three faults the run found and the back end fixed.
+

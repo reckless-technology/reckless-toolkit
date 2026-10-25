@@ -21,8 +21,9 @@ descriptor goes when CoreAudio moves, the last name it serves.
 ## Where it stands
 
 **Done, 2026-10-25: every API on every platform is the toolkit's own**, and RtAudio and RtMidi are compiled into no
-binary, nor fetched: the products' notices name neither. What is left is to run the hardware a CI runner lacks: Windows Audio and ASIO on a
-real interface, CoreAudio duplex across two devices, and each platform's MIDI from a real keyboard.
+binary, nor fetched: the products' notices name neither. macOS has been run on real hardware on Apple silicon, below.
+What is left is the hardware a CI runner lacks elsewhere: Windows Audio and ASIO on a real interface, and MIDI from a
+real keyboard on Windows and Linux.
 
 | API | back end | since |
 |---|---|---|
@@ -33,7 +34,7 @@ real interface, CoreAudio duplex across two devices, and each platform's MIDI fr
 | CoreAudio | the toolkit's, `audio/mac/CoreAudioDevice.cpp`, on the HAL; an input on another device joined in a private aggregate; RtAudio listed nowhere | 2026-10-25 |
 | MIDI on Linux | the toolkit's, `audio/linux/AlsaMidi.cpp`, on ALSA's sequencer | 2026-10-25 |
 | MIDI on Windows | the toolkit's, `audio/win/WinMidi.cpp`, on WinMM; neither library fetched on Windows | 2026-10-25 |
-| MIDI on macOS | the toolkit's, `audio/mac/CoreMidi.cpp`, on CoreMIDI's MIDI 1.0 protocol; `RtAudioDevice.cpp` deleted, RtAudio and RtMidi built nowhere | 2026-10-25 |
+| MIDI on macOS | the toolkit's, `audio/mac/CoreMidi.cpp`, on CoreMIDI's MIDI 1.0 protocol; `RtAudioDevice.cpp` deleted, RtAudio and RtMidi built nowhere; `RtAudioDevice.h`, the forwarding header left for the products, deleted once none included it | 2026-10-25 |
 
 ALSA, measured against RtAudio's on the same machine and the same loopback card
 ([device-tests.md](device-tests.md), "Why a case took a minute"): every device named as RtAudio named it, a stop in
@@ -59,6 +60,62 @@ initialisation as RtAudio's was (the suite registers its test driver in registry
 the SDK's own `asioDrivers` global pointed at it, so the two workarounds `RtAudioDevice.cpp` carried for RtAudio are
 gone, and the input read from the half of the buffer the driver has just filled - a block sooner than RtAudio, which
 read the half before.
+
+CoreAudio and CoreMIDI, measured on Apple silicon (an M1 Pro, macOS 27) against a BEHRINGER UMC1820 - class
+compliant, on Apple's own USB audio driver - with its outputs 3 and 4 patched by cable to its inputs 1 and 2, and a
+Nektar Impact LX88+ on USB ([device-tests.md](device-tests.md), "On a Mac with an interface"):
+
+- **Every name as the libraries gave it.** RtAudio 6.0.1 and RtMidi 6.0.0, built as the toolkit built them on macOS
+  (`__MACOSX_CORE__`, no `UNICODE`), listed side by side with the toolkit's back ends: every CoreAudio device the same
+  name, channels each way, rates, defaults and preferred rate, every CoreMIDI input the same name ("UMC1820",
+  "Impact LX88+ MIDI1", "Impact LX88+ MIDI2"). The one departure, kept on purpose, is a name past ASCII: read in UTF-8
+  here, in Mac OS Roman by RtAudio.
+- **Duplex on one device, through the cable**, at every rate the UMC1820 offers (44.1, 48, 88.2 and 96 kHz) and every
+  block from 32 to 1024 frames: the rate and block asked, no xruns, each channel back as it was played (a 64-tap fit
+  of 0.9997 or better), one stream playing bursts with silence between them bringing every burst back within a
+  hundredth of a frame of the first.
+- **The round trip, measured against what the HAL reports.** Two blocks and the latency reported, and then the
+  driver's error: the UMC1820's driver reports its latency and safety offsets as a fixed time (about 1.5 ms each in,
+  0.28 ms each out: 74 and 14 frames at 48 kHz, 146 and 26 at 96), where its converters' delay is fixed in samples -
+  so the measured round trip is 21 to 37 frames more than reported at 44.1 and 48 kHz and 41 to 70 frames less at
+  88.2 and 96, within 0.8 ms either way. RtAudio counted the device latency alone, without the safety offsets, which
+  is about 110 frames short at every rate. Between one stream and the next the round trip moves by one USB
+  high-speed microframe (125 µs: 6 frames at 48 kHz, 12 at 96) - how the driver lines its input and output packets
+  up at a start - and within a stream it never moves.
+- **Duplex across two devices**, the UMC1820's outputs and a miniDSP UMIK-2's inputs joined in the back end's private
+  aggregate, at 44.1, 48 and 96 kHz: the rate and block asked, no xruns, the input the UMIK-2's (its -55 dBFS room,
+  not the UMC1820's -100 dBFS idle inputs), and the aggregate gone with the stream.
+- **Reckless IR Capture's own capture** through the same cable (`ir-capture-cli --api CoreAudio`, 512 frames):
+  every noise period aligned with the next to the sample, and the sweep, deconvolved from the raw recording over the
+  same band as the noise, at the noise's delay to a hundredth of a frame - 1227.07 frames, 25.56 ms - so the stream
+  holds its timing through the capture's silent gap. (The tool's own "the sweep's response lagged the noise's" note
+  compares the two after each is trimmed at its own onset, and is the onset detectors', not the stream's.)
+- **A real keyboard**: notes held and let go, controllers and pitch bend (its full 14 bits) arriving whole and in
+  order, a note off sent as a note on of velocity 0 arriving as sent, as RtMidi delivered it.
+
+Three faults the hardware found, each fixed in the back end and held by the suite:
+
+- **A stream's latency left out a stream's own.** What the HAL reports beyond the block is the device's latency, its
+  safety offset and the stream's latency; the last is none on the UMC1820 and most of it on a Mac's own devices - 690
+  frames on a MacBook Pro's speakers, 1439 on its microphone, at 48 kHz - which the back end first left out.
+- **A latency read before it had settled.** When a stream's rate changes, or an aggregate is made, the HAL moves the
+  nominal rate first and the latencies some 60 to 80 ms after, in steps: an aggregate taken from 96 to 44.1 kHz read
+  262, 244, then 162 frames. The back end read them as the rate came, and reported 262; it now waits until they have
+  held still for 150 ms.
+- **An xrun at the start of every stream at a tiny block.** At a cycle of a third of a millisecond - 32 frames at
+  88.2 or 96 kHz, 16 at 48 - the HAL reports one processor overload at cycle 0, before the first IOProc, of nearly
+  every stream, a bare IOProc that only clears its buffers included, and none after it. It is the HAL's I/O thread
+  starting, and the back end leaves it unreported, as ALSA's leaves an xrun before its first callback.
+
+**CoreAudio has no exclusive mode here, on purpose.** Its exclusive access is hog mode
+(`kAudioDevicePropertyHogMode`), and it buys nothing a stream of this layer wants: the nominal rate is the hardware's
+own and any client may set it, the IOProc's buffer is per process and may be any size in the device's range (15 to
+4096 frames on the UMC1820), and no mixer stands between the IOProc and the driver's buffer, as Windows Audio's
+shared mode puts one - which is why Windows Audio has an exclusive mode and CoreAudio does not need one. What hog mode
+adds is silencing every other program and formats that cannot be mixed (integer, encoded passthrough), at the cost of
+taking the device from everything else, and leaving it taken should the program die holding it. The back end refuses a
+stream whose buffers are not 32-bit float - the format of every mixable stream - rather than misread one another
+program has hogged.
 
 **Linux carries neither library now**: with the ALSA sequencer serving MIDI, RtAudio and RtMidi are not fetched or
 compiled there. The sequencer lists every input under the name RtMidi gave it - checked side by side against RtMidi
