@@ -36,8 +36,9 @@ nothing invalidated the rate is the same, so the frame work is not the cause. Th
 
 Two obvious models of `SetTimer(16)` both predict the wrong answer. A **drift** model - due times advancing 16 ms
 against a 15.625 ms clock - predicts about 62.5 Hz. A **re-arm on expiry** model predicts a flat 32 Hz. The
-measurement is neither: it is a mixture, 26 % of intervals one clock tick long, 68 % two and 6 % three. Four
-measurements settle what is actually happening.
+measurement is neither: it is a mixture - of 2000 intervals on an idle machine, **27 % one clock tick long, 71 %
+two and 1.5 % three**, and the three-tick tail grows with whatever else the machine is doing, being a tick the window
+did not retrieve in time. Four measurements settle what is actually happening, and the harness runs all four.
 
 **One: the grid is the system clock's, and `timeBeginPeriod` does not move it.** `GetSystemTimeAdjustment` reports
 the clock's increment in force as **15.6252 ms**, and every `WM_TIMER`'s own `GetMessageTime` - the tick count the
@@ -55,24 +56,33 @@ scans of a 15.6252 ms clock:
 the clock's increment at 15.6252 ms, and the measured rate with the period held is 38.78 Hz against 37.97 Hz without
 it. **That is why `timeBeginPeriod` does nothing for `SetTimer`** - the two are different clocks.
 
-**Two: the schedule is re-armed at each expiry, not absolute.** A handler that burns 20 or 25 ms of processor before
-the next message is taken leaves the mean at 26.7-27.0 ms; an absolute schedule would have become handler-bound at
-20-25 ms. And calling `SetTimer` again by hand from the handler - an explicit re-arm from the retrieval - reproduces
-the periodic timer's figure exactly at no burn (27.3 ms against 26.6 ms) while diverging to 43.5 ms at a 20 ms burn,
-which places the periodic timer's reference at the **expiry instant**, not at the retrieval and not on an absolute
-schedule. **So there is no drift, and 62.5 Hz was never reachable through `SetTimer` at any period.** The most it can
-give is one tick a frame: 15.625 ms, 64 Hz.
+**Two: the schedule is re-armed at each expiry, not absolute.** The harness's `platform-timer-schedule` run makes the
+handler burn processor before the next message is taken, 400 frames each, and prints a control beside it - the same
+timer re-armed by hand from the handler, which is an absolute schedule from the retrieval by construction:
 
-**Three: the rate is a staircase in the scans a period takes.** Sweeping the period asked for, 300 frames each, gives
-the mean interval in units of the 15.625 ms grid:
+| the handler burns | 0 ms | 8 ms | 20 ms | 25 ms | 40 ms |
+|---|---|---|---|---|---|
+| `SetTimer(16)`, the periodic timer | 27.274 ms | 27.078 ms | **27.314 ms** | **27.356 ms** | 40.035 ms |
+| re-armed by hand, absolute from the retrieval | 27.390 ms | - | **43.273 ms** | - | - |
 
-| asked for | 1-14 ms | **15** | **16** | 17-30 | **31** | **32** | 33-46 | **47** | 48 |
-|---|---|---|---|---|---|---|---|---|---|
-| grid scans a frame | 1.00-1.02 | 1.09 | **1.74** | 2.00-2.05 | 2.26 | **2.80** | 3.00-3.11 | 3.53 | 4.02 |
-| rate | 63-64 Hz | 58.9 Hz | **36.8 Hz** | 31.2-31.9 Hz | 28.3 Hz | 22.9 Hz | 21.1 Hz | 18.1 Hz | 15.9 Hz |
+The periodic timer's mean is **flat through burns of 20 and 25 ms**, where an absolute schedule would already have
+become handler-bound; the control, which is absolute by construction, matches it at no burn and diverges to 43.273 ms
+at a 20 ms burn. That places the periodic timer's reference at the **expiry instant** - not at the retrieval, and not
+on an absolute schedule. It becomes handler-bound only at a burn of 40 ms, which is past two scans of the grid.
 
-The staircase is `ceil(period / 15.625)` scans, as the re-arm model says. The interesting values are the ones at the
-step edges - 15 and 16, 31 and 32, 47 - where the mean is a *mixture* of two step heights rather than either.
+**So there is no drift, and 62.5 Hz was never reachable through `SetTimer` at any period.** The most it can give is
+one scan a frame - 15.6252 ms and 64 Hz in principle, 63.5 Hz as the sweep below measures it.
+
+**Three: the rate is a staircase in the scans a period takes.** The `platform-timer-sweep` run asks for each period
+in turn, 400 frames each, and gives the mean interval in units of the 15.6252 ms grid:
+
+| asked for | 1 | 10 | 14 | **15** | **16** | 17 | 20 | 30 | **31** | **32** | 33 | 46 | **47** | 48 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| grid scans a frame | 1.01 | 1.01 | 1.03 | **1.12** | **1.68** | 2.01 | 2.02 | 2.05 | **2.29** | **2.76** | 3.01 | 3.16 | **3.47** | 4.01 |
+| rate | 63.3 Hz | 63.5 Hz | 61.9 Hz | 57.2 Hz | **38.0 Hz** | 31.9 Hz | 31.7 Hz | 31.3 Hz | 28.0 Hz | 23.2 Hz | 21.3 Hz | 20.3 Hz | 18.4 Hz | 16.0 Hz |
+
+The staircase is `ceil(period / 15.6252)` scans, as the re-arm model says. The **bold** values are the ones at the
+step edges, where the mean is a *mixture* of two step heights rather than either of them.
 
 **Four: the mixture is a one-millisecond ambiguity band at each step edge, and 16 sits in one.** The due time is
 carried in whole milliseconds of tick count while the grid's step is 15.625 ms, so the grid's tick-count values
@@ -88,8 +98,8 @@ toss, and there is no beat anything could be designed around.
 ```
 
 That is the whole answer, and it has a blunt consequence. **`kFrameMilliseconds = 16` is the worst value in the range
-1 to 30.** One millisecond less is 59 Hz, two less is 63 Hz, and two more is a clean 31.7 Hz; 16 is the first value
-past the one-scan boundary of 15.625, inside the one-millisecond band where it cannot make up its mind. On a 60 Hz
+1 to 30.** One millisecond less is 57 Hz, two less is 62 Hz, and one more is a clean 31.9 Hz; 16 is the first value
+past the one-scan boundary of 15.6252, inside the one-millisecond band where it cannot make up its mind. On a 60 Hz
 panel each frame is then shown for one refresh or two, alternating irregularly; on the 240 Hz panel the audit
 measured, for six or seven. **That alternation is the stutter, more than the rate is.**
 
