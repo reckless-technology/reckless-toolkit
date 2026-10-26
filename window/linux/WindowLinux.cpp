@@ -40,6 +40,10 @@
 #include <X11/cursorfont.h>
 #include <X11/keysym.h>
 
+// XKBlib.h after Xlib.h, which it needs for Display and the rest: detectable auto-repeat, which a window asks for when
+// it is asked for raw keys.
+#include <X11/XKBlib.h>
+
 #include "X11Clipboard.h"
 
 namespace reckless::window
@@ -96,6 +100,47 @@ unsigned CursorShapeFor(view::Cursor cursor)
     return XC_left_ptr;
 }
 
+/** The toolkit's name for the key a key symbol stands for: the editing and moving keys, and Key::kNone for every
+    other, which names a key the views know only by the character it types. The one table the views' keys (KeyOf) and
+    the raw keys (RawKeyOf) are both named from.
+    @param symbol  the key symbol
+    @return        the key, or Key::kNone where the toolkit has no name for it */
+view::Key NamedKeyOfKeySym(KeySym symbol) noexcept
+{
+    switch (symbol)
+    {
+    case XK_Escape:
+        return view::Key::kEscape;
+    case XK_Return:
+    case XK_KP_Enter:
+        return view::Key::kReturn;
+    case XK_Tab:
+        return view::Key::kTab;
+    case XK_BackSpace:
+        return view::Key::kBackspace;
+    case XK_Delete:
+        return view::Key::kDelete;
+    case XK_Left:
+        return view::Key::kLeft;
+    case XK_Right:
+        return view::Key::kRight;
+    case XK_Up:
+        return view::Key::kUp;
+    case XK_Down:
+        return view::Key::kDown;
+    case XK_Home:
+        return view::Key::kHome;
+    case XK_End:
+        return view::Key::kEnd;
+    case XK_Page_Up:
+        return view::Key::kPageUp;
+    case XK_Page_Down:
+        return view::Key::kPageDown;
+    default:
+        return view::Key::kNone;
+    }
+}
+
 /** A key event as the views' key: the editing and moving keys by their key symbols, the rest as the character it
     types (Latin-1, as XLookupString gives it with no input method).
     @param event  the key press, which XLookupString reads
@@ -107,50 +152,10 @@ view::KeyEvent KeyOf(XKeyEvent &event)
     const int      length = XLookupString(&event, text, sizeof(text), &symbol, nullptr);
     view::KeyEvent key;
     key.modifiers = ModifiersOf(event.state);
-    switch (symbol)
+    if (const view::Key named = NamedKeyOfKeySym(symbol); named != view::Key::kNone)
     {
-    case XK_Escape:
-        key.key = view::Key::kEscape;
+        key.key = named;
         return key;
-    case XK_Return:
-    case XK_KP_Enter:
-        key.key = view::Key::kReturn;
-        return key;
-    case XK_Tab:
-        key.key = view::Key::kTab;
-        return key;
-    case XK_BackSpace:
-        key.key = view::Key::kBackspace;
-        return key;
-    case XK_Delete:
-        key.key = view::Key::kDelete;
-        return key;
-    case XK_Left:
-        key.key = view::Key::kLeft;
-        return key;
-    case XK_Right:
-        key.key = view::Key::kRight;
-        return key;
-    case XK_Up:
-        key.key = view::Key::kUp;
-        return key;
-    case XK_Down:
-        key.key = view::Key::kDown;
-        return key;
-    case XK_Home:
-        key.key = view::Key::kHome;
-        return key;
-    case XK_End:
-        key.key = view::Key::kEnd;
-        return key;
-    case XK_Page_Up:
-        key.key = view::Key::kPageUp;
-        return key;
-    case XK_Page_Down:
-        key.key = view::Key::kPageDown;
-        return key;
-    default:
-        break;
     }
     // Ctrl with a letter as the letter with the primary modifier, as a Mac's Command-letter reaches the views:
     // XLookupString gives a control byte for it, which no view reads. Not with Alt, as on Windows.
@@ -167,6 +172,31 @@ view::KeyEvent KeyOf(XKeyEvent &event)
         key.character = static_cast<char32_t>(static_cast<unsigned char>(text[0]));
     }
     return key;
+}
+
+/** One edge of one key as a raw key event: X's keycode, which names the physical key whatever the layout makes it
+    type, and the toolkit's name for the key symbol that keycode stands for by itself (group and shift left out, which
+    name the same editing and moving keys either way).
+    @param event    the key press or key release
+    @param is_down  true for a press, false for a release
+    @return         the edge, its repeat flag left for the window to answer */
+RawKeyEvent RawKeyOf(XKeyEvent &event, bool is_down)
+{
+    RawKeyEvent key;
+    key.is_down           = is_down;
+    key.named_key         = NamedKeyOfKeySym(XLookupKeysym(&event, 0));
+    key.platform_key_code = event.keycode;
+    key.physical_key_code = event.keycode; // X's keycode is the physical key: it has no second code beside it
+    key.modifiers         = ModifiersOf(event.state);
+    return key;
+}
+
+/** A key edge's window, keycode and time, for the auto-repeat test (IsX11AutoRepeatRelease).
+    @param event  the key press or release
+    @return       its stamp */
+X11KeyStamp StampOf(const XKeyEvent &event) noexcept
+{
+    return {static_cast<unsigned long>(event.window), event.keycode, event.time};
 }
 
 /** Whether `program` is on the PATH.
@@ -641,16 +671,29 @@ class LinuxSurface : public view::Host
             }
             break;
         case KeyPress:
+            TellRawKey(event.xkey, true); // nothing where no owner asked; the views are given what they always were
             if (!router_.Key(KeyOf(event.xkey)))
             {
                 HandOnKey(event);
             }
             break;
-        case FocusOut:
-            if (focus_taken_ && event.xfocus.mode == NotifyNormal)
+        case KeyRelease:
+            // Only an owner that asked for the raw keys hears a key let go, and only such a window asks the server for
+            // the release at all: the views have no key up, and nothing here gives them one.
+            if (!IsAutoRepeat(event.xkey))
             {
-                focus_taken_ = false;
-                router_.Focus(nullptr); // the keyboard went elsewhere
+                TellRawKey(event.xkey, false);
+            }
+            break;
+        case FocusOut:
+            if (event.xfocus.mode == NotifyNormal)
+            {
+                LetGoOfHeldRawKeys(); // nothing the raw keys said was down stays down
+                if (focus_taken_)
+                {
+                    focus_taken_ = false;
+                    router_.Focus(nullptr); // the keyboard went elsewhere
+                }
             }
             break;
         default:
@@ -710,6 +753,84 @@ class LinuxSurface : public view::Host
     }
 
   protected:
+    /** Every raw key edge told to `raw_key` (ChildWindow::SetRawKeyCallback), and with the first callback the two
+        things the server must be asked for before it will send them: the key releases, which the window does not ask
+        for otherwise - so a window no one has asked is sent exactly what it always was - and detectable auto-repeat,
+        which has the server leave out the release auto-repeat would otherwise send before each repeated press. The
+        keys held are let go first, so a callback replaced mid-press leaves nothing owed and nothing held.
+        @param raw_key  told of each edge; empty for none */
+    void TakeRawKeys(RawKeyCallback raw_key)
+    {
+        LetGoOfHeldRawKeys();
+        const bool had_none = !raw_key_;
+        raw_key_            = std::move(raw_key);
+        if (had_none && raw_key_ && !released_)
+        {
+            XWindowAttributes attributes{};
+            if (XGetWindowAttributes(display_, window_, &attributes) != 0)
+            {
+                XSelectInput(display_, window_, attributes.your_event_mask | KeyReleaseMask);
+            }
+            Bool supported = False;
+            XkbSetDetectableAutoRepeat(display_, True, &supported);
+            detectable_auto_repeat_ = supported != False;
+            XFlush(display_);
+        }
+    }
+
+    /** One edge of one key told to whoever asked for the raw keys, and nothing where no one has: X's keycode as the
+        physical key and the platform's own code alike, the toolkit's name for it where it has one, and the modifiers
+        the event carries. A down of a key already held is auto-repeat's (`is_repeat`), as a repeated press is where
+        the server gives detectable auto-repeat; an up is told only for a key whose down was.
+        @param event    the key press or release
+        @param is_down  true for a press, false for a release */
+    void TellRawKey(XKeyEvent &event, bool is_down)
+    {
+        if (!raw_key_)
+        {
+            return;
+        }
+        RawKeyEvent key = RawKeyOf(event, is_down);
+        if (is_down)
+        {
+            key.is_repeat = raw_keys_held_.NoteDown(key);
+            raw_key_(key);
+        }
+        else if (raw_keys_held_.NoteUp(key.physical_key_code))
+        {
+            raw_key_(key);
+        }
+    }
+
+    /** Whether a key release is one auto-repeat made and not a person letting the key go, which it can be only where
+        the server refused detectable auto-repeat: then the release is followed at once by a press of the same key, in
+        the same window, stamped at the same millisecond, and the queue already holds it.
+        @param release  the release in hand
+        @return         true when the release is to be passed over */
+    bool IsAutoRepeat(const XKeyEvent &release)
+    {
+        if (detectable_auto_repeat_ || XEventsQueued(display_, QueuedAlready) <= 0)
+        {
+            return false;
+        }
+        XEvent next{};
+        XPeekEvent(display_, &next); // the queue holds one: this reads nothing from the connection and cannot block
+        return next.type == KeyPress && IsX11AutoRepeatRelease(StampOf(release), true, StampOf(next.xkey));
+    }
+
+    /** An up told for every key the raw key callback was told is down, and nothing held afterwards: what the window
+        does as it loses the keyboard (FocusOut), so no key it said was down stays down. */
+    void LetGoOfHeldRawKeys()
+    {
+        for (const RawKeyEvent &up : raw_keys_held_.TakeUps())
+        {
+            if (raw_key_)
+            {
+                raw_key_(up);
+            }
+        }
+    }
+
     /** The surface let go, once - what its destruction does, and what a popup's closing with the window it opened
         over does early, while the connection still lives: the popups opened over it close, and theirs; the tree loses
         its host; the X window and what draws it go. Then each closed popup's `closed_by_window` runs - a menu ends
@@ -1015,6 +1136,15 @@ class LinuxSurface : public view::Host
     bool                       requested_{false};    ///< the selection has been asked for
     bool                       drop_waiting_{false}; ///< a drop came before the paths and waits for them
     std::vector<LinuxPopup *>  popups_;              ///< the popups opened over it, which go with it
+    /** Told of every raw key edge (ChildWindow::SetRawKeyCallback); empty until an owner asks, until when the window
+        asks the server for no key release and reads nothing of the raw keys. */
+    RawKeyCallback raw_key_;
+    /** The keys the raw key callback has been told are down, which answer whether a down is auto-repeat's, whether an
+        up is owed, and what is to be let go as the window loses the keyboard. */
+    RawKeysHeld raw_keys_held_;
+    /** Whether the server gave detectable auto-repeat when the raw keys were asked for: then a repeated press comes
+        with no release before it, and no release has to be tested for being one of auto-repeat's. */
+    bool detectable_auto_repeat_{false};
 };
 
 /** A popup: the surface in an override-redirect window at a point on the screen, its presses outside shown to it by
@@ -1422,6 +1552,14 @@ class LinuxChildWindow final : public ChildWindow
         surface_->ProxyDropsFor(static_cast<::Window>(reinterpret_cast<std::uintptr_t>(top_level)));
     }
 
+    /** Every raw key edge told to `raw_key`: the key presses the views are given too, and the key releases the window
+        asks the server for only once it is asked for them, with everything let go at a FocusOut.
+        @param raw_key  told of each edge, on the window's thread; empty to ask for no more */
+    void SetRawKeyCallback(RawKeyCallback raw_key) override
+    {
+        surface_->TakeRawKeys(std::move(raw_key));
+    }
+
   private:
     /** The child window's surface: the window resized to its raster, the keys it does not take passed up. */
     class ChildSurface final : public LinuxSurface
@@ -1435,6 +1573,11 @@ class LinuxChildWindow final : public ChildWindow
             @param root        the root of the view tree to draw, which outlives the surface
             @param scale       window pixels per design pixel */
         using LinuxSurface::LinuxSurface;
+
+        /** LinuxSurface::TakeRawKeys, for the child window to hand its owner's callback to
+            (ChildWindow::SetRawKeyCallback).
+            @param raw_key  told of each raw key edge; empty for none */
+        using LinuxSurface::TakeRawKeys;
 
         /** The window drawn at a new scale and resized to its raster.
             @param scale  window pixels per design pixel */

@@ -105,5 +105,5 @@
     The tooltip's text: words split, trimmed and wrapped to the balanced lines a tooltip draws. */
 
 /** @namespace reckless::window
-    The child window a panel is shown in (window/), written against no toolkit, and the shell at the root of every
-    window. */
+    The child window a panel is shown in (window/), written against no toolkit, the shell at the root of every
+    window, and the raw keys a window delivers to an owner that asks for them (window/RawKey.h). */

@@ -111,6 +111,10 @@ int RunApp(AppPlatform &platform, view::View &root, gfx::PointI minimum, const A
     {
         child->HandOnKeysTo(window->Handle());
     }
+    if (hooks.on_child)
+    {
+        hooks.on_child(*child);
+    }
     if (hooks.on_open)
     {
         hooks.on_open(*window);

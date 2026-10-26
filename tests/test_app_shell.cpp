@@ -55,9 +55,15 @@ class SuiteChild final : public reckless::window::ChildWindow
         handed_to.push_back(top_level);
     }
 
-    std::function<void()> frame;     ///< the frame callback RunApp set
-    std::vector<float>    scales;    ///< every scale set
-    std::vector<void *>   handed_to; ///< every window the keys its views do not take were handed on to
+    void SetRawKeyCallback(reckless::window::RawKeyCallback callback) override
+    {
+        raw_key = std::move(callback);
+    }
+
+    std::function<void()>            frame;     ///< the frame callback RunApp set
+    std::vector<float>               scales;    ///< every scale set
+    std::vector<void *>              handed_to; ///< every window the keys its views do not take were handed on to
+    reckless::window::RawKeyCallback raw_key;   ///< the raw key callback its owner set; empty where none asked
 };
 
 /** A view of fixed content, with a tooltip. */
@@ -180,6 +186,75 @@ TEST(RunApp, AnAppWithAMenuBarHasItsWindowCarryItAndItsChildHandOnTheKeys)
         EXPECT_EQ(carries_bar, has_menu_bar);
         EXPECT_EQ(handed_to, has_menu_bar ? std::vector<void *>{handle} : std::vector<void *>{})
             << "the keys no view takes handed on to the window only where it has a bar's shortcuts";
+    }
+}
+
+TEST(RunApp, TheChildWindowIsHandedToTheProductWhichMayAskItForTheRawKeys)
+{
+    // An app on the shell reaches the child window its views are drawn in through on_child, before on_open and before
+    // the loop runs, which is where a product that wants the raw keys asks for them (ChildWindow::SetRawKeyCallback).
+    // A product that asks for nothing leaves the child window with no callback at all.
+    for (const bool wants_raw_keys : {false, true})
+    {
+        FakeAppPlatform      platform;
+        reckless::view::View root;
+        root.SetBounds({300, 200});
+        SuiteChild                                *child = nullptr;
+        std::vector<reckless::window::RawKeyEvent> heard;
+        bool                                       child_before_open = false;
+        bool                                       had_callback      = false;
+        reckless::app::AppRunHooks                 hooks;
+        if (wants_raw_keys)
+        {
+            hooks.on_child = [&](reckless::window::ChildWindow &made) {
+                made.SetRawKeyCallback([&](const reckless::window::RawKeyEvent &key) { heard.push_back(key); });
+            };
+        }
+        hooks.on_open = [&](reckless::app::AppWindow &) {
+            child_before_open = child != nullptr && (!wants_raw_keys || static_cast<bool>(child->raw_key));
+        };
+        // The child window goes as RunApp returns, so what it was given is taken here, while it is still there.
+        reckless::window::RawKeyCallback given;
+        hooks.on_end = [&](std::optional<std::pair<int, int>>) {
+            had_callback = static_cast<bool>(child->raw_key);
+            given        = child->raw_key;
+        };
+        const auto make_child = [&](void *, reckless::view::View &, int, int, float,
+                                    std::unique_ptr<reckless::window::RunLoop>) {
+            auto made = std::make_unique<SuiteChild>();
+            child     = made.get();
+            platform.CallSoon([&] {
+                for (int i = 0; i < 5 && child->frame; ++i)
+                {
+                    child->frame();
+                }
+            });
+            return made;
+        };
+        EXPECT_EQ(reckless::app::RunApp(platform, root, {100, 50}, reckless::app::ParseAppOptions({"--smoke", "3"}),
+                                        "Suite App", "1.0.0", make_child, hooks),
+                  0);
+        EXPECT_TRUE(child_before_open) << "the child window is handed over before the window is opened to the person";
+        EXPECT_EQ(had_callback, wants_raw_keys) << "nothing is asked of the child window unless the product asks";
+        if (wants_raw_keys)
+        {
+            ASSERT_TRUE(static_cast<bool>(given));
+            reckless::window::RawKeyEvent down;
+            down.is_down           = true;
+            down.physical_key_code = 0x39; // the space bar, as a Windows scan code names it
+            given(down);
+            down.is_repeat = true;
+            given(down);
+            ASSERT_EQ(heard.size(), 2u) << "every edge the window delivers reaches the product's own callback";
+            EXPECT_TRUE(heard[0].is_down);
+            EXPECT_FALSE(heard[0].is_repeat);
+            EXPECT_TRUE(heard[1].is_repeat);
+            EXPECT_EQ(heard[1].physical_key_code, 0x39u);
+        }
+        else
+        {
+            EXPECT_TRUE(heard.empty());
+        }
     }
 }
 
