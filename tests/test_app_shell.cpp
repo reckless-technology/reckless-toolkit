@@ -1,7 +1,9 @@
 // An app's shell (app/AppRun.h, AppRoot.h, AppTheme.h, AppWidgets.h, AppUpdates.h) on the suites' own platform
 // (tests/FakeAppPlatform.h) with a child window of the suite's own: the command line read, the window opened round the
 // root, titled and sized, its frames and its smoke run, its resizes followed; the root's zoom and its tooltip; the
-// widgets as a person drives them; the theme's palette; the update check switched off by the environment.
+// widgets as a person drives them; the theme's palette; the update check switched off by the environment. And the two
+// seams a product opts in through on the window it is handed - the raw keys, and how the frame callback is paced
+// (window/FramePacing.h) - including what a window that implements neither answers.
 #include <gtest/gtest.h>
 
 #include <cstdlib>
@@ -187,6 +189,31 @@ TEST(RunApp, AnAppWithAMenuBarHasItsWindowCarryItAndItsChildHandOnTheKeys)
         EXPECT_EQ(handed_to, has_menu_bar ? std::vector<void *>{handle} : std::vector<void *>{})
             << "the keys no view takes handed on to the window only where it has a bar's shortcuts";
     }
+}
+
+TEST(ChildWindowPacing, AWindowThatPacesNothingItselfAnswersThePlatformTimerAndSaysWhy)
+{
+    // The seam's default body (window/Window.h), held on every platform: a child window written against no display
+    // clock - a suite's own, a host's, one on a platform that has none - answers the platform's timer and the reason,
+    // so a product never has to ask whether its window implements this.
+    using reckless::window::FramePacing;
+    using reckless::window::FramePacingFallback;
+    SuiteChild child;
+
+    const reckless::window::FramePacingState unasked = child.FramePacingNow();
+    EXPECT_EQ(unasked.pacing, FramePacing::kPlatformTimer);
+    EXPECT_EQ(unasked.why, FramePacingFallback::kNotAsked) << "no one has asked it for anything";
+
+    const reckless::window::FramePacingState default_request = child.SetFramePacing({});
+    EXPECT_EQ(default_request.pacing, FramePacing::kPlatformTimer)
+        << "a default request is what every window did before any of this existed";
+    EXPECT_EQ(default_request.why, FramePacingFallback::kNotAsked);
+
+    const reckless::window::FramePacingState asked = child.SetFramePacing({FramePacing::kDisplayClock, 4, 1});
+    EXPECT_EQ(asked.pacing, FramePacing::kPlatformTimer);
+    EXPECT_EQ(asked.why, FramePacingFallback::kNoDisplayClock) << "this window has no clock, and says so";
+    EXPECT_EQ(asked.refresh_divisor, 0);
+    EXPECT_EQ(asked.frames_a_second, 0.0);
 }
 
 TEST(RunApp, TheChildWindowIsHandedToTheProductWhichMayAskItForTheRawKeys)
