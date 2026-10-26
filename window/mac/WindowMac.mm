@@ -1,16 +1,21 @@
 // The child window on macOS: an NSView drawing a view tree through Skia into a raster at the backing scale, put on
-// screen through a CGImage, with the mouse, the keys and dropped files handed to a MouseRouter and a display-rate
-// timer for the frame callback. A popup is the same surface in a borderless, non-activating panel over the host's
+// screen through a CGImage, with the mouse, the keys and dropped files handed to a MouseRouter and a timer for the
+// frame callback - or, where a product has asked for it (ChildWindow::SetFramePacing), the display's own link, whose
+// refreshes the window counts. A popup is the same surface in a borderless, non-activating panel over the host's
 // window, watched by a local event monitor for presses outside it. Screen points are Cocoa's (y up from the main
 // screen's bottom), opaque to the views, which only hand them back to Popup::Contains.
 #import <AppKit/AppKit.h>
+#import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#include <mach/mach_time.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -92,6 +97,14 @@ MacSurface *OwnerOf(id view);
     @param owner  the surface; nullptr when the surface lets the view go */
 void SetOwner(NSView *view, MacSurface *owner);
 
+/** The selector of the view method a display link made from that view calls (ViewDisplayLinkTicked), registered by
+    name because NSView declares nothing of it.
+    @return  the selector */
+SEL DisplayLinkTickedSelector()
+{
+    return sel_registerName("recklessDisplayLinkTicked:");
+}
+
 /** Text in Cocoa's form.
     @param utf8  the text, in UTF-8
     @return      the autoreleased NSString */
@@ -99,6 +112,263 @@ NSString *StringOf(const std::string &utf8)
 {
     return [NSString stringWithUTF8String:utf8.c_str()];
 }
+
+// --------------------------------------------------------------------------------------------------------------
+// The display's own clock, where a product has asked to be paced on it (ChildWindow::SetFramePacing).
+// --------------------------------------------------------------------------------------------------------------
+
+/** Mach's absolute time in seconds, which is the clock CACurrentMediaTime reads and the one a display link's own
+    timestamps are on - so a CoreVideo link's host time and a Core Animation link's timestamp are the same clock.
+    @param host_time  mach's absolute time, as a CVTimeStamp carries it
+    @return           the same instant in seconds */
+double SecondsOfHostTime(std::uint64_t host_time) noexcept
+{
+    static const double tick_seconds = [] {
+        mach_timebase_info_data_t timebase{};
+        mach_timebase_info(&timebase);
+        return timebase.denom > 0 ? static_cast<double>(timebase.numer) / timebase.denom / 1.0e9 : 0.0;
+    }();
+    return static_cast<double>(host_time) * tick_seconds;
+}
+
+/** The display `view` is on, as CoreGraphics names it.
+    @param view  the view; may be on no window or no screen
+    @return      the display's id, or kCGNullDirectDisplay where the view is on no screen */
+CGDirectDisplayID DisplayOf(NSView *view)
+{
+    NSScreen *screen = [[view window] screen] ?: [NSScreen mainScreen];
+    NSNumber *number = screen != nil ? [screen deviceDescription][@"NSScreenNumber"] : nil;
+    return number != nil ? static_cast<CGDirectDisplayID>([number unsignedIntValue]) : kCGNullDirectDisplay;
+}
+
+/** What the window server and the display mode say about the rate of the display `view` is on. The window server's
+    own answer (NSScreen's maximumFramesPerSecond) is the compositor's, since that is the rate it composites the
+    screen at; the mode's (CGDisplayModeGetRefreshRate) is the cross-check, and is 0 on the displays CoreGraphics
+    reports no rate for, where the policy then has the window server's alone.
+    @param view  the view whose display is read
+    @return      the reading, with nothing yet said about whether the period holds still */
+DisplayClockReading DisplayClockReadingOf(NSView *view)
+{
+    DisplayClockReading reading;
+    if (@available(macOS 14.0, *))
+    {
+        reading.has_clock = true; // Core Animation's link is made from the view itself, whatever screen it is on
+    }
+    else
+    {
+        reading.has_clock = DisplayOf(view) != kCGNullDirectDisplay; // CoreVideo's has to be given a display
+    }
+    NSScreen *screen = [[view window] screen] ?: [NSScreen mainScreen];
+    if (screen != nil)
+    {
+        reading.compositor_hertz = static_cast<double>([screen maximumFramesPerSecond]);
+    }
+    if (const CGDirectDisplayID display = DisplayOf(view); display != kCGNullDirectDisplay)
+    {
+        if (CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display))
+        {
+            reading.display_hertz = CGDisplayModeGetRefreshRate(mode);
+            CGDisplayModeRelease(mode);
+        }
+    }
+    return reading;
+}
+
+/** What a CoreVideo display link's callback and the main thread share. The callback runs on a thread of CoreVideo's
+    own, so each tick is handed to the main thread, and a tick already on its way as the clock stops finds
+    `is_pacing` false rather than a window that has gone. */
+struct CoreVideoTicks
+{
+    std::function<void(double tick_seconds, double period_seconds)> ticked; ///< run on the main thread, per tick
+    std::atomic<bool> is_pacing{true};    ///< false once the clock has stopped: a tick in flight is then dropped
+    std::atomic<int>  ticks_in_flight{0}; ///< ticks handed to the main thread and not yet run
+};
+
+/** A CoreVideo display link's callback, on a thread of CoreVideo's own: the tick handed to the main thread, unless one
+    is already waiting there - a main thread that is busy is given no backlog to run in a burst, and a tick dropped
+    costs nothing, the subdivision being counted from the ticks' own timestamps rather than from how many arrived.
+    @param output  the time the frame being timed is for
+    @param user    a pointer to the shared CoreVideoTicks, which outlives every tick in flight
+    @return        kCVReturnSuccess always: nothing here can refuse a tick */
+CVReturn CoreVideoTicked(CVDisplayLinkRef, const CVTimeStamp *, const CVTimeStamp *output, CVOptionFlags,
+                         CVOptionFlags *, void *user)
+{
+    const std::shared_ptr<CoreVideoTicks> ticks = *static_cast<std::shared_ptr<CoreVideoTicks> *>(user);
+    const double                          tick =
+        (output->flags & kCVTimeStampHostTimeValid) != 0 ? SecondsOfHostTime(output->hostTime) : CACurrentMediaTime();
+    const double period =
+        (output->flags & kCVTimeStampVideoRefreshPeriodValid) != 0 && output->videoTimeScale > 0
+            ? static_cast<double>(output->videoRefreshPeriod) / static_cast<double>(output->videoTimeScale)
+            : 0.0;
+    if (ticks->ticks_in_flight.fetch_add(1, std::memory_order_acq_rel) > 0)
+    {
+        ticks->ticks_in_flight.fetch_sub(1, std::memory_order_acq_rel);
+        return kCVReturnSuccess;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ticks->ticks_in_flight.fetch_sub(1, std::memory_order_acq_rel);
+      if (ticks->is_pacing.load(std::memory_order_acquire) && ticks->ticked)
+      {
+          ticks->ticked(tick, period);
+      }
+    });
+    return kCVReturnSuccess;
+}
+
+// CoreVideo's display link is deprecated from macOS 15. It is reached only below macOS 14, where Core Animation's is
+// not there to use: the toolkit's floor is 13.3, and a Mac on 13 is owed the display's clock as much as one on 15.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
+/** A CoreVideo display link on `display`, with CoreVideoTicked as its callback, started.
+    @param display  the display to pace on
+    @param held     the pointer the callback is given, which outlives every tick in flight
+    @return         the link, which the caller releases; null where CoreVideo refused any step */
+CVDisplayLinkRef MakeCoreVideoLink(CGDirectDisplayID display, std::shared_ptr<CoreVideoTicks> *held)
+{
+    CVDisplayLinkRef link = nullptr;
+    if (CVDisplayLinkCreateWithCGDisplay(display, &link) != kCVReturnSuccess || link == nullptr)
+    {
+        return nullptr;
+    }
+    if (CVDisplayLinkSetOutputCallback(link, &CoreVideoTicked, held) != kCVReturnSuccess ||
+        CVDisplayLinkStart(link) != kCVReturnSuccess)
+    {
+        CVDisplayLinkRelease(link);
+        return nullptr;
+    }
+    return link;
+}
+
+/** A CoreVideo display link stopped - which returns only once a tick of CoreVideo's own thread has finished, so
+    nothing reads what the callback was given after it - and released.
+    @param link  the link; nothing is done for null */
+void EndCoreVideoLink(CVDisplayLinkRef link)
+{
+    if (link != nullptr)
+    {
+        CVDisplayLinkStop(link);
+        CVDisplayLinkRelease(link);
+    }
+}
+
+#pragma clang diagnostic pop
+
+/**
+    The display's own clock on macOS: a callback once a refresh of the display the view is on, which the window counts
+    to deliver a frame every Nth. This is the clean case of the whole design - there is nothing to wait for and
+    nothing to snap, because the platform is already calling once a refresh, and "shown for exactly N refresh
+    periods" is a count.
+
+    Two links, by what the Mac has. **Core Animation's**, from macOS 14, is made from the view itself
+    (`-[NSView displayLinkWithTarget:selector:]`), follows that view's own screen as the window is moved between
+    displays, and calls back on the run loop it is added to - the window's own thread, with no hop. **CoreVideo's** is
+    the fallback down to the toolkit's floor of 13.3: it is made for one display by id, calls back on a thread of its
+    own, and so each tick is handed to the main thread (CoreVideoTicked). Its calls are deprecated from macOS 15,
+    which is why they are only ever reached below 14.
+*/
+class MacDisplayClock
+{
+  public:
+    MacDisplayClock() = default;
+
+    /** Stopped, its link invalidated or released, before the window it ticks can go. */
+    ~MacDisplayClock()
+    {
+        Stop();
+    }
+
+    MacDisplayClock(const MacDisplayClock &)            = delete;
+    MacDisplayClock &operator=(const MacDisplayClock &) = delete;
+
+    /** Started on the display `view` is on. Core Animation's link is made from the view, with the view as its target
+        (the view's display-link method hands each tick to the surface), and CoreVideo's below macOS 14 with `ticked`
+        as its destination on the main thread.
+        @param view    the view whose display is paced on; outlives the clock
+        @param ticked  run on the main thread for each tick of a CoreVideo link, with the tick's time and the
+                       display's refresh period, both in seconds; unused by a Core Animation link, whose ticks reach
+                       the view
+        @return        true where a link was made and started */
+    bool Start(NSView *view, std::function<void(double tick_seconds, double period_seconds)> ticked)
+    {
+        Stop();
+        if (@available(macOS 14.0, *))
+        {
+            CADisplayLink *link = [view displayLinkWithTarget:view selector:DisplayLinkTickedSelector()];
+            if (link == nil)
+            {
+                return false;
+            }
+            [link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+            animation_link_ = link;
+            return true;
+        }
+        const CGDirectDisplayID display = DisplayOf(view);
+        if (display == kCGNullDirectDisplay)
+        {
+            return false;
+        }
+        ticks_         = std::make_shared<CoreVideoTicks>();
+        ticks_->ticked = std::move(ticked);
+        ticks_held_    = new std::shared_ptr<CoreVideoTicks>(ticks_);
+        video_link_    = MakeCoreVideoLink(display, ticks_held_);
+        if (video_link_ == nullptr)
+        {
+            Stop();
+            return false;
+        }
+        return true;
+    }
+
+    /** Stopped: Core Animation's link invalidated, or CoreVideo's stopped - which waits for a tick of its own that is
+        running - and released, and any tick already handed to the main thread left with nothing to reach. Calling it
+        on a clock that is not running does nothing. */
+    void Stop()
+    {
+        if (animation_link_ != nil)
+        {
+            if (@available(macOS 14.0, *))
+            {
+                [static_cast<CADisplayLink *>(animation_link_) invalidate];
+            }
+            animation_link_ = nil;
+        }
+        if (video_link_ != nullptr)
+        {
+            EndCoreVideoLink(video_link_); // waits for a tick of CoreVideo's own thread, so `ticks_held_` is then free
+            video_link_ = nullptr;
+        }
+        if (ticks_ != nullptr)
+        {
+            ticks_->is_pacing.store(false, std::memory_order_release);
+            ticks_.reset();
+        }
+        delete ticks_held_;
+        ticks_held_ = nullptr;
+    }
+
+    /** Whether a link is running.
+        @return  true while one is */
+    bool is_running() const noexcept
+    {
+        return animation_link_ != nil || video_link_ != nullptr;
+    }
+
+  private:
+    /** Core Animation's link, held as `id` so that a build whose floor is below macOS 14 names its class only where
+        it is available; nil where there is none. */
+    id animation_link_{nil};
+
+    /** CoreVideo's link, below macOS 14; null where there is none. */
+    CVDisplayLinkRef video_link_{nullptr};
+
+    /** What CoreVideo's callback and the main thread share, while CoreVideo's link runs. */
+    std::shared_ptr<CoreVideoTicks> ticks_;
+
+    /** The pointer CoreVideo's callback is given, which it copies the shared pointer out of: deleted only after the
+        link has been stopped, which waits for any tick of its own that is running. */
+    std::shared_ptr<CoreVideoTicks> *ticks_held_{nullptr};
+};
 
 /** "*.wav" as "wav"; an extension the dialog filters on.
     @param pattern  a file pattern, "*.wav" or an extension alone
@@ -533,6 +803,18 @@ class MacSurface : public view::Host
         return scale_;
     }
 
+    /** The view's display link ticked: told to whoever asked for it, and nothing where no one has. Called by the
+        view's display-link method (ViewDisplayLinkTicked), so it is public as the view's other answers are.
+        @param tick_seconds    the tick's own time, in seconds on mach's clock
+        @param period_seconds  the display's refresh period, in seconds; 0 where the link did not say */
+    void DisplayLinkTicked(double tick_seconds, double period_seconds)
+    {
+        if (display_tick_)
+        {
+            display_tick_(tick_seconds, period_seconds);
+        }
+    }
+
     /** Whether every pixel is drawn opaque: the child window's panel is, a popup's rounded corners are not.
         @return true when the raster is not cleared before each draw */
     bool opaque() const noexcept
@@ -605,6 +887,12 @@ class MacSurface : public view::Host
     bool              wants_keys_{false};            ///< True while a view of the tree holds the keyboard focus.
     bool              clear_first_{false};           ///< True when each draw starts transparent (a popup).
     view::Cursor      cursor_{view::Cursor::kArrow}; ///< The cursor last asked for.
+
+    /** Told of each tick of the display link pacing the frame callback, with the tick's own time and the display's
+        refresh period, both in seconds on mach's clock (ChildWindow::SetFramePacing). **Empty until a product asks**,
+        and no link is made until then, so the view's display-link method is never called and nothing of this is
+        reached by a window that was never asked. */
+    std::function<void(double tick_seconds, double period_seconds)> display_tick_;
 
   private:
     /** Held weakly by every call the surface defers and every dialog it opens: gone with the surface, so neither
@@ -778,9 +1066,10 @@ class MacChildWindow final : public ChildWindow, public MacSurface
         [parent addSubview:view_];
     }
 
-    /** The frame timer invalidated. */
+    /** The frame timer invalidated and the display clock stopped, before the view they tick can go. */
     ~MacChildWindow() override
     {
+        clock_.Stop();
         [timer_ invalidate];
         timer_ = nil;
     }
@@ -795,21 +1084,36 @@ class MacChildWindow final : public ChildWindow, public MacSurface
     void SetFrameCallback(std::function<void()> frame) override
     {
         frame_ = std::move(frame);
-        [timer_ invalidate];
-        timer_ = nil;
-        if (frame_)
+        ArrangePacing();
+    }
+
+    /** The frame callback paced as `request` asks: the display's own link - Core Animation's from macOS 14, made from
+        this window's view and following the display the window is moved to, and CoreVideo's below that - whose
+        refreshes are counted, or the timer the window has always used where no link can be made or no rate believed.
+        @param request  what the product asks for; FrameRequest{} for the platform's timer
+        @return         what the window is pacing on, and why where it fell back */
+    FramePacingState SetFramePacing(const FrameRequest &request) override
+    {
+        request_ = request;
+        pacing_  = ChosenPacing(request_, DisplayClockReadingOf(view_));
+        if (pacing_.pacing == FramePacing::kDisplayClock && !display_tick_)
         {
-            MacChildWindow *self = this;
-            timer_               = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
-                                                                   repeats:YES
-                                                                     block:^(NSTimer *) {
-                                                         if (self->frame_)
-                                                         {
-                                                             self->frame_();
-                                                         }
-                                                                     }];
-            [[NSRunLoop currentRunLoop] addTimer:timer_ forMode:NSRunLoopCommonModes];
+            // Installed once a product has asked and never taken back: a tick still on its way as the link stops
+            // reaches a window that is simply no longer paced on it.
+            display_tick_ = [this](double tick_seconds, double period_seconds) {
+                PacedTick(tick_seconds, period_seconds);
+            };
         }
+        ArrangePacing();
+        return pacing_;
+    }
+
+    /** What the window is pacing on now, with the rate of the display it is on now: a Core Animation link follows the
+        window between displays, so the rate here is not always the one SetFramePacing answered with.
+        @return  the pacing in force */
+    FramePacingState FramePacingNow() const override
+    {
+        return pacing_;
     }
 
     /** In a window that is on screen and not in the Dock, and not hidden in it by the host.
@@ -830,8 +1134,126 @@ class MacChildWindow final : public ChildWindow, public MacSurface
     }
 
   private:
-    NSTimer              *timer_{nil}; ///< The 60 Hz frame timer; nil while there is no callback.
+    /** The frame callback's source arranged for the pacing in force: the display's own link where that is what was
+        decided and a link can be made, and the timer the window has always used otherwise - which is what a window
+        with no request of its own always reaches, as the invalidate and the NSTimer alone. Nothing runs while there
+        is no callback. */
+    void ArrangePacing()
+    {
+        clock_.Stop();
+        [timer_ invalidate];
+        timer_ = nil;
+        if (!frame_)
+        {
+            return;
+        }
+        if (pacing_.pacing == FramePacing::kDisplayClock)
+        {
+            period_divided_ = 0.0;
+            display_        = kCGNullDirectDisplay;
+            steadiness_.Forget();
+            unsteady_ = 0;
+            if (clock_.Start(view_, [this](double tick_seconds, double period_seconds) {
+                    PacedTick(tick_seconds, period_seconds);
+                }))
+            {
+                return;
+            }
+            // No link to be had on this Mac: the timer it has always used, and the reason said rather than a rate
+            // invented for it.
+            pacing_ = {FramePacing::kPlatformTimer, 0, pacing_.display_hertz, 0.0,
+                       FramePacingFallback::kNoDisplayClock};
+        }
+        MacChildWindow *self = this;
+        timer_               = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
+                                                               repeats:YES
+                                                                 block:^(NSTimer *) {
+                                                     if (self->frame_)
+                                                     {
+                                                         self->frame_();
+                                                     }
+                                                                 }];
+        [[NSRunLoop currentRunLoop] addTimer:timer_ forMode:NSRunLoopCommonModes];
+    }
+
+    /** One tick of the display link, on the window's thread: a refresh of the display the window is on. The frame
+        callback is run on the tick the schedule's next frame belongs on and on no other, so each frame drawn is shown
+        for exactly the divisor's refresh periods; where the display has stopped being one to divide, the window goes
+        back to its timer with the reason kept for the product to read.
+        @param tick_seconds    the tick's own time, in seconds on mach's clock
+        @param period_seconds  the display's refresh period, in seconds; 0 where the link did not say */
+    void PacedTick(double tick_seconds, double period_seconds)
+    {
+        // A link that named no period: the rate being divided, which is the display's own answer for it.
+        const double period =
+            period_seconds > 0.0 ? period_seconds : (pacing_.display_hertz > 0.0 ? 1.0 / pacing_.display_hertz : 0.0);
+        const CGDirectDisplayID under          = DisplayOf(view_);
+        const bool              is_display_new = under != display_;
+        // A period further from the one being divided than one period read twice could be: the first tick, the mode
+        // changed, or the window arrived on a display of another rate.
+        const bool has_period_moved =
+            period > 0.0 && std::fabs(period - period_divided_) > kRefreshPeriodsHoldStillWithin * period;
+        if (is_display_new)
+        {
+            // Nothing of the display being left is judged together with the one being arrived at.
+            display_  = under;
+            unsteady_ = 0;
+            steadiness_.Forget();
+        }
+        if (is_display_new || has_period_moved)
+        {
+            // The rates are read again rather than carried over - a mode change on the one display is caught here -
+            // and reading them only when something has moved keeps CGDisplayCopyDisplayMode off every tick's path.
+            reading_ = DisplayClockReadingOf(view_);
+        }
+        steadiness_.Note(period);
+        unsteady_ = steadiness_.does_hold_still() ? 0 : unsteady_ + 1;
+
+        DisplayClockReading reading = reading_;
+        // A period that will not hold still for as many readings as are judged together is a panel whose rate varies;
+        // fewer than that is one mode or display change, whose jump is still inside the readings being judged.
+        reading.does_rate_hold_still = unsteady_ < kRefreshPeriodsJudged;
+        const FramePacingState state = ChosenPacing(request_, reading);
+        if (state.pacing != FramePacing::kDisplayClock)
+        {
+            pacing_ = {FramePacing::kPlatformTimer, 0, state.display_hertz, 0.0, state.why};
+            ArrangePacing();
+            return;
+        }
+        pacing_ = state;
+        if (has_period_moved)
+        {
+            // The schedule starts again on what the display is doing now rather than dividing what it was doing.
+            period_divided_ = period;
+            frames_.Start(tick_seconds, period * request_.refresh_divisor, request_.most_frames_behind);
+            return; // this tick is the schedule's start, not a frame of it
+        }
+        if (!IsFrameDueOnTick(tick_seconds, frames_.next_frame_seconds(), period))
+        {
+            return; // a refresh the frame drawn last is still being shown for
+        }
+        frames_.Advance(tick_seconds);
+        // Back onto the display's own grid, so a period that wanders a little is followed rather than drifted from.
+        frames_.MoveNextFrameTo(OnTheRefreshGrid(frames_.next_frame_seconds(), tick_seconds, period));
+        if (frame_)
+        {
+            frame_();
+        }
+    }
+
+    NSTimer              *timer_{nil}; ///< The platform's frame timer; nil while there is no callback, or a link runs.
     std::function<void()> frame_;      ///< The frame callback; empty for none.
+    FrameRequest      request_{};   ///< What the product asked for; FrameRequest{} until it asks, which is the default.
+    FramePacingState  pacing_{};    ///< What the window is pacing on, and why where it fell back.
+    MacDisplayClock   clock_;       ///< The display link; stopped, and holding nothing, until a product asks.
+    FrameClock        frames_;      ///< When the next frame is due, while a link is counted.
+    RefreshSteadiness steadiness_;  ///< The refresh periods the link has lately reported.
+    std::size_t       unsteady_{0}; ///< Consecutive ticks whose periods would not hold still.
+    double            period_divided_{0.0}; ///< The refresh period the schedule in force divides; 0 before the first
+                                            ///< tick, which starts it.
+    /** The rates the display the window is on reports, read as the display or its mode changes rather than per tick. */
+    DisplayClockReading reading_;
+    CGDirectDisplayID   display_{kCGNullDirectDisplay}; ///< The display the readings are of.
 };
 
 float DisplayScaleOf(void *)
@@ -1049,6 +1471,30 @@ void ViewDrawRect(id self, SEL, NSRect dirty)
     {
         owner->Draw([[NSGraphicsContext currentContext] CGContext], dirty);
     }
+}
+
+/** `recklessDisplayLinkTicked:`: the display link made from this view (MacDisplayClock, from macOS 14) ticked, which
+    is once a refresh of the display the view is on. The link's own timestamps are handed on, so the subdivision is
+    counted from what the display did rather than from how many callbacks arrived.
+    @param self  the view
+    @param link  the CADisplayLink that ticked, as `id` so that a build whose floor is below macOS 14 names its class
+                 only where it is available */
+void ViewDisplayLinkTicked(id self, SEL, id link)
+{
+    MacSurface *owner = OwnerOf(self);
+    if (owner == nullptr)
+    {
+        return;
+    }
+    double tick_seconds   = CACurrentMediaTime();
+    double period_seconds = 0.0;
+    if (@available(macOS 14.0, *))
+    {
+        CADisplayLink *ticked = static_cast<CADisplayLink *>(link);
+        tick_seconds          = [ticked timestamp];
+        period_seconds        = [ticked targetTimestamp] - [ticked timestamp];
+    }
+    owner->DisplayLinkTicked(tick_seconds, period_seconds);
 }
 
 /** `resetCursorRects`: the whole view takes the cursor the views last asked for.
@@ -1282,6 +1728,17 @@ void AddMethod(Class cls, SEL selector, IMP implementation)
     class_addMethod(cls, selector, implementation, types);
 }
 
+/** A method added to the view's class with a type encoding of its own, for a selector NSView has not got and no
+    protocol describes: the display link's (DisplayLinkTickedSelector).
+    @param cls             the class being registered
+    @param selector        the selector
+    @param implementation  the function that implements it
+    @param types           the method's Objective-C type encoding */
+void AddMethod(Class cls, SEL selector, IMP implementation, const char *types)
+{
+    class_addMethod(cls, selector, implementation, types);
+}
+
 Class PanelViewClass()
 {
     static Class registered = [] {
@@ -1298,6 +1755,7 @@ Class PanelViewClass()
         AddMethod(cls, @selector(isOpaque), reinterpret_cast<IMP>(ViewIsOpaque));
         AddMethod(cls, @selector(acceptsFirstResponder), reinterpret_cast<IMP>(ViewAcceptsFirstResponder));
         AddMethod(cls, @selector(drawRect:), reinterpret_cast<IMP>(ViewDrawRect));
+        AddMethod(cls, DisplayLinkTickedSelector(), reinterpret_cast<IMP>(ViewDisplayLinkTicked), "v@:@");
         AddMethod(cls, @selector(resetCursorRects), reinterpret_cast<IMP>(ViewResetCursorRects));
         AddMethod(cls, @selector(cursorUpdate:), reinterpret_cast<IMP>(ViewCursorUpdate));
         AddMethod(cls, @selector(mouseDown:), reinterpret_cast<IMP>(ViewMouseDown));
