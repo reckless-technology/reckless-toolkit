@@ -5,8 +5,15 @@ What an app has of its platform beyond the child window a panel is drawn in, beh
 its end - and the three things a desktop app with work on other threads, text to copy and commands to choose needs: a
 post to the UI thread from any thread, the clipboard written, and a menu bar with keyboard shortcuts. One implementation
 a platform: an NSApplication on macOS (`app/mac/AppMac.mm`), a Win32 message loop on Windows (`app/win/AppWin.cpp`), an
-X11 connection on a poll loop on Linux (`app/linux/AppLinux.cpp`). Every new call has a default, so a product's own
+X11 connection on a `ppoll` loop on Linux (`app/linux/AppLinux.cpp`). Every new call has a default, so a product's own
 platform of its suites keeps compiling; the suites' own is [FakeAppPlatform.h](../../tests/FakeAppPlatform.h).
+
+The Linux loop waits in **`ppoll`, to the nanosecond, and not in `poll`**, whose timeout is whole milliseconds. A
+timer fires at or after its due time, so a wait rounded down to the millisecond ends before the timer is due, fires
+nothing, and is made again at once: the sub-millisecond remainder of every tick went in a run of waits that returned
+immediately - about three thousand of them a frame at a frame timer's 60 Hz, each with an `XFlush` of the connection
+behind it, which is a fraction of a core for nothing. Rounding the wait up instead would end the spin too, at the
+cost of firing every tick up to a millisecond late; `ppoll` costs nothing and fires on time.
 
 ## A post to the UI thread
 
