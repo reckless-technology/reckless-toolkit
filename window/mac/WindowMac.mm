@@ -131,12 +131,22 @@ double SecondsOfHostTime(std::uint64_t host_time) noexcept
     return static_cast<double>(host_time) * tick_seconds;
 }
 
+/** The screen `view` is on: the main screen where its window is on none yet, since a window being made is on no
+    screen and its display's rate is still worth reading.
+    @param view  the view; may be on no window or no screen
+    @return      the screen, or nil where there is not even a main screen */
+NSScreen *ScreenOf(NSView *view)
+{
+    NSScreen *screen = [[view window] screen];
+    return screen != nil ? screen : [NSScreen mainScreen];
+}
+
 /** The display `view` is on, as CoreGraphics names it.
     @param view  the view; may be on no window or no screen
     @return      the display's id, or kCGNullDirectDisplay where the view is on no screen */
 CGDirectDisplayID DisplayOf(NSView *view)
 {
-    NSScreen *screen = [[view window] screen] ?: [NSScreen mainScreen];
+    NSScreen *screen = ScreenOf(view);
     NSNumber *number = screen != nil ? [screen deviceDescription][@"NSScreenNumber"] : nil;
     return number != nil ? static_cast<CGDirectDisplayID>([number unsignedIntValue]) : kCGNullDirectDisplay;
 }
@@ -158,8 +168,7 @@ DisplayClockReading DisplayClockReadingOf(NSView *view)
     {
         reading.has_clock = DisplayOf(view) != kCGNullDirectDisplay; // CoreVideo's has to be given a display
     }
-    NSScreen *screen = [[view window] screen] ?: [NSScreen mainScreen];
-    if (screen != nil)
+    if (NSScreen *screen = ScreenOf(view); screen != nil)
     {
         reading.compositor_hertz = static_cast<double>([screen maximumFramesPerSecond]);
     }

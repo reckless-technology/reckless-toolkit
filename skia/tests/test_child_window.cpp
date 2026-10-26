@@ -732,50 +732,21 @@ TEST(ChildWindow, AScrollSaysWhetherTheSystemInvertedTheDevicesDirection)
 
 // ------------------------------------------------------------------------------------------------------------------
 // How the window paces its frame callback (window/FramePacing.h, ChildWindow::SetFramePacing), on a real window with
-// whatever display clock the machine running the suite has. **No rate is ever asserted here**: a timing distribution
-// is not a pass or a fail, and none of the three CI runners is a machine to measure one on - the Windows runners are
-// services on a window station that shows nothing, where the compositor's timing is very probably not to be had, and
-// the Linux job runs under Xvfb, which has no vertical blank at all. So each of these holds whichever branch its
-// machine reached and prints the probe, so that one run of the suite says which that was. The arithmetic and the
-// whole fallback decision are held with no display at all, on every platform, by tests/test_frame_pacing.cpp.
+// whatever display clock the machine running the suite has. What each of these holds, and why it holds no rate, is
+// tests/FramePacingRule.h, which the macOS half uses too. Windows' and Linux's are here; macOS's are in
+// test_child_window_mac.mm, which is compiled as Objective-C++ and so can reach AppKit's run loop.
 #include "FramePacing.h"
+#include "FramePacingRule.h"
 #include "View.h"
 #include "Window.h"
 
 namespace
 {
+using reckless::test::HoldsWhicheverPacingItReached;
 using reckless::window::FramePacing;
 using reckless::window::FramePacingFallback;
 using reckless::window::FramePacingState;
 using reckless::window::FrameRequest;
-
-/** What a window's pacing state must say, whichever branch its platform reached, printed so that the run says which.
-    @param state    what the window answered
-    @param divisor  the refresh divisor that was asked for
-    @param where    the platform and the moment, for the print */
-void HoldsWhicheverPacingItReached(const FramePacingState &state, int divisor, const char *where)
-{
-    std::printf("[ frame pacing ] %s: %s - %s; display %.4f Hz, %.4f frames a second, divisor %d\n", where,
-                state.pacing == FramePacing::kDisplayClock ? "the display's clock" : "the platform's timer",
-                reckless::window::TextOf(state.why), state.display_hertz, state.frames_a_second, state.refresh_divisor);
-    std::fflush(stdout);
-    if (state.pacing == FramePacing::kDisplayClock)
-    {
-        EXPECT_EQ(state.why, FramePacingFallback::kNone);
-        EXPECT_EQ(state.refresh_divisor, divisor);
-        EXPECT_TRUE(reckless::window::IsBelievableRefreshRate(state.display_hertz))
-            << "a window pacing on a display has read a rate it could believe";
-        EXPECT_NEAR(state.frames_a_second, state.display_hertz / divisor, 1.0e-9)
-            << "the rate is the display's over the divisor and nothing else";
-    }
-    else
-    {
-        EXPECT_NE(state.why, FramePacingFallback::kNone) << "a window on the platform's timer always says why";
-        EXPECT_NE(state.why, FramePacingFallback::kNotAsked) << "and this one was asked";
-        EXPECT_EQ(state.refresh_divisor, 0) << "the platform's timer divides nothing";
-        EXPECT_EQ(state.frames_a_second, 0.0) << "and claims no rate: its own is not one the window knows";
-    }
-}
 } // namespace
 
 #if defined(_WIN32)
@@ -863,76 +834,6 @@ TEST(ChildWindowFramePacing, RunsTheFrameCallbackOnTheWindowsOwnThreadWhicheverI
         child->SetFrameCallback(nullptr);
         child.reset();
         DestroyWindow(top);
-    }
-}
-#endif
-
-#if defined(__APPLE__)
-TEST(ChildWindowFramePacing, IsOnThePlatformTimerUntilItIsAskedAndSaysWhichItGotAndWhy)
-{
-    reckless::test::TestHostWindow top(240, 160);
-    ASSERT_TRUE(top.Valid());
-    reckless::view::View root;
-    root.SetBounds({240, 160});
-    auto child = reckless::window::CreateChildWindow(top.Parent(), root, 240, 160, 1.0f);
-    ASSERT_NE(child, nullptr);
-
-    const FramePacingState unasked = child->FramePacingNow();
-    EXPECT_EQ(unasked.pacing, FramePacing::kPlatformTimer) << "a window no one has asked is paced as it always was";
-    EXPECT_EQ(unasked.why, FramePacingFallback::kNotAsked);
-
-    const FramePacingState asked = child->SetFramePacing({FramePacing::kDisplayClock, 2, 1});
-    HoldsWhicheverPacingItReached(asked, 2, "macOS, asked for a frame every second refresh");
-
-    const FramePacingState back = child->SetFramePacing({});
-    EXPECT_EQ(back.pacing, FramePacing::kPlatformTimer) << "a default request puts it back on the platform's timer";
-    EXPECT_EQ(back.why, FramePacingFallback::kNotAsked);
-    child.reset(); // before the window it sits in
-}
-
-TEST(ChildWindowFramePacing, TicksOnTheDisplayLinkOfTheOneCiPlatformWithAWindowServer)
-{
-    // macOS is the one platform whose CI runner has a real window server, so a display link can genuinely be made and
-    // ticked here. What is held is that the frames arrive and keep arriving inside a generous window - never a rate:
-    // the runner is virtualised, and a rate measured on it would mean nothing. Both ways round, and the unasked
-    // window first: one that was asked for nothing runs its callback from the NSTimer it always had, which is what
-    // keeps a product that does not opt in unchanged.
-    for (const bool does_ask : {false, true})
-    {
-        reckless::test::TestHostWindow top(240, 160);
-        ASSERT_TRUE(top.Valid());
-        top.Show(true);
-        reckless::view::View root;
-        root.SetBounds({240, 160});
-        auto child = reckless::window::CreateChildWindow(top.Parent(), root, 240, 160, 1.0f);
-        ASSERT_NE(child, nullptr);
-        if (does_ask)
-        {
-            HoldsWhicheverPacingItReached(child->SetFramePacing({FramePacing::kDisplayClock, 1, 1}), 1,
-                                          "macOS, running frames");
-        }
-        else
-        {
-            ASSERT_EQ(child->FramePacingNow().why, FramePacingFallback::kNotAsked);
-        }
-
-        int frames = 0;
-        child->SetFrameCallback([&] { ++frames; });
-        const NSTimeInterval until = [NSDate timeIntervalSinceReferenceDate] + 3.0;
-        while (frames < 20 && [NSDate timeIntervalSinceReferenceDate] < until)
-        {
-            [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode
-                                  beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
-        }
-        std::printf("[ frame pacing ] macOS: %d frames in at most three seconds, %s\n", frames,
-                    does_ask ? "having asked for the display's clock" : "having asked for nothing");
-        std::fflush(stdout);
-        EXPECT_GE(frames, 20) << "the frames arrive and keep arriving, whether or not anything was asked";
-        const int so_far = frames;
-        [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
-        EXPECT_GT(frames, so_far) << "and they are still arriving half a second later";
-        child->SetFrameCallback(nullptr);
-        child.reset(); // before the window it sits in
     }
 }
 #endif

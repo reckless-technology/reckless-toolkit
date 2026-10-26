@@ -1,22 +1,36 @@
-// The child window's raw keys on macOS (window/RawKey.h, ChildWindow::SetRawKeyCallback): the key going down and the
-// key let go as two edges, auto-repeat marked as such, the virtual key code as the physical key, and the modifier
-// keys, which a Mac reports through `flagsChanged:` and no other way - with the views given exactly the key downs they
-// were always given and nothing else. The events are made and sent in process; nothing is typed. The Windows and Linux
-// halves are in test_child_window.cpp.
+// The child window's macOS half, which is Objective-C++ because it reaches AppKit's events and its run loop; the
+// Windows and Linux halves are in test_child_window.cpp.
+//
+// The raw keys (window/RawKey.h, ChildWindow::SetRawKeyCallback): the key going down and the key let go as two edges,
+// auto-repeat marked as such, the virtual key code as the physical key, and the modifier keys, which a Mac reports
+// through `flagsChanged:` and no other way - with the views given exactly the key downs they were always given and
+// nothing else. The events are made and sent in process; nothing is typed.
+//
+// And how the frame callback is paced (window/FramePacing.h, ChildWindow::SetFramePacing) on the one CI platform with
+// a real window server, so the display link can genuinely be made and ticked: what is held of it, and why no rate is,
+// is tests/FramePacingRule.h.
 #import <AppKit/AppKit.h>
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <vector>
 
+#include "FramePacing.h"
+#include "FramePacingRule.h"
 #include "TestHostWindow.h"
 #include "View.h"
 #include "Window.h"
 
 namespace
 {
+using reckless::test::HoldsWhicheverPacingItReached;
+using reckless::window::FramePacing;
+using reckless::window::FramePacingFallback;
+using reckless::window::FramePacingState;
+
 /** The panel, as far as the keys ask of one: it wants the keyboard, takes every key the views are given, and counts
     them. */
 class KeyCounter final : public reckless::view::View
@@ -140,4 +154,72 @@ TEST(ChildWindow, TheRawKeysGiveEveryEdgeAndLeaveTheViewsWhatTheyAlwaysHad)
     [view keyUp:KeyEvent(NSEventTypeKeyUp, @"", kRightArrow, 0, NO)];
     EXPECT_TRUE(heard.empty());
     child.reset(); // before the window it sits in
+}
+
+TEST(ChildWindowFramePacing, IsOnThePlatformTimerUntilItIsAskedAndSaysWhichItGotAndWhy)
+{
+    reckless::test::TestHostWindow top(240, 160);
+    ASSERT_TRUE(top.Valid());
+    reckless::view::View root;
+    root.SetBounds({240, 160});
+    auto child = reckless::window::CreateChildWindow(top.Parent(), root, 240, 160, 1.0f);
+    ASSERT_NE(child, nullptr);
+
+    const FramePacingState unasked = child->FramePacingNow();
+    EXPECT_EQ(unasked.pacing, FramePacing::kPlatformTimer) << "a window no one has asked is paced as it always was";
+    EXPECT_EQ(unasked.why, FramePacingFallback::kNotAsked);
+
+    const FramePacingState asked = child->SetFramePacing({FramePacing::kDisplayClock, 2, 1});
+    HoldsWhicheverPacingItReached(asked, 2, "macOS, asked for a frame every second refresh");
+
+    const FramePacingState back = child->SetFramePacing({});
+    EXPECT_EQ(back.pacing, FramePacing::kPlatformTimer) << "a default request puts it back on the platform's timer";
+    EXPECT_EQ(back.why, FramePacingFallback::kNotAsked);
+    child.reset(); // before the window it sits in
+}
+
+TEST(ChildWindowFramePacing, TicksOnTheDisplayLinkOfTheOneCiPlatformWithAWindowServer)
+{
+    // macOS is the one platform whose CI runner has a real window server, so a display link can genuinely be made and
+    // ticked here. What is held is that the frames arrive and keep arriving inside a generous window - never a rate:
+    // the runner is virtualised, and a rate measured on it would mean nothing. Both ways round, and the unasked
+    // window first: one that was asked for nothing runs its callback from the NSTimer it always had, which is what
+    // keeps a product that does not opt in unchanged.
+    for (const bool does_ask : {false, true})
+    {
+        reckless::test::TestHostWindow top(240, 160);
+        ASSERT_TRUE(top.Valid());
+        top.Show(true);
+        reckless::view::View root;
+        root.SetBounds({240, 160});
+        auto child = reckless::window::CreateChildWindow(top.Parent(), root, 240, 160, 1.0f);
+        ASSERT_NE(child, nullptr);
+        if (does_ask)
+        {
+            HoldsWhicheverPacingItReached(child->SetFramePacing({FramePacing::kDisplayClock, 1, 1}), 1,
+                                          "macOS, running frames");
+        }
+        else
+        {
+            ASSERT_EQ(child->FramePacingNow().why, FramePacingFallback::kNotAsked);
+        }
+
+        int frames = 0;
+        child->SetFrameCallback([&] { ++frames; });
+        const NSTimeInterval until = [NSDate timeIntervalSinceReferenceDate] + 3.0;
+        while (frames < 20 && [NSDate timeIntervalSinceReferenceDate] < until)
+        {
+            [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode
+                                  beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+        }
+        std::printf("[ frame pacing ] macOS: %d frames in at most three seconds, %s\n", frames,
+                    does_ask ? "having asked for the display's clock" : "having asked for nothing");
+        std::fflush(stdout);
+        EXPECT_GE(frames, 20) << "the frames arrive and keep arriving, whether or not anything was asked";
+        const int so_far = frames;
+        [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
+        EXPECT_GT(frames, so_far) << "and they are still arriving half a second later";
+        child->SetFrameCallback(nullptr);
+        child.reset(); // before the window it sits in
+    }
 }
