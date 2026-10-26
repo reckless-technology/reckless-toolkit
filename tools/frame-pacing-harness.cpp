@@ -295,6 +295,53 @@ std::vector<double> PlatformTimerIntervals(HWND window, UINT elapse, int frames,
     return intervals;
 }
 
+/** The intervals of a timer re-armed by hand from the handler - SetTimer called again each frame - which is an
+    absolute schedule from the retrieval by construction: the control the periodic timer's own schedule is read
+    against.
+    @param window             the window the timer is set on
+    @param elapse             the period asked for, in milliseconds
+    @param frames             how many messages to take
+    @param burn_milliseconds  how long each handler burns before it re-arms
+    @return                   the intervals, in milliseconds */
+std::vector<double> RearmedByHandIntervals(HWND window, UINT elapse, int frames, double burn_milliseconds)
+{
+    std::vector<double> intervals;
+    if (SetTimer(window, 2, elapse, nullptr) == 0)
+    {
+        return intervals;
+    }
+    double last  = 0.0;
+    int    taken = 0;
+    MSG    message{};
+    while (taken < frames && GetMessageW(&message, nullptr, 0, 0) > 0)
+    {
+        if (message.message != WM_TIMER)
+        {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+            continue;
+        }
+        const double now = NowSeconds();
+        if (taken > 0)
+        {
+            intervals.push_back((now - last) * 1000.0);
+        }
+        last = now;
+        ++taken;
+        for (const double until = now + burn_milliseconds / 1000.0; NowSeconds() < until;)
+        {
+            // burned, so the re-arm below happens this long after the message was taken
+        }
+        SetTimer(window, 2, elapse, nullptr); // asked for anew: the schedule starts from here, not from the expiry
+    }
+    KillTimer(window, 2);
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+    {
+        // anything of this run's left in the queue
+    }
+    return intervals;
+}
+
 /** The intervals of the display clock the window waits on (window/win/WindowWin.cpp): a high-resolution waitable
     timer whose next due time is pulled onto the compositor's vertical blank grid every frame.
     @param divisor  the refresh periods each frame is shown for
@@ -592,6 +639,18 @@ void ReportPlatformTimerSchedule()
     for (double burn : {0.0, 8.0, 20.0, 25.0, 40.0})
     {
         std::vector<double> intervals = PlatformTimerIntervals(window, kFrameMilliseconds, 400, burn);
+        const Figures       figures   = FiguresOf(intervals);
+        std::printf("  %4.0f  %8.3f  %6.3f   %6.3f\n", burn, figures.mean, figures.sd,
+                    grid > 0.0 ? figures.mean / grid : 0.0);
+    }
+    // The control: the same timer re-armed by hand from the handler, which is an absolute schedule from the
+    // retrieval. It must match the periodic timer at no burn and diverge from it once the burn is long enough to move
+    // the re-arm, which is what places the periodic timer's own reference at the expiry instant.
+    std::printf("  the same re-armed by hand from the handler, which is absolute from the retrieval:\n");
+    std::printf("  burn   mean       sd      scans of the grid\n");
+    for (double burn : {0.0, 20.0})
+    {
+        std::vector<double> intervals = RearmedByHandIntervals(window, kFrameMilliseconds, 400, burn);
         const Figures       figures   = FiguresOf(intervals);
         std::printf("  %4.0f  %8.3f  %6.3f   %6.3f\n", burn, figures.mean, figures.sd,
                     grid > 0.0 ? figures.mean / grid : 0.0);
