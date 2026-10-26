@@ -22,7 +22,7 @@ descriptor goes when CoreAudio moves, the last name it serves.
 
 **Done, 2026-10-25: every API on every platform is the toolkit's own**, and RtAudio and RtMidi are compiled into no
 binary, nor fetched: the products' notices name neither. macOS and Windows have both been run on real hardware, below.
-What is left is MIDI from a real keyboard on Windows and Linux.
+What is left is MIDI from a real keyboard on Linux.
 
 | API | back end | since |
 |---|---|---|
@@ -155,6 +155,14 @@ One fault the hardware found, in the back end, and two in the suite that hid it:
   environment; Windows Audio's was the default render endpoint and ASIO's the sample driver, with no way to ask for
   anything else. Both now take the same shape of variables, and the cable parser is one function all three rigs call
   (`DeviceRig.h`'s `ApplyCable`) rather than a second and third copy of it.
+
+**MIDI on Windows, from a real keyboard** (WinMM, `audio/win/WinMidi.cpp`), measured on a Nektar Impact LX88+ on USB:
+its two ports listed as Windows names them ("Impact LX88+" and "MIDIIN2 (Impact LX88+)"), beside the UMC1820's own
+"UMC1820 MIDI In"; the keyboard opened by the name a settings file keeps, and over 1.72 s of playing, **20 notes held
+and let go - every one paired with its release** - and 24 controller messages, the mod wheel's CC 1 climbing one step
+at a time about 3 ms apart. A note off sent as a note on of velocity 0 arrives as sent (`90 42 00`), as it does on
+CoreMIDI. Every message whole, on the index the input was opened under, stamped in order, with system exclusive,
+timing clock and active sensing left out.
 
 **A real ASIO driver cannot be asked for an xrun**, so `CountsAnXrunAndPlaysOnAfterIt` skips where
 `RECKLESS_ASIO_DEVICE` names one. On ASIO an xrun reaches the callback only as the driver's own resync request, and

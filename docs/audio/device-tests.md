@@ -335,6 +335,15 @@ person, with the same shape of variables the CoreAudio rig takes (CI sets none o
 | `RECKLESS_ASIO_LOOP` | `<output>:<input>` on that one device, counted from 1 - `3:1` for outputs 3 and 4 into inputs 1 and 2 |
 
 `RECKLESS_AUDIO_TEST_RATE` and `RECKLESS_AUDIO_TEST_BLOCK` hold the device at one rate and block, as on any platform.
+`RECKLESS_MIDI_KEYBOARD` names a MIDI input for a person to play, as it does on any platform: on Windows the inputs
+are Windows' own names, a keyboard's second port among them (`Impact LX88+`, `MIDIIN2 (Impact LX88+)`), and the test
+prints the list, so a run with a name that is nowhere says what is there.
+
+```
+set RECKLESS_MIDI_KEYBOARD=Impact LX88+
+build	estseckless_audio_device_test.exe --gtest_filter=MidiInputs.*Person*
+```
+
 
 Windows reaches a multi-channel interface differently on each API, which decides how the cable is named: **ASIO sees
 one device** with every channel on it, so the loop is `3:1` as on CoreAudio; **Windows Audio sees a stereo endpoint per
