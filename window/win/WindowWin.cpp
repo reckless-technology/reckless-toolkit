@@ -587,6 +587,7 @@ class WinSurface : public view::Host
             break;
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN: {
+            TellRawKey(true, wparam, lparam); // nothing where no owner asked; the views are given what they always were
             const view::Key       key       = NamedKey(wparam);
             const view::Modifiers modifiers = CurrentModifiers();
             if (key != view::Key::kNone && router_.Key({key, 0, modifiers}))
@@ -618,7 +619,14 @@ class WinSurface : public view::Host
                 return 0;
             }
             break;
+        case WM_KEYUP:
+        case WM_SYSKEYUP:
+            // Windows' own, as it always was: nothing but an owner that asked for raw keys hears a key let go, and
+            // where none did this message is Windows' to answer, which DefWindowProcW below does.
+            TellRawKey(false, wparam, lparam);
+            break;
         case WM_KILLFOCUS:
+            LetGoOfHeldRawKeys(); // the keyboard went elsewhere: nothing it said was down stays down
             if (focus_taken_)
             {
                 focus_taken_ = false;
@@ -685,6 +693,59 @@ class WinSurface : public view::Host
     }
 
   protected:
+    /** Every raw key edge told to `raw_key` (ChildWindow::SetRawKeyCallback): nothing while it is empty, which it is
+        until an owner asks. The keys held are let go first, so a callback replaced mid-press leaves the one being
+        replaced owed nothing and the new one holding nothing.
+        @param raw_key  told of each edge; empty for none */
+    void TakeRawKeys(RawKeyCallback raw_key)
+    {
+        LetGoOfHeldRawKeys();
+        raw_key_ = std::move(raw_key);
+    }
+
+    /** One edge of one key told to whoever asked for the raw keys, and nothing where no one has: the virtual-key code
+        as the message carries it, the scan code out of its flags (WindowsPhysicalKeyOf), the toolkit's name for the
+        key where it has one, and the modifiers the thread's input holds. A down of a key already held is auto-repeat's
+        (`is_repeat`), and an up is told only for a key whose down was.
+        @param is_down  true for WM_KEYDOWN or WM_SYSKEYDOWN, false for WM_KEYUP or WM_SYSKEYUP
+        @param wparam   the message's virtual-key code
+        @param lparam   the message's flags: the scan code, the extended bit and the rest */
+    void TellRawKey(bool is_down, WPARAM wparam, LPARAM lparam)
+    {
+        if (!raw_key_)
+        {
+            return;
+        }
+        RawKeyEvent key;
+        key.is_down           = is_down;
+        key.named_key         = NamedKey(wparam);
+        key.platform_key_code = static_cast<std::uint32_t>(wparam);
+        key.physical_key_code = WindowsPhysicalKeyOf(static_cast<std::uint32_t>(lparam));
+        key.modifiers         = CurrentModifiers();
+        if (is_down)
+        {
+            key.is_repeat = raw_keys_held_.NoteDown(key);
+            raw_key_(key);
+        }
+        else if (raw_keys_held_.NoteUp(key.physical_key_code))
+        {
+            raw_key_(key);
+        }
+    }
+
+    /** An up told for every key the raw key callback was told is down, and nothing held afterwards: what the window
+        does as it loses the keyboard (WM_KILLFOCUS), so no key it said was down stays down. */
+    void LetGoOfHeldRawKeys()
+    {
+        for (const RawKeyEvent &up : raw_keys_held_.TakeUps())
+        {
+            if (raw_key_)
+            {
+                raw_key_(up);
+            }
+        }
+    }
+
     /** The surface let go, once - what its destruction does, and what a popup's closing with the window it opened
         over does early. A file dialog's caller, below this on the stack when the host closes the editor inside the
         dialog's loop, answers nothing from here on, and the dialog goes; the popups opened over the surface close, and
@@ -766,6 +827,12 @@ class WinSurface : public view::Host
     bool                       no_activate_{false}; ///< a click does not activate the window: a popup's.
     /** The window a key no view took is handed on to (ChildWindow::HandOnKeysTo); null to hand on none. */
     HWND key_target_{nullptr};
+    /** Told of every raw key edge (ChildWindow::SetRawKeyCallback); empty until an owner asks, and then nothing of the
+        raw keys is read or delivered. */
+    RawKeyCallback raw_key_;
+    /** The keys the raw key callback has been told are down, which answer whether a down is auto-repeat's, whether an
+        up is owed, and what is to be let go as the window loses the keyboard. */
+    RawKeysHeld raw_keys_held_;
 
   private:
     /** A press to the router, the mouse captured until its release.
@@ -1089,6 +1156,14 @@ class WinChildWindow final : public ChildWindow, public WinSurface
     void HandOnKeysTo(void *top_level) override
     {
         key_target_ = static_cast<HWND>(top_level);
+    }
+
+    /** Every raw key edge told to `raw_key`: the key downs the views are given too (WM_KEYDOWN, WM_SYSKEYDOWN) and the
+        key ups Windows alone answered before (WM_KEYUP, WM_SYSKEYUP), with everything let go at WM_KILLFOCUS.
+        @param raw_key  told of each edge, on the window's thread; empty to ask for no more */
+    void SetRawKeyCallback(RawKeyCallback raw_key) override
+    {
+        TakeRawKeys(std::move(raw_key));
     }
 };
 

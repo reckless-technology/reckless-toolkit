@@ -5,6 +5,7 @@
 #include <string>
 
 #include "Geometry.h"
+#include "RawKey.h"
 #include "View.h"
 
 namespace reckless::window
@@ -109,6 +110,25 @@ class ChildWindow
     virtual void HandOnKeysTo(void *top_level)
     {
         (void)top_level;
+    }
+
+    /** Every raw key edge the window receives told to `raw_key` - the key going down and the key let go as two
+        events, auto-repeat marked as such, and the platform's own code for the key beside the toolkit's name for it
+        (RawKey.h) - which the views' KeyPressed path carries none of. Nothing until this is called, and nothing
+        after it is called with an empty callback: a window no one has asked takes the same events from the platform
+        and delivers them the same way as one that was never asked, and the views see exactly what they always saw -
+        `raw_key` is told of an edge, and cannot keep it from the views or change what they are given.
+
+        Raw keys arrive while the window holds the platform's keyboard, which it does while a view of its tree holds
+        the router's focus (view::Host::RequestKeyboardFocus): a tree whose root asks for the focus as it is shown
+        receives them from then on. The edges of one key alternate, and a key still held as the window loses the
+        keyboard is let go, so a set of held keys a consumer keeps from these events cannot be left holding a key
+        down. Called again, the new callback replaces the old; the window holds it until it is replaced or the window
+        goes, and never calls it afterwards.
+        @param raw_key  told of each edge, on the window's thread; empty to ask for no more */
+    virtual void SetRawKeyCallback(RawKeyCallback raw_key)
+    {
+        (void)raw_key;
     }
 };
 

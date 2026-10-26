@@ -51,6 +51,10 @@ struct AppRunHooks
     /** Called once the window is open, with it, before the loop runs - the place to hand a product the window it set
         a menu or a dialog's owner by; may be empty. */
     std::function<void(AppWindow &window)> on_open;
+    /** Called once the child window the views are drawn in is made, with it, before the window is open to the person
+        and before `on_open` - the place to ask it for what only it can give, the raw keys
+        (window::ChildWindow::SetRawKeyCallback, window/RawKey.h); may be empty. */
+    std::function<void(window::ChildWindow &child)> on_child;
     /** The window carries the app's menu bar (AppPlatform::SetMenuBar): opened with WindowOptions::menu_bar, so it
         shows the bar where the platform puts one on a window (Windows), and its child window handing on the keys its
         views do not take (ChildWindow::HandOnKeysTo), so the bar's shortcuts work whichever has the keyboard. */

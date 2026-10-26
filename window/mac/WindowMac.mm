@@ -207,6 +207,10 @@ class MacSurface : public view::Host
     {
         wants_keys_    = a_view_has_it;
         NSWindow *host = [view_ window];
+        if (!a_view_has_it)
+        {
+            LetGoOfHeldRawKeys(); // the keyboard is going elsewhere: nothing it said was down stays down
+        }
         if (a_view_has_it)
         {
             previous_responder_ = [host firstResponder];
@@ -216,6 +220,85 @@ class MacSurface : public view::Host
         {
             [host makeFirstResponder:previous_responder_]; // the keyboard back to whoever had it
             previous_responder_ = nil;
+        }
+    }
+
+    /** Every raw key edge told to `raw_key` (ChildWindow::SetRawKeyCallback): nothing while it is empty, which it is
+        until an owner asks. With the first callback the surface also starts watching for its window losing the
+        keyboard - another app brought to the front with a key held, which leaves the view first responder and so
+        tells it nothing - on which everything held is let go. The keys held are let go first, so a callback replaced
+        mid-press leaves nothing owed and nothing held.
+        @param raw_key  told of each edge; empty for none */
+    void TakeRawKeys(RawKeyCallback raw_key)
+    {
+        LetGoOfHeldRawKeys();
+        const bool had_none = !raw_key_;
+        raw_key_            = std::move(raw_key);
+        if (!had_none || !raw_key_ || released_ || key_resign_watch_ != nil)
+        {
+            return;
+        }
+        const std::weak_ptr<char> alive = lifetime_;
+        key_resign_watch_ =
+            [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidResignKeyNotification
+                                                              object:nil
+                                                               queue:nil
+                                                          usingBlock:^(NSNotification *note) {
+                                                            if (!alive.expired() && note.object == [view_ window])
+                                                            {
+                                                                LetGoOfHeldRawKeys();
+                                                            }
+                                                          }];
+    }
+
+    /** One edge of one key told to whoever asked for the raw keys, and nothing where no one has. A down of a key
+        already held is auto-repeat's (`is_repeat`) - the key's own `isARepeat` is not read, since it is set for a key
+        that was already down when the view took the keyboard, whose down nothing was told of - and an up is told only
+        for a key whose down was.
+        @param key  the edge, its repeat flag unset */
+    void TellRawKey(RawKeyEvent key)
+    {
+        if (!raw_key_)
+        {
+            return;
+        }
+        if (key.is_down)
+        {
+            key.is_repeat = raw_keys_held_.NoteDown(key);
+            raw_key_(key);
+        }
+        else if (raw_keys_held_.NoteUp(key.physical_key_code))
+        {
+            raw_key_(key);
+        }
+    }
+
+    /** One edge of one modifier key told to whoever asked for the raw keys: `flagsChanged:` says a modifier changed
+        and which key it was, never which way it went, and its flag stays set while the other key of the pair is held.
+        So the edge is a down where the flag is set and this key is not held already, and an up otherwise - which is
+        also right for caps lock, whose flag follows the lamp and so is set by one press and cleared by the next.
+        @param key          the edge, its `is_down` and repeat flag unset
+        @param is_flag_held whether the key's own modifier flag is set now */
+    void TellRawModifierKey(RawKeyEvent key, bool is_flag_held)
+    {
+        if (!raw_key_)
+        {
+            return;
+        }
+        key.is_down = is_flag_held && !raw_keys_held_.IsHeld(key.physical_key_code);
+        TellRawKey(key);
+    }
+
+    /** An up told for every key the raw key callback was told is down, and nothing held afterwards: what the surface
+        does as the keyboard goes elsewhere, so no key it said was down stays down. */
+    void LetGoOfHeldRawKeys()
+    {
+        for (const RawKeyEvent &up : raw_keys_held_.TakeUps())
+        {
+            if (raw_key_)
+            {
+                raw_key_(up);
+            }
         }
     }
 
@@ -484,6 +567,11 @@ class MacSurface : public view::Host
         }
         released_ = true;
         lifetime_.reset();
+        if (key_resign_watch_ != nil)
+        {
+            [[NSNotificationCenter defaultCenter] removeObserver:key_resign_watch_];
+            key_resign_watch_ = nil;
+        }
         NSArray<NSSavePanel *> *panels = [open_panels_ copy];
         [open_panels_ removeAllObjects];
         for (NSSavePanel *panel in panels)
@@ -525,6 +613,15 @@ class MacSurface : public view::Host
     NSMutableArray<NSSavePanel *> *open_panels_{[NSMutableArray array]}; ///< the file dialogs up, cancelled as it goes
     std::vector<MacPopup *>        popups_;          ///< the popups opened over it, which go with it
     bool                           released_{false}; ///< True once Release has let the surface go.
+    /** Told of every raw key edge (ChildWindow::SetRawKeyCallback); empty until an owner asks, until when nothing of
+        the raw keys is read or delivered and the view's key up, flags and resignation are AppKit's own. */
+    RawKeyCallback raw_key_;
+    /** The keys the raw key callback has been told are down, which answer whether a down is auto-repeat's, whether an
+        up is owed, and what is to be let go as the keyboard goes elsewhere. */
+    RawKeysHeld raw_keys_held_;
+    /** The watch on the window losing the keyboard, taken with the first raw key callback and dropped as the surface
+        goes; nil while there is none. */
+    id key_resign_watch_{nil};
 };
 
 /** A popup: the surface in a borderless panel that never takes the host's window's place, over everything but
@@ -723,6 +820,15 @@ class MacChildWindow final : public ChildWindow, public MacSurface
         return window != nil && [window isVisible] && ![window isMiniaturized] && ![view_ isHiddenOrHasHiddenAncestor];
     }
 
+    /** Every raw key edge told to `raw_key`: the key downs the views are given too (`keyDown:`), the key ups AppKit
+        alone answered before (`keyUp:`) and the modifier keys, which a Mac reports no other way (`flagsChanged:`),
+        with everything let go as the keyboard goes elsewhere.
+        @param raw_key  told of each edge, on the window's thread; empty to ask for no more */
+    void SetRawKeyCallback(RawKeyCallback raw_key) override
+    {
+        TakeRawKeys(std::move(raw_key));
+    }
+
   private:
     NSTimer              *timer_{nil}; ///< The 60 Hz frame timer; nil while there is no callback.
     std::function<void()> frame_;      ///< The frame callback; empty for none.
@@ -763,6 +869,93 @@ namespace
 {
 using reckless::window::MacSurface;
 
+/** The toolkit's name for the key a virtual key code stands for: the editing and moving keys, and Key::kNone for every
+    other, which names a key the views know only by the character it types. The one table the views' keys (KeyOf) and
+    the raw keys (RawKeyOf) are both named from.
+    @param code  the key's virtual key code, an NSEvent's `keyCode`
+    @return      the key, or Key::kNone where the toolkit has no name for it */
+reckless::view::Key NamedKeyOfMacKeyCode(unsigned short code)
+{
+    using reckless::view::Key;
+    switch (code)
+    {
+    case 53:
+        return Key::kEscape;
+    case 36:
+    case 76:
+        return Key::kReturn;
+    case 48:
+        return Key::kTab;
+    case 51:
+        return Key::kBackspace;
+    case 117:
+        return Key::kDelete;
+    case 123:
+        return Key::kLeft;
+    case 124:
+        return Key::kRight;
+    case 125:
+        return Key::kDown;
+    case 126:
+        return Key::kUp;
+    case 115:
+        return Key::kHome;
+    case 119:
+        return Key::kEnd;
+    case 116:
+        return Key::kPageUp;
+    case 121:
+        return Key::kPageDown;
+    default:
+        return Key::kNone;
+    }
+}
+
+/** The modifier flag a modifier key's virtual key code carries, for the key edges `flagsChanged:` brings: the left and
+    the right key of each pair carry one flag between them, and the key code says which key it was.
+    @param code  the key's virtual key code, an NSEvent's `keyCode`
+    @return      the flag, or 0 where the code is no modifier key's */
+NSEventModifierFlags ModifierFlagOfMacKeyCode(unsigned short code)
+{
+    switch (code)
+    {
+    case 56: // the left shift
+    case 60: // the right shift
+        return NSEventModifierFlagShift;
+    case 59: // the left control
+    case 62: // the right control
+        return NSEventModifierFlagControl;
+    case 58: // the left option
+    case 61: // the right option
+        return NSEventModifierFlagOption;
+    case 55: // the left command
+    case 54: // the right command
+        return NSEventModifierFlagCommand;
+    case 57: // caps lock, whose flag follows the lamp rather than the key
+        return NSEventModifierFlagCapsLock;
+    case 63: // the function key
+        return NSEventModifierFlagFunction;
+    default:
+        return 0;
+    }
+}
+
+/** One edge of one key as a raw key event: the virtual key code, which names the physical key whatever the layout
+    makes it type, and the toolkit's name for it where it has one.
+    @param event    a key down, a key up or a `flagsChanged:` event
+    @param is_down  true for the key going down, false for it being let go
+    @return         the edge, its repeat flag left for the surface to answer */
+reckless::window::RawKeyEvent RawKeyOf(NSEvent *event, bool is_down)
+{
+    reckless::window::RawKeyEvent key;
+    key.is_down           = is_down;
+    key.named_key         = NamedKeyOfMacKeyCode([event keyCode]);
+    key.platform_key_code = [event keyCode];
+    key.physical_key_code = [event keyCode]; // a Mac's key code is the physical key: there is no second code beside it
+    key.modifiers         = MacSurface::ModifiersOf([event modifierFlags]);
+    return key;
+}
+
 /** An NSEvent's key as the views see it: the editing and moving keys by their key codes, the rest as the character
     they type; nothing for a function key or a key with no character.
     @param event  a key-down event
@@ -772,50 +965,10 @@ reckless::view::KeyEvent KeyOf(NSEvent *event)
     using reckless::view::Key;
     reckless::view::KeyEvent key;
     key.modifiers = MacSurface::ModifiersOf([event modifierFlags]);
-    switch ([event keyCode])
+    if (const Key named = NamedKeyOfMacKeyCode([event keyCode]); named != Key::kNone)
     {
-    case 53:
-        key.key = Key::kEscape;
+        key.key = named;
         return key;
-    case 36:
-    case 76:
-        key.key = Key::kReturn;
-        return key;
-    case 48:
-        key.key = Key::kTab;
-        return key;
-    case 51:
-        key.key = Key::kBackspace;
-        return key;
-    case 117:
-        key.key = Key::kDelete;
-        return key;
-    case 123:
-        key.key = Key::kLeft;
-        return key;
-    case 124:
-        key.key = Key::kRight;
-        return key;
-    case 125:
-        key.key = Key::kDown;
-        return key;
-    case 126:
-        key.key = Key::kUp;
-        return key;
-    case 115:
-        key.key = Key::kHome;
-        return key;
-    case 119:
-        key.key = Key::kEnd;
-        return key;
-    case 116:
-        key.key = Key::kPageUp;
-        return key;
-    case 121:
-        key.key = Key::kPageDown;
-        return key;
-    default:
-        break;
     }
     NSString *characters = [event characters];
     if (characters.length > 0)
@@ -1009,12 +1162,63 @@ void ViewScrollWheel(id self, SEL, NSEvent *event)
 void ViewKeyDown(id self, SEL command, NSEvent *event)
 {
     MacSurface *owner = OwnerOf(self);
+    if (owner != nullptr)
+    {
+        // Whoever asked for the raw keys told first; the views are then given what they always were.
+        owner->TellRawKey(RawKeyOf(event, true));
+    }
     if (owner == nullptr || !owner->router().Key(KeyOf(event)))
     {
         // Not the views': NSView's own, so the host's shortcuts still reach it.
         objc_super super_class{self, [NSView class]};
         reinterpret_cast<void (*)(objc_super *, SEL, NSEvent *)>(objc_msgSendSuper)(&super_class, command, event);
     }
+}
+
+/** `keyUp:`: the key let go told to whoever asked for the raw keys, then NSView's own implementation, which is all
+    that happened before anyone could ask - the views have no key up, and nothing here gives them one.
+    @param self     the view
+    @param command  the selector, `keyUp:`
+    @param event    the key */
+void ViewKeyUp(id self, SEL command, NSEvent *event)
+{
+    if (MacSurface *owner = OwnerOf(self))
+    {
+        owner->TellRawKey(RawKeyOf(event, false));
+    }
+    objc_super super_class{self, [NSView class]};
+    reinterpret_cast<void (*)(objc_super *, SEL, NSEvent *)>(objc_msgSendSuper)(&super_class, command, event);
+}
+
+/** `flagsChanged:`: a modifier key pressed or let go told to whoever asked for the raw keys - the only way a Mac
+    reports one, since a modifier key sends no key down - then NSView's own implementation.
+    @param self     the view
+    @param command  the selector, `flagsChanged:`
+    @param event    the event, whose key code says which modifier key changed */
+void ViewFlagsChanged(id self, SEL command, NSEvent *event)
+{
+    if (MacSurface *owner = OwnerOf(self))
+    {
+        const NSEventModifierFlags flag = ModifierFlagOfMacKeyCode([event keyCode]);
+        owner->TellRawModifierKey(RawKeyOf(event, false), flag != 0 && ([event modifierFlags] & flag) != 0);
+    }
+    objc_super super_class{self, [NSView class]};
+    reinterpret_cast<void (*)(objc_super *, SEL, NSEvent *)>(objc_msgSendSuper)(&super_class, command, event);
+}
+
+/** `resignFirstResponder`: the keyboard going to another view, on which every key the raw key callback was told is
+    down is let go, then NSView's own answer.
+    @param self     the view
+    @param command  the selector, `resignFirstResponder`
+    @return         NSView's own answer: YES */
+BOOL ViewResignFirstResponder(id self, SEL command)
+{
+    if (MacSurface *owner = OwnerOf(self))
+    {
+        owner->LetGoOfHeldRawKeys();
+    }
+    objc_super super_class{self, [NSView class]};
+    return reinterpret_cast<BOOL (*)(objc_super *, SEL)>(objc_msgSendSuper)(&super_class, command);
 }
 
 /** `draggingEntered:` and `draggingUpdated:`: files dragged over the view, offered to the router.
@@ -1107,6 +1311,9 @@ Class PanelViewClass()
         AddMethod(cls, @selector(mouseExited:), reinterpret_cast<IMP>(ViewMouseExited));
         AddMethod(cls, @selector(scrollWheel:), reinterpret_cast<IMP>(ViewScrollWheel));
         AddMethod(cls, @selector(keyDown:), reinterpret_cast<IMP>(ViewKeyDown));
+        AddMethod(cls, @selector(keyUp:), reinterpret_cast<IMP>(ViewKeyUp));
+        AddMethod(cls, @selector(flagsChanged:), reinterpret_cast<IMP>(ViewFlagsChanged));
+        AddMethod(cls, @selector(resignFirstResponder), reinterpret_cast<IMP>(ViewResignFirstResponder));
         AddMethod(cls, @selector(draggingEntered:), reinterpret_cast<IMP>(ViewDraggingUpdated));
         AddMethod(cls, @selector(draggingUpdated:), reinterpret_cast<IMP>(ViewDraggingUpdated));
         AddMethod(cls, @selector(draggingExited:), reinterpret_cast<IMP>(ViewDraggingExited));
