@@ -1,18 +1,22 @@
 // The child window on Windows: a child HWND of the host's window, drawing a view tree through Skia into a raster the
 // size of the window and putting it on screen with SetDIBitsToDevice in WM_PAINT, the mouse, the keys and dropped
-// files handed to a MouseRouter, and a window timer for the frame callback. A popup is the same surface in a
-// no-activate tool window over the host's, watched by a thread mouse hook for presses outside it. The window class is
-// the module's own, registered with the first window and unregistered with the last, so two plug-ins' copies of this
-// code never share a window procedure. Screen points are the screen's pixels, opaque to the views.
+// files handed to a MouseRouter, and a window timer for the frame callback - or, where a product has asked for it
+// (ChildWindow::SetFramePacing), the display's own clock in a thread of the window's own, each frame posted here.
+// A popup is the same surface in a no-activate tool window over the host's, watched by a thread mouse hook for
+// presses outside it. The window class is the module's own, registered with the first window and unregistered with
+// the last, so two plug-ins' copies of this code never share a window procedure. Screen points are the screen's
+// pixels, opaque to the views.
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cwchar>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -44,6 +48,10 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 
+// dwmapi.h after windows.h, which it needs for HWND and HRESULT: the compositor's timing types, whose functions are
+// looked up rather than linked (DwmCalls below), so no consumer's link line changes for this.
+#include <dwmapi.h>
+
 #include "ClipboardWin.h"
 #include "HandedKeys.h"
 
@@ -65,6 +73,19 @@ constexpr UINT kCallSoonMessage = WM_APP + 17;
 
 /** The message posted to the window when a file dialog is waiting to open. */
 constexpr UINT kChooseFileMessage = WM_APP + 18;
+
+/** The message the display clock's thread posts to the window when a frame is due (ChildWindow::SetFramePacing).
+    Never posted to a window on the platform's timer, which is every window until a product asks. */
+constexpr UINT kDisplayFrameMessage = WM_APP + 19;
+
+/** The message the display clock's thread posts to the window when it has given up on the display and the platform's
+    own timer is to take over. */
+constexpr UINT kDisplayClockGaveUpMessage = WM_APP + 20;
+
+/** How long the display clock's thread waits for its timer before looking again: a net under a wait that should
+    always end at the due time, so that a machine coming back from sleep with a timer that never signalled reads the
+    compositor again rather than sitting there. It is not a frame period and nothing is paced by it. */
+constexpr DWORD kClockWaitsAtMostMilliseconds = 1000;
 
 /** The module this code is linked into: its window class is registered against it.
     @return the module's instance handle */
@@ -267,6 +288,394 @@ std::string RunFileDialog(const view::FileRequest &request, HWND owner, SurfaceL
     }
     return result;
 }
+
+// --------------------------------------------------------------------------------------------------------------
+// The display's own clock, where a product has asked to be paced on it (ChildWindow::SetFramePacing).
+// --------------------------------------------------------------------------------------------------------------
+
+// The high resolution a waitable timer has carried since Windows 10 1803. Named here for a Windows SDK too old to
+// name it, where CreateWaitableTimerExW simply refuses the flag and the window keeps the platform's timer.
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
+/** The seconds in one tick of the performance counter, read once.
+    @return  the seconds a tick is; 0 where the counter has no frequency */
+double QpcTickSeconds() noexcept
+{
+    static const double seconds = [] {
+        LARGE_INTEGER frequency{};
+        QueryPerformanceFrequency(&frequency);
+        return frequency.QuadPart > 0 ? 1.0 / static_cast<double>(frequency.QuadPart) : 0.0;
+    }();
+    return seconds;
+}
+
+/** The performance counter now, in seconds: the clock the compositor stamps its vertical blanks on, so the one a
+    frame's due time is kept in.
+    @return  the counter, in seconds */
+double QpcSeconds() noexcept
+{
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    return static_cast<double>(now.QuadPart) * QpcTickSeconds();
+}
+
+/** Desktop Window Manager's composition timing, looked up rather than linked, as GetDpiForWindow is below: no
+    consumer's link line changes for this, and a Windows whose dwmapi.dll has neither call is the fallback the pacing
+    already has. The library is held for the life of the process, as every windowed process holds it anyway. */
+struct DwmCalls
+{
+    /** DwmIsCompositionEnabled, as dwmapi.dll exports it.
+        @param is_enabled  set to whether the compositor is composing
+        @return            S_OK where it answered */
+    using IsCompositionEnabledCall = HRESULT(WINAPI *)(BOOL *is_enabled);
+
+    /** DwmGetCompositionTimingInfo, as dwmapi.dll exports it.
+        @param window  the window; null for the desktop's timing, which is the only form this asks for
+        @param timing  filled with the compositor's timing, its cbSize set by the caller
+        @return        S_OK where it answered */
+    using CompositionTimingInfoCall = HRESULT(WINAPI *)(HWND window, DWM_TIMING_INFO *timing);
+
+    IsCompositionEnabledCall  is_composition_enabled{nullptr};  ///< null where dwmapi.dll has not got it.
+    CompositionTimingInfoCall composition_timing_info{nullptr}; ///< null where dwmapi.dll has not got it.
+};
+
+/** The compositor's calls, looked up on the first ask.
+    @return  the calls, whose members are null where dwmapi.dll has not got them */
+const DwmCalls &Dwm() noexcept
+{
+    static const DwmCalls calls = [] {
+        DwmCalls found;
+        if (const HMODULE library = LoadLibraryW(L"dwmapi.dll"))
+        {
+            found.is_composition_enabled = reinterpret_cast<decltype(found.is_composition_enabled)>(
+                reinterpret_cast<void *>(GetProcAddress(library, "DwmIsCompositionEnabled")));
+            found.composition_timing_info = reinterpret_cast<decltype(found.composition_timing_info)>(
+                reinterpret_cast<void *>(GetProcAddress(library, "DwmGetCompositionTimingInfo")));
+        }
+        return found;
+    }();
+    return calls;
+}
+
+/** What the compositor says about its own clock, in seconds on the performance counter. The desktop's, which is what
+    DwmGetCompositionTimingInfo answers for: a window's own display is read from its mode instead
+    (DisplayRefreshHertzOf), and the two are cross-checked. */
+struct CompositionTiming
+{
+    bool   is_read{false};      ///< true where the compositor answered at all.
+    double hertz{0.0};          ///< the refresh rate it reports; 0 where it reports none.
+    double vblank_seconds{0.0}; ///< the last vertical blank it saw: the grid's anchor.
+    double period_seconds{0.0}; ///< the refresh period: the grid's step.
+};
+
+/** The compositor's clock now.
+    @return  what it said; `is_read` false where composition is off, the calls are missing, or the call failed */
+CompositionTiming CompositionTimingNow() noexcept
+{
+    CompositionTiming read;
+    const DwmCalls   &dwm          = Dwm();
+    BOOL              is_composing = FALSE;
+    if (dwm.is_composition_enabled == nullptr || dwm.composition_timing_info == nullptr ||
+        FAILED(dwm.is_composition_enabled(&is_composing)) || is_composing == FALSE)
+    {
+        return read;
+    }
+    DWM_TIMING_INFO timing{};
+    timing.cbSize = sizeof(timing);
+    if (FAILED(dwm.composition_timing_info(nullptr, &timing)))
+    {
+        return read;
+    }
+    read.is_read        = true;
+    read.vblank_seconds = static_cast<double>(timing.qpcVBlank) * QpcTickSeconds();
+    read.period_seconds = static_cast<double>(timing.qpcRefreshPeriod) * QpcTickSeconds();
+    if (timing.rateRefresh.uiDenominator != 0)
+    {
+        read.hertz =
+            static_cast<double>(timing.rateRefresh.uiNumerator) / static_cast<double>(timing.rateRefresh.uiDenominator);
+    }
+    else if (read.period_seconds > 0.0)
+    {
+        read.hertz = 1.0 / read.period_seconds;
+    }
+    return read;
+}
+
+/** The refresh rate of the display `window` is on, from the mode that display is in. This is the one reading that is
+    the window's own display rather than the whole desktop's, so a window on a second monitor of another rate is
+    caught by cross-checking it against the compositor's and nowhere else.
+    @param window  the window
+    @return        the rate, in hertz; 0 where Windows named none, or named the hardware's default rather than a rate */
+double DisplayRefreshHertzOf(HWND window) noexcept
+{
+    const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+    MONITORINFOEXW monitor_info{};
+    monitor_info.cbSize = sizeof(monitor_info);
+    if (monitor == nullptr || GetMonitorInfoW(monitor, reinterpret_cast<LPMONITORINFO>(&monitor_info)) == FALSE)
+    {
+        return 0.0;
+    }
+    DEVMODEW mode{};
+    mode.dmSize = sizeof(mode);
+    if (EnumDisplaySettingsW(monitor_info.szDevice, ENUM_CURRENT_SETTINGS, &mode) == FALSE)
+    {
+        return 0.0;
+    }
+    // 0 and 1 are Windows' answers for "the hardware's default", which is no rate: IsBelievableRefreshRate refuses
+    // both, and the compositor's reading is then the only one.
+    return static_cast<double>(mode.dmDisplayFrequency);
+}
+
+/**
+    The thread a window paced on the display's clock waits in. Windows has no present to put on the vertical blank
+    here - the view tree is rastered on the CPU and blitted with SetDIBitsToDevice, and the compositor owns what
+    reaches the panel - so this is the nearest honest thing to one: a waitable timer asked for the high resolution it
+    has carried since Windows 10 1803, whose next due time is pulled onto the compositor's own vertical blank grid
+    (DwmGetCompositionTimingInfo) every frame, so the frames land on whole refresh periods rather than near them.
+    Measured on a 59.94 Hz display at 16.683 ms mean and 0.246 ms standard deviation, with 99 % of frames within a
+    thirtieth of a whole refresh period, against the platform timer's 26.855 ms, 7.094 ms and 4.4 %
+    (docs/window/frame-pacing.md).
+
+    The waiting is in a thread of the window's own and each frame is posted to the window (kDisplayFrameMessage), so
+    the callback runs on the window's thread as the timer's always has, and a plug-in's editor inside a host's loop is
+    served as well as an app on its own loop. **At most one frame is in flight**: a window whose thread is busy - a
+    modal loop, a dialog, a drag - is never handed a backlog to run in a burst.
+
+    DwmFlush is not used, well though it measures: each call blocks the thread it is on for a whole refresh period,
+    which would be right in a thread of one's own and is wrong anywhere near a window's, and its period is three times
+    as loose as the timer's.
+*/
+class WinDisplayClock
+{
+  public:
+    WinDisplayClock() = default;
+
+    /** Stopped, its thread joined, before anything of the window it posts to can go. */
+    ~WinDisplayClock()
+    {
+        Stop();
+    }
+
+    WinDisplayClock(const WinDisplayClock &)            = delete;
+    WinDisplayClock &operator=(const WinDisplayClock &) = delete;
+
+    /** Started on `window`: a frame on every `request.refresh_divisor`th refresh of the display the window is on,
+        each posted to the window. False where the high-resolution waitable timer or the stop event could not be made
+        - a Windows before 10 1803, or one out of handles - and the window then keeps the platform's timer.
+        @param window   the window each frame is posted to; outlives the clock
+        @param request  the divisor and the frames to make up, both the product's
+        @return         true where the clock's thread is running */
+    bool Start(HWND window, const FrameRequest &request)
+    {
+        Stop();
+        window_  = window;
+        request_ = request;
+        gave_up_because_.store(static_cast<int>(FramePacingFallback::kNone), std::memory_order_relaxed);
+        is_frame_in_flight_.store(false, std::memory_order_relaxed);
+        display_hertz_.store(0.0, std::memory_order_relaxed);
+        // Without the high resolution the timer is the system clock's 15.625 ms again, which is the whole fault being
+        // fixed, so a Windows that refuses the flag is told apart from one that takes it rather than paced badly.
+        timer_ = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                        TIMER_MODIFY_STATE | SYNCHRONIZE);
+        stop_  = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (timer_ == nullptr || stop_ == nullptr)
+        {
+            Stop();
+            return false;
+        }
+        thread_ = std::thread([this] { Wait(); });
+        return true;
+    }
+
+    /** Stopped: the thread woken and joined, its timer and event closed. Nothing is posted to the window afterwards,
+        and calling it on a clock that is not running does nothing. */
+    void Stop()
+    {
+        if (stop_ != nullptr)
+        {
+            SetEvent(stop_);
+        }
+        if (thread_.joinable())
+        {
+            thread_.join();
+        }
+        if (timer_ != nullptr)
+        {
+            CloseHandle(timer_);
+            timer_ = nullptr;
+        }
+        if (stop_ != nullptr)
+        {
+            CloseHandle(stop_);
+            stop_ = nullptr;
+        }
+    }
+
+    /** The frame the window has just taken off its queue, so the next may be posted: what the window calls as it
+        handles kDisplayFrameMessage. */
+    void FrameTaken() noexcept
+    {
+        is_frame_in_flight_.store(false, std::memory_order_release);
+    }
+
+    /** Why the clock gave up on the display, where it has: what the window reads as it handles
+        kDisplayClockGaveUpMessage.
+        @return  the reason; FramePacingFallback::kNone while the clock is pacing */
+    FramePacingFallback gave_up_because() const noexcept
+    {
+        return static_cast<FramePacingFallback>(gave_up_because_.load(std::memory_order_acquire));
+    }
+
+    /** The rate the clock is dividing now, in hertz, as its thread last read it - which is the display the window is
+        on now, not the one it was on when the product asked.
+        @return  the rate, in hertz; 0 before the first reading */
+    double display_hertz_now() const noexcept
+    {
+        return display_hertz_.load(std::memory_order_acquire);
+    }
+
+  private:
+    /** Why a wait ended. */
+    enum class Woke
+    {
+        kDue,     ///< the due time came
+        kStopped, ///< the clock was stopped, or the timer could not be set
+    };
+
+    /** Waits until `due_seconds` on the performance counter. A wait that ends early - the net timeout, a machine back
+        from sleep - is simply waited again, so this returns at the due time or not at all.
+        @param due_seconds  when the frame is due, in seconds on the performance counter
+        @return             Woke::kDue at the due time, Woke::kStopped where the clock was stopped */
+    Woke WaitUntil(double due_seconds)
+    {
+        for (;;)
+        {
+            const double seconds = due_seconds - QpcSeconds();
+            if (seconds <= 0.0)
+            {
+                return Woke::kDue;
+            }
+            LARGE_INTEGER due{};
+            // Negative is relative, in hundreds of nanoseconds: the only form that needs nothing of the system clock,
+            // which a time change or a daylight saving moves under an absolute one.
+            due.QuadPart = -static_cast<LONGLONG>(seconds * 10'000'000.0);
+            if (due.QuadPart == 0)
+            {
+                due.QuadPart = -1; // less than a tick away: the shortest wait the timer takes
+            }
+            if (SetWaitableTimer(timer_, &due, 0, nullptr, nullptr, FALSE) == FALSE)
+            {
+                return Woke::kStopped;
+            }
+            const HANDLE waited_on[] = {stop_, timer_};
+            const DWORD  woke        = WaitForMultipleObjects(2, waited_on, FALSE, kClockWaitsAtMostMilliseconds);
+            if (woke == WAIT_OBJECT_0 || woke == WAIT_FAILED)
+            {
+                return Woke::kStopped;
+            }
+        }
+    }
+
+    /** `why` recorded and told to the window, which puts itself back on the platform's timer. The thread returns
+        after this.
+        @param why  why the display is no longer one to divide */
+    void GiveUp(FramePacingFallback why)
+    {
+        gave_up_because_.store(static_cast<int>(why), std::memory_order_release);
+        PostMessageW(window_, kDisplayClockGaveUpMessage, 0, 0);
+    }
+
+    /** The thread's whole body: the compositor read, the display under the window watched, the next frame put on the
+        display's grid, waited for and posted. */
+    void Wait()
+    {
+        FrameClock        clock;
+        RefreshSteadiness steadiness;
+        HMONITOR          display        = nullptr;
+        double            display_hertz  = 0.0;
+        double            period_divided = 0.0;
+        std::size_t       unsteady       = 0;
+        for (;;)
+        {
+            const CompositionTiming timing         = CompositionTimingNow();
+            const HMONITOR          under          = MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST);
+            const bool              is_display_new = under != display;
+            // A period further from the one being divided than one period read twice could be: the mode changed, or
+            // the window arrived on a display of another rate.
+            const bool has_period_moved =
+                timing.period_seconds > 0.0 && std::fabs(timing.period_seconds - period_divided) >
+                                                   kRefreshPeriodsHoldStillWithin * timing.period_seconds;
+            if (is_display_new)
+            {
+                // Another display under the window: another grid to land on, and nothing of the one being left is
+                // judged together with the one being arrived at.
+                display  = under;
+                unsteady = 0;
+                steadiness.Forget();
+            }
+            if (is_display_new || has_period_moved)
+            {
+                // The rate to divide is read again rather than carried over - a mode change on the one display is
+                // caught here, and reading it only when something has moved keeps it off every frame's path.
+                display_hertz = DisplayRefreshHertzOf(window_);
+            }
+            steadiness.Note(timing.period_seconds);
+            unsteady = steadiness.does_hold_still() ? 0 : unsteady + 1;
+
+            DisplayClockReading reading;
+            reading.has_clock        = timing.is_read;
+            reading.compositor_hertz = timing.hertz;
+            reading.display_hertz    = display_hertz;
+            // A period that will not hold still for as many readings as are judged together is a panel whose rate
+            // varies; fewer than that is one mode change, whose jump is still inside the readings being judged.
+            reading.does_rate_hold_still = unsteady < kRefreshPeriodsJudged;
+            const FramePacingState state = ChosenPacing(request_, reading);
+            if (state.pacing != FramePacing::kDisplayClock)
+            {
+                GiveUp(state.why);
+                return;
+            }
+            display_hertz_.store(state.display_hertz, std::memory_order_release);
+
+            if (has_period_moved)
+            {
+                // The first reading, or a period that has moved: the schedule starts again on what the display is
+                // doing now rather than dividing what it was doing.
+                period_divided = timing.period_seconds;
+                clock.Start(QpcSeconds(), period_divided * request_.refresh_divisor, request_.most_frames_behind);
+            }
+            // The due time pulled onto the grid the compositor's last vertical blank and its period describe, which
+            // is where a whole number of refresh periods lands by construction.
+            clock.MoveNextFrameTo(
+                OnTheRefreshGrid(clock.next_frame_seconds(), timing.vblank_seconds, timing.period_seconds));
+            if (WaitUntil(clock.next_frame_seconds()) == Woke::kStopped)
+            {
+                return;
+            }
+            const double woke = QpcSeconds();
+            // One frame in flight at a time: where the window has not taken the last one, this one is given up
+            // rather than queued behind it, and the clock's own catching up decides what happens next.
+            if (!is_frame_in_flight_.exchange(true, std::memory_order_acq_rel) &&
+                PostMessageW(window_, kDisplayFrameMessage, 0, 0) == FALSE)
+            {
+                is_frame_in_flight_.store(false, std::memory_order_release);
+            }
+            clock.Advance(woke);
+        }
+    }
+
+    HANDLE            timer_{nullptr};            ///< the high-resolution waitable timer each frame is waited on.
+    HANDLE            stop_{nullptr};             ///< set to end the thread, waited on beside the timer.
+    std::thread       thread_;                    ///< the thread that waits; not joinable while the clock is stopped.
+    HWND              window_{nullptr};           ///< the window each frame is posted to.
+    FrameRequest      request_{};                 ///< the divisor and the frames to make up, the product's.
+    std::atomic<bool> is_frame_in_flight_{false}; ///< a frame posted and not yet taken off the window's queue.
+    std::atomic<int>  gave_up_because_{
+        static_cast<int>(FramePacingFallback::kNone)}; ///< FramePacingFallback, as an int for std::atomic.
+    std::atomic<double> display_hertz_{0.0};           ///< the rate being divided, as the thread last read it.
+};
 
 /** The window procedure of the module's class: hands each message to the WinSurface the window holds in
     GWLP_USERDATA.
@@ -655,6 +1064,17 @@ class WinSurface : public view::Host
                 frame_();
             }
             return 0;
+        case kDisplayFrameMessage:
+        case kDisplayClockGaveUpMessage:
+            // The display clock's thread (ChildWindow::SetFramePacing), whose messages reach a window that asked to
+            // be paced on it and no other: `paced_message_` is empty until a product asks, and nothing posts these.
+            if (paced_message_)
+            {
+                // Copied: answering the clock's giving up replaces the callback, and a call may not destroy itself.
+                const std::function<void(UINT)> paced = paced_message_;
+                paced(message);
+            }
+            return 0;
         case kCallSoonMessage: {
             // One posted message per call; each runs the oldest waiting.
             if (!calls_.empty())
@@ -824,7 +1244,12 @@ class WinSurface : public view::Host
     std::vector<std::uint32_t> pixels_;          ///< the raster, B G R A with premultiplied alpha, top-down.
     sk_sp<SkSurface>           surface_;         ///< Skia's surface over the raster.
     std::function<void()>      frame_;           ///< the frame callback, run on the frame timer; may be empty.
-    bool                       no_activate_{false}; ///< a click does not activate the window: a popup's.
+    /** What the window does with a message its display clock's thread posted - a frame due, or the clock giving up
+        (ChildWindow::SetFramePacing). **Empty until a product asks to be paced on the display's clock**, and nothing
+        posts those messages until then: a popup's and an unasked child window's is empty for the window's whole
+        life, and the frame callback runs from WM_TIMER alone, exactly as it always did. */
+    std::function<void(UINT message)> paced_message_;
+    bool                              no_activate_{false}; ///< a click does not activate the window: a popup's.
     /** The window a key no view took is handed on to (ChildWindow::HandOnKeysTo); null to hand on none. */
     HWND key_target_{nullptr};
     /** Told of every raw key edge (ChildWindow::SetRawKeyCallback); empty until an owner asks, and then nothing of the
@@ -1116,6 +1541,13 @@ class WinChildWindow final : public ChildWindow, public WinSurface
     {
     }
 
+    /** The display clock stopped and its thread joined before the window itself goes, so nothing of a window being
+        destroyed is posted to. A window on the platform's timer has no clock to stop. */
+    ~WinChildWindow() override
+    {
+        clock_.Stop();
+    }
+
     /** Make the window as a visible child of the host's.
         @param parent  the host's window
         @return        true when the window was made */
@@ -1135,11 +1567,43 @@ class WinChildWindow final : public ChildWindow, public WinSurface
     void SetFrameCallback(std::function<void()> frame) override
     {
         frame_ = std::move(frame);
-        KillTimer(hwnd_, kFrameTimer);
-        if (frame_)
+        ArrangePacing();
+    }
+
+    /** The frame callback paced as `request` asks: the display's own clock in a thread of this window's own where
+        this Windows has a compositor whose timing can be read and a rate the compositor and the window's display
+        agree on, and the window timer it has always used where it has not.
+        @param request  what the product asks for; FrameRequest{} for the platform's timer
+        @return         what the window is pacing on, and why where it fell back */
+    FramePacingState SetFramePacing(const FrameRequest &request) override
+    {
+        request_ = request;
+        pacing_  = DecidedPacing();
+        if (pacing_.pacing == FramePacing::kDisplayClock && !paced_message_)
         {
-            SetTimer(hwnd_, kFrameTimer, kFrameMilliseconds, nullptr);
+            // Installed once a product has asked and never taken back: a frame still on the queue as the clock stops
+            // is a frame callback the platform timer would have run anyway.
+            paced_message_ = [this](UINT message) { HandlePacedMessage(message); };
         }
+        ArrangePacing();
+        return FramePacingNow();
+    }
+
+    /** What the window is pacing on now, with the rate of the display it is on now: the clock's thread re-reads that
+        as the window moves between monitors, so the rate here is not always the one SetFramePacing answered with.
+        @return  the pacing in force */
+    FramePacingState FramePacingNow() const override
+    {
+        FramePacingState state = pacing_;
+        if (state.pacing == FramePacing::kDisplayClock)
+        {
+            if (const double hertz = clock_.display_hertz_now(); hertz > 0.0)
+            {
+                state.display_hertz   = hertz;
+                state.frames_a_second = hertz / state.refresh_divisor;
+            }
+        }
+        return state;
     }
 
     /** Visible with every window above it, and its top-level window not minimised.
@@ -1165,6 +1629,71 @@ class WinChildWindow final : public ChildWindow, public WinSurface
     {
         TakeRawKeys(std::move(raw_key));
     }
+
+  private:
+    /** The pacing the request and this window's display decide between, with nothing started: what SetFramePacing
+        answers whether or not there is a frame callback yet. The display clock's own thread judges whether the
+        refresh period holds still, which nothing can know before a frame has been waited for, so that is left
+        believed here.
+        @return  the state, whose `why` says which step refused */
+    FramePacingState DecidedPacing() const
+    {
+        const CompositionTiming timing = CompositionTimingNow();
+        DisplayClockReading     reading;
+        reading.has_clock        = timing.is_read;
+        reading.compositor_hertz = timing.hertz;
+        reading.display_hertz    = DisplayRefreshHertzOf(hwnd_);
+        return ChosenPacing(request_, reading);
+    }
+
+    /** The frame callback's source arranged for the pacing in force: the display clock's thread where that is what
+        was decided and the clock can be made, and the platform's window timer otherwise - which is what a window
+        with no request of its own always reaches, as KillTimer and SetTimer alone. Nothing runs while there is no
+        callback. */
+    void ArrangePacing()
+    {
+        KillTimer(hwnd_, kFrameTimer);
+        clock_.Stop();
+        if (!frame_)
+        {
+            return;
+        }
+        if (pacing_.pacing == FramePacing::kDisplayClock)
+        {
+            if (clock_.Start(hwnd_, request_))
+            {
+                return;
+            }
+            // No high-resolution waitable timer to be had: the platform's own timer, and the reason said rather than
+            // pacing on the system clock's 15.625 ms under another name.
+            pacing_ = {FramePacing::kPlatformTimer, 0, pacing_.display_hertz, 0.0,
+                       FramePacingFallback::kNoDisplayClock};
+        }
+        SetTimer(hwnd_, kFrameTimer, kFrameMilliseconds, nullptr);
+    }
+
+    /** A message the display clock's thread posted, on this window's thread: a frame due - the clock told it has been
+        taken, and the callback run as the timer's is - or the clock giving up, which puts the window back on the
+        platform's timer with the reason kept for the product to read.
+        @param message  kDisplayFrameMessage or kDisplayClockGaveUpMessage */
+    void HandlePacedMessage(UINT message)
+    {
+        if (message == kDisplayFrameMessage)
+        {
+            clock_.FrameTaken();
+            if (frame_)
+            {
+                frame_();
+            }
+            return;
+        }
+        pacing_ = {FramePacing::kPlatformTimer, 0, pacing_.display_hertz, 0.0, clock_.gave_up_because()};
+        ArrangePacing();
+    }
+
+    FrameRequest     request_{}; ///< what the product asked for; FrameRequest{} until it asks, which is the default.
+    FramePacingState pacing_{};  ///< what the window is pacing on, and why where it fell back.
+    WinDisplayClock  clock_;     ///< the display clock's thread; stopped, and holding nothing, until a product asks.
 };
 
 namespace
