@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 
+#include "FramePacing.h"
 #include "Geometry.h"
 #include "RawKey.h"
 #include "View.h"
@@ -58,8 +59,10 @@ class RunLoop
     (Host::OpenPopup): each closes there and then, its handle left inert for its owner to drop whenever it likes - its
     destruction reaching nothing of the window - and its `closed_by_window` runs once the window is let go, on which
     a menu ends dismissed. So the views and the panel those callbacks hold, and the menus their popups show, may go
-    with the window or after it, in any order. A frame callback, if set, runs at the display's rate on the window's
-    thread, for whatever moves on its own (a lamp, a meter).
+    with the window or after it, in any order. A frame callback, if set, runs on the window's thread for whatever
+    moves on its own (a lamp, a meter), on the platform's own window timer - whose rate is the platform's and is not
+    the display's, nor even steady on Windows (FramePacing.h, docs/window/frame-pacing.md). A product that needs
+    uniform motion asks for the display's own clock instead (SetFramePacing).
 
     Sizes are the platform's: points on macOS, where the backing scale sets the pixels, and physical pixels on
     Windows and Linux, where the host tells the editor the display's scale and the window is the design size times
@@ -75,9 +78,51 @@ class ChildWindow
         @param scale  window units per design pixel: 1 is the design size, 0.5 to 2 for a shell's range */
     virtual void SetScale(float scale) = 0;
 
-    /** Runs `frame` once a display frame until replaced or the window goes.
+    /** Runs `frame` once a frame until replaced or the window goes, on whatever the window is paced by
+        (SetFramePacing): the platform's own window timer unless a product has asked for the display's clock. The
+        platform timer's rate is not the display's and is not promised - it is about sixty a second on macOS and
+        Linux and about thirty-seven a second on Windows, measured (docs/window/frame-pacing.md) - so a callback that
+        has to move something at a steady rate reads the seconds since the last frame (view::FrameSteps) rather than
+        counting frames.
         @param frame  the callback, run on the window's thread; empty for none */
     virtual void SetFrameCallback(std::function<void()> frame) = 0;
+
+    /** The frame callback paced as `request` asks: a frame on every `refresh_divisor`th refresh of the display the
+        window is on, so that each frame drawn is shown for exactly that many refresh periods, where the platform has
+        a display clock to pace on - and the platform's own window timer, which is what every window here did before
+        this existed, where it has not. The answer says which it is on and, where it fell back, why
+        (FramePacing.h, docs/window/frame-pacing.md).
+
+        **Nothing until it is asked.** A window whose owner has not called this reads no display clock, starts no
+        thread and is paced exactly as it always was; `FrameRequest{}` asks for that, so a product may hand its
+        request on unconditionally. Called again, the new request replaces the old, and calling it with
+        `FrameRequest{}` puts the window back on the platform's timer. The order against SetFrameCallback does not
+        matter: a window with no callback paces nothing and starts its clock once it is given one.
+
+        Where the window is paced on the display's clock, the frame callback still runs on the window's own thread -
+        the waiting is a thread of the window's own, which hands each frame to the window's loop - so nothing a
+        callback touches moves to another thread, and a callback that outruns the display loses frames rather than
+        letting them pile up.
+
+        The divisor is re-derived whenever the display changes under the window: a mode change, and the window being
+        moved to a monitor with another rate. Where the new display has no rate to divide the window falls back and
+        FramePacingNow says so.
+        @param request  what the product asks for; `FrameRequest{}` for the platform's timer, which is the default
+        @return         what the window is pacing on, and why where it fell back */
+    virtual FramePacingState SetFramePacing(const FrameRequest &request)
+    {
+        return ChosenPacing(request, DisplayClockReading{}); // no clock here: the platform's timer, and the reason
+    }
+
+    /** What the window is pacing its frame callback on now: the answer SetFramePacing gave, unless the display has
+        since stopped being one to divide - a panel whose refresh period will not hold still, or a move to a monitor
+        whose rate nothing agrees on - in which case the window has gone back to the platform's timer and this says
+        so. A product that reports or logs its pacing reads this rather than keeping SetFramePacing's answer.
+        @return  the pacing in force */
+    virtual FramePacingState FramePacingNow() const
+    {
+        return {};
+    }
 
     /** Whether the panel is on a screen a person can see: in a window that is shown and not minimised. What a panel
         tells its core once a frame (core::PanelWatch), so what runs only for someone looking stops when nobody is.

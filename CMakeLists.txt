@@ -597,11 +597,13 @@ if(RECKLESS_TOOLKIT_BUILD_TESTS)
 
     # The views, the series' panel, a picture kept between paints and the window's shell (window/ShellView.h, header
     # only, on the views alone) with the licence's card on a store of the suite's own, its licences the shared vectors';
-    # and the raw keys a window delivers (window/RawKey.h), whose policy needs no window, display or keyboard and so is
-    # held on every platform and in the builds with no GUI.
+    # and the raw keys a window delivers (window/RawKey.h) and how it paces its frame callback
+    # (window/FramePacing.h), whose policies need no window, display, keyboard or display clock and so are held on
+    # every platform and in the builds with no GUI.
     add_executable(reckless_view_test tests/test_view.cpp tests/test_panel.cpp tests/test_cached_picture.cpp
                                       tests/test_shell_view.cpp tests/test_list_view.cpp
-                                      tests/test_text_view.cpp tests/test_raw_keys.cpp)
+                                      tests/test_text_view.cpp tests/test_raw_keys.cpp
+                                      tests/test_frame_pacing.cpp)
     target_compile_definitions(reckless_view_test PRIVATE
         RECKLESS_LICENCE_VECTORS="${CMAKE_CURRENT_SOURCE_DIR}/licence/tests/vectors.json")
     target_link_libraries(reckless_view_test PRIVATE reckless_window_headers reckless_core_preset_files
@@ -697,6 +699,16 @@ inline constexpr EmbeddedFile kEmbeddedFiles[] = {
     target_link_libraries(reckless_app_shell_test PRIVATE reckless_app_shell reckless_toolkit_test_support
                                                           reckless_warnings GTest::gtest_main)
     add_test(NAME app COMMAND reckless_app_shell_test)
+
+    # The hand-run harness for the frame pacing figures in docs/window/frame-pacing.md: it measures the mechanisms a
+    # window paces its frame callback on - the platform's own timer, and on Windows the display clock the window waits
+    # on - and asserts nothing, a timing distribution being neither a pass nor a fail. No CTest for that reason, and
+    # nothing of Skia or the views, so it builds in seconds; it is built with the suites so that it cannot rot.
+    add_executable(reckless_frame_pacing_harness tools/frame-pacing-harness.cpp)
+    target_link_libraries(reckless_frame_pacing_harness PRIVATE reckless_window_headers reckless_warnings)
+    if(WIN32)
+        target_link_libraries(reckless_frame_pacing_harness PRIVATE dwmapi winmm)
+    endif()
 
     # This build's platform itself (app/AppPlatform.h's Create): posts from other threads through its loop. On Linux
     # it needs a display, so it runs with the window suites (under xvfb-run in CI); on macOS Run takes the focus.
