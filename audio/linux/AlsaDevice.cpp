@@ -496,8 +496,11 @@ class AlsaSystem final : public AudioSystem
         format_.input_channels  = in_.count;
         format_.output_channels = out_.count;
         // A block written lands behind what the output already holds, its buffer less the period just played; a
-        // block read is the input's latest.
-        format_.reported_latency = out_.buffer - block_;
+        // block read is the input's latest. A frame read therefore comes back a block (the input's) plus the buffer
+        // less a block (the output's) later: the buffer in all, of which StreamFormat's latency beyond the block is
+        // the buffer less the two blocks each way - none at the fewest periods. Counting the output's block a second
+        // time had a UMC1820's cable come back a block sooner than reported, at every rate and block.
+        format_.reported_latency = std::max(out_.buffer - 2 * block_, 0);
         format_.periods          = out_.buffer / std::max(block_, 1);
         callback_.store(&callback, std::memory_order_release);
         failed_.store(false, std::memory_order_relaxed);

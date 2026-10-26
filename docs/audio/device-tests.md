@@ -21,7 +21,7 @@ For each API the build carries, and any the run requires that it lacks (one para
 | `CarriesTheSamplesALoopBringsBack` | Where the device loops its output back (below), a known signal out and the samples read back: bit for bit where the path is exact, correlated where a mixer sits in it, exactly the device's own signal where the device makes one. Through a cable a person patched (CoreAudio, "On a Mac with an interface" below), each channel's noise judged through a 64-tap filter fitted from what was played to what came back - the converters band-limit it and delay it by a fraction of a sample, which a sample-for-sample correlation would count against the loop - each fit at least 0.99, and the round trip within a 64th of a second of two blocks and the latency the API reports, never under the two blocks. |
 | `KeepsTheCablesDelayThroughSilence` | Through a cable alone: one stream of about 8 s playing bursts of the known noise - 16384 frames of every 65536, silence between - as Reckless IR Capture plays its noise periods, its gap and its sweep in one stream; each burst's delay found to a fraction of a frame by its matched filter's peak, and every burst's within 0.05 frames of the first's, so a stream that lost or gained a frame while it carried silence fails. |
 | `PlaysACoreThroughTheEngineAllocatingNothingInTheCallback` | `StandaloneEngine` playing the Gate's core on the device for a second, `Idle` every 10 ms: running throughout, its callbacks as the rate and the block predict (less, for each xrun the run is allowed, the callbacks of the 300 ms a device has to start again), and not one allocation on the audio thread - the engine's callback runs between two counts of the thread's allocations (`CountAllocations.h`, through an `AudioSystem` that relays the callback), so the count is the engine's and the core's, on the API's own thread. |
-| `BuffersThePeriodsTheRequestAsksFor` | ALSA alone, the one API that lets a stream choose: streams asking for two, three and four periods (`StreamRequest::periods`) each open with them (`StreamFormat::periods`), report one block less than the buffer as their latency, and bring each frame back through the exact loop exactly that many blocks later, with no xruns. |
+| `BuffersThePeriodsTheRequestAsksFor` | ALSA alone, the one API that lets a stream choose: streams asking for two, three and four periods (`StreamRequest::periods`) each open with them (`StreamFormat::periods`), report two blocks less than the buffer as their latency (the two a round trip counts beside it), and bring each frame back through the exact loop exactly that many blocks later, with no xruns. |
 | `RefusesADeviceThatIsNotThereAndOpensTheNextOne` | An output and an input that do not exist each refused, the error naming them, and the test device opening and running afterwards. |
 | `CountsAnXrunAndPlaysOnAfterIt` | An overrun or underrun reaching the callback - made by a callback that runs two blocks or 30 ms, whichever is longer (ALSA, JACK, CoreAudio), or reported by the device when the rig asks (ASIO) - with none reported before it (on a scheduled clock, at most one in ten callbacks), and the stream playing on after it as a stream from its start does: over the two seconds from 300 ms after the callback told of it - a window long enough that a loaded runner's moment of slowness as it resumes the device is a small part of it, where a stream that never resumes its rate is as far off as over any - the callbacks as the rate and the block predict (within the device's rate tolerance and two), the rate by the clock, the xruns a stream is allowed (at most two plus one per hundred callbacks, one in ten more on a scheduled clock), and the callbacks running until the stream is stopped; through an exact loop (ALSA, JACK), every sample back one that was played and the last 0.3 s of them one frame after another. Windows Audio skips it, saying why, and so does ASIO where RECKLESS_ASIO_DEVICE names a driver of the machine's own: an xrun reaches the callback there only as the driver's own resync request, which nothing obliges a real driver to send. |
 | `AStreamWhoseDeviceGoesAwayFailsAndIdleClosesIt` | Where the rig can take the device away under a running engine (JACK, ASIO): the failure reaching the engine from the API's thread, `Idle` closing the stream and saying why, the state failed, no callback after; then the device back and the next `Open` preparing the core again and playing. |
@@ -55,7 +55,7 @@ correlation coefficient over everything after it must reach 0.9, the gain printe
 | Windows Audio (Exclusive Mode) | the default render endpoint, the stream's alone - or, by hand, a person's interface and its cable | the machine (none on CI) | none: no mixer for a loopback to hear, but a cable comes back on a capture endpoint of its own | a stalled callback | - |
 | ASIO | the SDK's sample driver: 16 in, 16 out, 16-bit, 256 frames, 44.1 or 48 kHz, a sine on its first input and a sawtooth on its second - or, by hand, a driver of the machine's own and its cable | the suite: built from the fetched SDK and registered by the binary itself; the machine's own drivers listed beside it | the inputs, exactly as the driver makes them, or a cable's | the driver's resync request (the test driver's alone) | the driver's reset request (the test driver's alone) |
 | JACK | `jackd` on the dummy driver, 48 kHz, 1024 frames, 3 capture and 5 playback ports, under a name of its own | the suite: a server for each test | exact: the stream's outputs wired to its own inputs through the server | a stalled callback | the server stopped with SIGTERM, then started again |
-| ALSA | the kernel's loopback card (`snd-aloop`): playback on its device 0 comes back as capture on its device 1 | the CI job (`tools/audio-test-devices.sh`) | exact | a stalled callback (below) | - |
+| ALSA | the kernel's loopback card (`snd-aloop`): playback on its device 0 comes back as capture on its device 1 - or, by hand, a person's interface and its cable ("On Linux with an interface", below) | the CI job (`tools/audio-test-devices.sh`) | exact | a stalled callback (below) | - |
 
 **JACK.** `devices/JackRig.cpp` starts `jackd --no-realtime --name reckless-test-<pid>-<n> -d dummy -r 48000 -p 1024 -C
 3 -P 5` for each test and stops it after, with `JACK_DEFAULT_SERVER` naming it and `JACK_NO_START_SERVER` set, so every
@@ -300,7 +300,8 @@ moved the same way.
   `ld.so.conf` entry), the suite's own server is out of reach and the JACK tests say so - "a server that is not this
   test's"; run them with JACK's own library first on the path,
   `LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu build/tests/reckless_audio_device_test`. PipeWire, where it runs,
-  lists the loopback card among its devices too, and opens it only while something plays to it.
+  lists the loopback card among its devices too, and opens it only while something plays to it. With an interface,
+  see "On Linux with an interface" below.
 - **Windows**, inside the Visual Studio developer environment (`CLAUDE.md`'s `VsDevCmd.bat` line): ASIO needs
   nothing. **Windows Audio is tested here and nowhere else**, in both of its modes - on a machine with speakers,
   headphones or a virtual cable as its default playback device:
@@ -385,6 +386,44 @@ Two things a run on real hardware shows that CI cannot:
   resync request, and nothing in the API obliges a driver to send one: a UMC1820 carried on without a word through a
   stalled callback. `CountsAnXrunAndPlaysOnAfterIt` skips with that reason where `RECKLESS_ASIO_DEVICE` names a real
   driver, and the SDK's sample driver, which asks to order, is what holds that test.
+
+## On Linux with an interface
+
+The Linux runners' only card is the kernel's loopback, so ALSA on a real interface, through its converters and a cable,
+is tested by a person, with the same shape of variables the other rigs take (CI sets none of them):
+
+| variable | what it asks for |
+|---|---|
+| `RECKLESS_ALSA_DEVICE` | the output device, by its name as ALSA lists it (`UMC1820 (USB Audio)`), in place of the loopback card |
+| `RECKLESS_ALSA_LOOP` | `<output>:<input>` on that device, counted from 1 - `3:1` for outputs 3 and 4 into inputs 1 and 2 - which makes the stream, loop, silence and xrun tests run duplex through the cable |
+| `RECKLESS_ALSA_INPUT` | an input device of another name for the cable to come back on |
+
+`RECKLESS_AUDIO_TEST_RATE` and `RECKLESS_AUDIO_TEST_BLOCK` hold the device at one rate and block, and
+`RECKLESS_MIDI_KEYBOARD` names a sequencer input for a person to play, as on any platform:
+
+```
+export RECKLESS_AUDIO_REQUIRE=ALSA RECKLESS_ALSA_DEVICE="UMC1820 (USB Audio)" RECKLESS_ALSA_LOOP=3:1
+build/tests/reckless_audio_device_test --gtest_filter='*/ALSA'
+for rate in 44100 48000 88200 96000; do for block in 32 64 128 256 512 1024; do
+    RECKLESS_AUDIO_TEST_RATE=$rate RECKLESS_AUDIO_TEST_BLOCK=$block \
+        build/tests/reckless_audio_device_test --gtest_filter='*/ALSA' | tee "umc-$rate-$block.log"
+done; done
+RECKLESS_MIDI_KEYBOARD="Impact LX88+ MIDI1" build/tests/reckless_audio_device_test --gtest_filter='MidiInputs.*Person*'
+```
+
+The device is opened directly (`hw:`), so nothing else may hold it: PipeWire opens a card only while something plays
+through it, and a sound playing there leaves the device missing from the list. Turning the card's profile off for the
+run (`pactl set-card-profile <card> off`, `pactl list cards short` for its name) and back afterwards frees it. The
+cable carries quiet noise, 30 dB under full scale; set the inputs' gain as on the other platforms (about +1.6 dB
+through a UMC1820 at its lowest gain). Look for the same as on a Mac: both channels' 64-tap fit at 0.9995 or better,
+every burst through silence at the first one's delay to a hundredth of a frame, no xruns but the one the xrun test
+makes, and the round trip a little more than reported - the converters' and the USB transfer's, which ALSA does not
+count. The loop is judged from a second into the stream (`TestDevice::settle_seconds`), the interface's clock being
+started afresh with each stream. At 96 kHz on a small buffer the UMC1820 sometimes slips a few microframes with no
+xrun, which fails the loop test; it is the kernel's or the device's, not the back end's (native-backends.md).
+
+The keyboard test reads 20 s or 64 messages, whichever comes first, and a wheel moved sends 64 in a fifth of a second:
+play the notes first, and let them go, before touching a wheel.
 
 ## On a Mac with an interface
 

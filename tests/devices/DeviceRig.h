@@ -57,6 +57,10 @@ struct TestDevice
     int         block_size{256};      ///< the block a stream opens at, in samples
     Loop        loop{Loop::kNone};    ///< what a stream can show of the samples it carried
     double      rate_tolerance{0.03}; ///< how far the rate by the clock may stray, as a fraction
+    /** How long a stream on the device runs before what it carries is judged, in seconds. A USB interface on Linux
+        has its clock set and started afresh with every stream, and takes about a second to settle into it (a
+        UMC1820 at 96 kHz brought a cable's noise back filtered to 0.96 to 0.99, with no xrun, until it did). */
+    double settle_seconds{0.0};
     /** The device's clock a thread of the machine's, timed without real-time priority (JACK's dummy driver: a runner
         gives jackd none): the machine's load delays its cycles, and a cycle that comes past its time is an xrun the
         driver starts its schedule again after, the time lost. Such xruns and the time they lose are the machine's, not
@@ -105,7 +109,7 @@ inline std::string Environment(const char *name)
     channels and the first of two inputs, counted from 1 - "3:1" for outputs 3 and 4 into inputs 1 and 2. It makes the
     device's loop a cable's, so the stream, loop and silence tests run duplex through it.
 
-    One parser for CoreAudio's, Windows Audio's and ASIO's rigs: the variable's name differs, nothing else does.
+    One parser for CoreAudio's, Windows Audio's, ASIO's and ALSA's rigs: the variable's name differs, nothing else does.
 
     @param device           the test device, whose channels, first channel each way, loop and description it sets
     @param cable            the variable's value
