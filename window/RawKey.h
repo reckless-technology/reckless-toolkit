@@ -46,7 +46,9 @@ struct RawKeyEvent
         no key - a key message another program synthesised with no scan code in it. */
     std::uint32_t physical_key_code{0};
 
-    view::Modifiers modifiers{}; ///< the modifier keys held as the edge arrived; empty for a key let go by LetGo
+    /** The modifier keys held as the edge arrived; empty for a key the window let go itself as it lost the keyboard,
+        since nothing says what is held once the keyboard has gone. */
+    view::Modifiers modifiers{};
 };
 
 /** Told of every raw key edge a window receives, on the window's thread, for as long as the window lives.
