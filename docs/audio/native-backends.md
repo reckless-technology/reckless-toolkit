@@ -22,7 +22,7 @@ descriptor goes when CoreAudio moves, the last name it serves.
 
 **Done, 2026-10-25: every API on every platform is the toolkit's own**, and RtAudio and RtMidi are compiled into no
 binary, nor fetched: the products' notices name neither. macOS and Windows have both been run on real hardware, below.
-What is left is MIDI from a real keyboard on Linux.
+Linux has been run on real hardware too, below, and with it nothing is left to run by hand that a CI runner lacks.
 
 | API | back end | since |
 |---|---|---|
@@ -178,6 +178,48 @@ adds is silencing every other program and formats that cannot be mixed (integer,
 taking the device from everything else, and leaving it taken should the program die holding it. The back end refuses a
 stream whose buffers are not 32-bit float - the format of every mixable stream - rather than misread one another
 program has hogged.
+
+**ALSA and the ALSA sequencer, on real hardware**, measured on a Dell Precision (Ubuntu 24.04, kernel 7.0) against the
+same BEHRINGER UMC1820 - class compliant, on the kernel's `snd-usb-audio` - outputs 3 and 4 patched by cable to inputs 1
+and 2, and the same Nektar Impact LX88+ on USB ([device-tests.md](device-tests.md), "On Linux with an interface"):
+
+- **Duplex on one device, through the cable**, at 44.1, 48, 88.2 and 96 kHz against every block from 32 to 1024
+  frames, with the stream thread at real-time priority: the rate and block asked, each channel back as it was played (a
+  64-tap fit of 0.9996 or better at 44.1 and 48 kHz, 0.9998 at 88.2 and 96), every burst through silence at the first one's
+  delay to a hundredth of a frame, and the stalled callback reported as one xrun and played on from - but for the fault
+  at 96 kHz below.
+- **The round trip, against what the back end reports**: 77 to 117 frames more than reported, at every rate and block
+  - the converters' and the USB transfer's, which ALSA does not count - about 2.2 ms at 48 kHz and 1 ms at 96. It moves
+  by a microframe or two between one stream and the next, as on a Mac, and does not move with the block.
+- **A real keyboard on the sequencer**: notes held and let go (a note off sent as a note on of velocity 0 arriving as
+  sent), the mod wheel's CC 1 a step about every 3 ms, and pitch bend to its full 14 bits (`E0 7F 7F`), every message
+  whole, on the index it was opened under and in order.
+
+One fault the hardware found in the back end:
+
+- **ALSA reported the output's block twice.** The back end reported the output's buffer less one block, which is how
+  late a block written plays - but `StreamFormat::reported_latency` is the latency beyond the block each way, and a
+  round trip counts two blocks beside it. So every stream reported a block more than it had: through the cable the
+  round trip came back a block sooner than reported at every rate and block, and at 1024 frames outside the suite's
+  64th of a second. It reports the buffer less two blocks now - none at two periods - and the loopback card, whose loop
+  is exactly the buffer, holds it: 512 frames back at two periods of 256 and nothing reported beyond them.
+
+And two things the machine taught, not the back end:
+
+- **Without real-time priority, small blocks at high rates xrun.** A user in no group the system grants `rtprio` -
+  this machine's, until it was put in `audio` and the jackd package's `/etc/security/limits.d/audio.conf` enabled -
+  runs the stream thread at the ordinary priority, since the back end's `SCHED_RR` request is refused without a word.
+  The cable then took xruns at 88.2 kHz and 32 frames and at 96 kHz from 32 to 128, which at real-time priority it
+  never did. A Linux product's user is told to be in `audio`, as JACK's users are.
+- **At 96 kHz, a small buffer slips under `snd-usb-audio` with nothing reported.** At 96 kHz and 64 frames on three
+  periods, about one stream in two gains 24 to 49 frames - two to four USB microframes - at a moment somewhere in its
+  first few seconds, and runs that much later from then on; no xrun reaches ALSA, so none reaches the callback. A bare
+  ALSA duplex stream, alsa-lib's `snd_pcm_readi` and `snd_pcm_writei` on `hw:UMC1820` with no toolkit code, does the
+  same - 5 runs in 10 - so it is below the back end: the kernel's USB audio path, the controller, or the interface.
+  The same bare stream never slipped at 96 kHz on eight periods of 64 or three of 256, nor at 48 kHz on three of 64 or
+  of 32 (8 runs each). It is accepted, not worked round: the suite's loop test fails when it happens, as it should, and
+  a person who wants 96 kHz at that block on this interface runs with more periods or at 48 kHz. Do not relax the test
+  for it.
 
 **Linux carries neither library now**: with the ALSA sequencer serving MIDI, RtAudio and RtMidi are not fetched or
 compiled there. The sequencer lists every input under the name RtMidi gave it - checked side by side against RtMidi

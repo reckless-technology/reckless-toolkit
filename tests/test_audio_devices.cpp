@@ -318,11 +318,12 @@ TEST_P(AudioDevices, CarriesTheSamplesALoopBringsBack)
     ASSERT_TRUE(system_->Start()) << system_->LastError();
     std::string why;
     ASSERT_TRUE(rig_->Started(kClient, why)) << why;
-    RunFor(1.2);
+    RunFor(device.settle_seconds + 1.2);
     system_->Stop();
     system_->Close();
 
     const std::size_t  recorded = recorder.recorded_frames();
+    const std::size_t  settled  = static_cast<std::size_t>(device.settle_seconds * format.sample_rate);
     const auto        &in0      = recorder.recorded(0);
     const auto        &in1      = recorder.recorded(1);
     const std::int64_t xruns    = recorder.xruns();
@@ -369,9 +370,10 @@ TEST_P(AudioDevices, CarriesTheSamplesALoopBringsBack)
     else if (device.loop == Loop::kCorrelated || device.loop == Loop::kCable)
     {
         // Through a mixer the signal comes back at some gain and some delay: the delay found from a window of the
-        // noise played, then the correlation coefficient over everything after it.
+        // noise played, then the correlation coefficient over everything after it - all of it once the device has
+        // settled (TestDevice::settle_seconds).
         const auto        played = [](std::int64_t n) { return static_cast<double>(NoiseSample(n, 0)); };
-        const std::size_t window = 4096, start = static_cast<std::size_t>(0.25 * rate);
+        const std::size_t window = 4096, start = settled + static_cast<std::size_t>(0.25 * rate);
         const std::size_t max_lag = std::min(static_cast<std::size_t>(0.5 * rate), recorded - start - window);
         double            best    = 0.0;
         std::size_t       lag     = 0;
@@ -429,6 +431,73 @@ TEST_P(AudioDevices, CarriesTheSamplesALoopBringsBack)
         table.Row("gain", yy > 0.0 ? Fixed(10.0 * std::log10(yy / xx), 2) + " dB" : std::string("silence"))
             .Row("xruns reported", Str(xruns))
             .Print();
+        if (cable && std::min(fit0, fit1) < 0.9995)
+        {
+            // Short of what a cable carries: which blocks came back wrong, and as what. Each block the output played
+            // (at its delay) and each the input read, its correlation with what was played there; for one that came
+            // back wrong, its level and the offset nearby where what it carries was played instead - silence for a
+            // block dropped and padded, an earlier offset for one replayed or read again from a buffer's last lap.
+            const auto block       = static_cast<std::size_t>(format.block_size);
+            const auto correlation = [&](std::size_t from, std::int64_t offset) {
+                double sxy = 0.0, sxx = 0.0, syy = 0.0;
+                for (std::size_t i = from; i < from + block; ++i)
+                {
+                    const double x = played(static_cast<std::int64_t>(i) - offset), y = in0[i];
+                    sxy += x * y;
+                    sxx += x * x;
+                    syy += y * y;
+                }
+                return sxx > 0.0 && syy > 0.0 ? sxy / std::sqrt(sxx * syy) : 0.0;
+            };
+            Table where(api_ + ": the blocks that came back wrong (the frame recorded, correlation at the delay " +
+                        Str(static_cast<std::int64_t>(lag)) + ", level, where it was played instead)");
+            int   shown = 0, wrong_in = 0, wrong_out = 0, blocks = 0;
+            for (const bool by_output : {true, false})
+            {
+                // An output block played from frame k * block is recorded from k * block + lag; an input block is
+                // read from k * block.
+                std::size_t from = by_output ? (start / block + 1) * block + lag : (start / block + 1) * block;
+                for (; from + 2 * block < recorded; from += block)
+                {
+                    ++blocks;
+                    const double here = correlation(from, static_cast<std::int64_t>(lag));
+                    if (here >= 0.5)
+                    {
+                        continue;
+                    }
+                    ++(by_output ? wrong_out : wrong_in);
+                    double level = 0.0;
+                    for (std::size_t i = from; i < from + block; ++i)
+                    {
+                        level += static_cast<double>(in0[i]) * in0[i];
+                    }
+                    double       best = 0.0;
+                    std::int64_t at   = 0;
+                    for (std::int64_t offset = 0; offset < 8192 && offset < static_cast<std::int64_t>(from); ++offset)
+                    {
+                        if (const double c = correlation(from, offset); c > best)
+                        {
+                            best = c;
+                            at   = offset;
+                        }
+                    }
+                    if (shown++ < 24)
+                    {
+                        where.Row(std::string(by_output ? "output" : "input") + " block at " +
+                                      Str(static_cast<std::int64_t>(from)),
+                                  Fixed(here, 3) + ", " +
+                                      Fixed(10.0 * std::log10(level / static_cast<double>(block) + 1e-30), 1) +
+                                      " dB, " +
+                                      (best >= 0.5 ? "delay " + Str(at) + " (" + Fixed(best, 3) + ")"
+                                                   : std::string("nowhere")));
+                    }
+                }
+            }
+            where
+                .Row("blocks judged, wrong by the output's / the input's",
+                     Str(blocks / 2) + ", " + Str(wrong_out) + " / " + Str(wrong_in))
+                .Print();
+        }
         if (cable)
         {
             EXPECT_GE(fit0, 0.99) << "the first channel back is not what was played, filtered - is the cable patched "
@@ -642,7 +711,9 @@ TEST_P(AudioDevices, BuffersThePeriodsTheRequestAsksFor)
                                     " samples (" + Fixed(1e3 * static_cast<double>(loop) / format.sample_rate, 2) +
                                     " ms), " + Str(recorder.xruns()));
         EXPECT_EQ(format.periods, periods);
-        EXPECT_EQ(format.reported_latency, (periods - 1) * format.block_size) << periods << " periods";
+        // Beyond the block each way, as StreamFormat means it: the buffer less the two blocks a cable's round trip
+        // counts beside it (CarriesTheSamplesALoopBringsBack).
+        EXPECT_EQ(format.reported_latency, (periods - 2) * format.block_size) << periods << " periods";
         EXPECT_EQ(scan.corrupt, 0);
         if (recorder.xruns() == 0)
         {

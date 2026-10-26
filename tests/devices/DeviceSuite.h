@@ -997,7 +997,13 @@ class CoreAudioRig final : public DeviceRig
 
 /** ALSA's test device: the kernel's loopback card (snd-aloop), whose playback on device 0 comes back as capture on
     device 1, subdevice by subdevice, bit for bit - the CI job loads it and gives its user the card's nodes. Its two
-    devices carry one name, and the second is listed with its ordinal (AudioDevice.h's NameApart). */
+    devices carry one name, and the second is listed with its ordinal (AudioDevice.h's NameApart).
+
+    A person at a Linux machine with an interface asks for it instead, with the same shape of variables the other
+    rigs take (docs/audio/device-tests.md, "On Linux with an interface"): RECKLESS_ALSA_DEVICE names the output device,
+    as ALSA lists it; RECKLESS_ALSA_LOOP, as "<output>:<input>", the cable patched from two of its outputs to two of
+    its inputs, which makes the loop a cable's (Loop::kCable); and RECKLESS_ALSA_INPUT an input device of another
+    name for the cable to come back on. CI sets none of them. */
 class AlsaRig final : public DeviceRig
 {
   public:
@@ -1006,6 +1012,10 @@ class AlsaRig final : public DeviceRig
 
     TestDevice Find(const std::vector<DeviceInfo> &devices) override
     {
+        if (const std::string named = Environment("RECKLESS_ALSA_DEVICE"); !named.empty())
+        {
+            return FindInterface(devices, named);
+        }
         TestDevice device;
         const int  out = reckless::audio::FindDevice(devices, kPlayback, reckless::audio::Direction::kOutput);
         const int  in  = reckless::audio::FindDevice(devices, kCapture, reckless::audio::Direction::kInput);
@@ -1035,6 +1045,64 @@ class AlsaRig final : public DeviceRig
     }
 
   private:
+    /** The interface RECKLESS_ALSA_DEVICE names, and the input and cable RECKLESS_ALSA_INPUT and RECKLESS_ALSA_LOOP
+        name with it, as the class's comment says.
+        @param devices  ALSA's devices
+        @param named    RECKLESS_ALSA_DEVICE's value
+        @return         the test device, or one with `found` false saying why it is not there */
+    static TestDevice FindInterface(const std::vector<DeviceInfo> &devices, const std::string &named)
+    {
+        TestDevice        device;
+        const std::string input_named = Environment("RECKLESS_ALSA_INPUT");
+        const std::string cable       = Environment("RECKLESS_ALSA_LOOP");
+        const int         out = reckless::audio::FindDevice(devices, named, reckless::audio::Direction::kOutput);
+        if (out < 0)
+        {
+            device.missing = "RECKLESS_ALSA_DEVICE names '" + named +
+                             "', which ALSA lists no output device by: another program may hold it (PipeWire, "
+                             "where the card's profile is not off)";
+            return device;
+        }
+        const DeviceInfo &output = devices[static_cast<std::size_t>(out)];
+        const DeviceInfo *input  = nullptr;
+        if (!input_named.empty() || !cable.empty())
+        {
+            const std::string input_name = input_named.empty() ? named : input_named;
+            const int         in = reckless::audio::FindDevice(devices, input_name, reckless::audio::Direction::kInput);
+            if (in < 0)
+            {
+                device.missing = (input_named.empty() ? "RECKLESS_ALSA_DEVICE" : "RECKLESS_ALSA_INPUT") +
+                                 std::string(" names '") + input_name + "', which ALSA lists no input device by";
+                return device;
+            }
+            input = &devices[static_cast<std::size_t>(in)];
+        }
+        device.found          = true;
+        device.output         = output.name;
+        device.channels       = std::min(output.output_channels, 2);
+        device.sample_rate    = output.DefaultSampleRate();
+        device.block_size     = 256;
+        device.loop           = Loop::kNone;
+        device.rate_tolerance = 0.03;
+        device.xrun_by        = reckless::audio::test::XrunBy::kStall;
+        device.settle_seconds = 1.0; // TestDevice::settle_seconds: the interface's clock is started with the stream
+        device.about          = "the output RECKLESS_ALSA_DEVICE names, written with silence";
+        if (input != nullptr)
+        {
+            device.input        = input->name;
+            device.engine_input = input->name;
+            device.engine_key   = false;
+            device.channels     = std::min({output.output_channels, input->input_channels, 2});
+            device.about        = input->name == output.name ? "duplex on one device" : "duplex across two devices";
+        }
+        if (!cable.empty() &&
+            !ApplyCable(device, cable, output.output_channels, input->input_channels, "RECKLESS_ALSA_LOOP"))
+        {
+            return device;
+        }
+        return device;
+    }
+
     /** @return whether the kernel has a loopback card, whoever may open it (/proc/asound/cards is everyone's to
                 read) */
     static bool CardLoaded()
