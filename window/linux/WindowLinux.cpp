@@ -1549,7 +1549,7 @@ class LinuxChildWindow final : public ChildWindow
         rastered into a Pixmap and handed over with PresentPixmap against a target media stream count, which is a
         different present path, a new library on every consumer's link line, and a rewrite of the dirty-rectangle
         handling this file is largely about - for phase alone, since the Linux loop's rate is already right: the
-        app's poll loop keeps its deadline in a steady clock and advanced it by the period, which measured 16.000 ms
+        app's poll loop keeps its deadline in a steady clock and advances it by the period, which measured 16.000 ms
         with a standard deviation of 0.306 ms, where Windows' window timer measured 26.9 ms and 7.1 ms
         (docs/window/frame-pacing.md). What display synchronisation would buy on Linux is phase, not rate, and the
         honest answer until that is worth its cost is this one.

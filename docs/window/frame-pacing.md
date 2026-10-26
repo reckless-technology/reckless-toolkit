@@ -40,12 +40,20 @@ measurement is neither: it is a mixture, 26 % of intervals one clock tick long, 
 measurements settle what is actually happening.
 
 **One: the grid is the system clock's, and `timeBeginPeriod` does not move it.** `GetSystemTimeAdjustment` reports
-the clock's increment in force as **15.6252 ms**, and every `WM_TIMER`'s own `GetMessageTime` is exactly
-`floor(15.625 k)` - 335597031, 335597062, 335597078, 335597109, 335597125 - so the messages are generated at the
-clock's tick instants and nowhere else. `timeBeginPeriod(1)` raises the *timer* resolution, which
-`NtQueryTimerResolution` duly reports as 1.0 ms; it leaves the clock's increment at 15.6252 ms, and the measured rate
-with the period held is 38.78 Hz against 37.97 Hz without it. **That is why `timeBeginPeriod` does nothing for
-`SetTimer`** - the two are different clocks.
+the clock's increment in force as **15.6252 ms**, and every `WM_TIMER`'s own `GetMessageTime` - the tick count the
+message was generated at - sits on that grid and nowhere else. The harness's `platform-timer-grid` run prints them;
+2000 of them came back stepping 16, 31, 32 and 47 milliseconds and nothing between, which is one, two, two and three
+scans of a 15.6252 ms clock:
+
+```
+339172531(+31) 339172562(+16) 339172578(+31) 339172609(+16) 339172625(+31) 339172656(+31)
+339172687(+31) 339172718(+16) 339172734(+31) 339172765(+16) 339172781(+31) 339172812(+31)
+339172843(+32) 339172875(+31) 339172906(+31) 339172937(+16) 339172953(+31) 339172984(+31)
+```
+
+`timeBeginPeriod(1)` raises the *timer* resolution, which `NtQueryTimerResolution` duly reports as 1.0 ms; it leaves
+the clock's increment at 15.6252 ms, and the measured rate with the period held is 38.78 Hz against 37.97 Hz without
+it. **That is why `timeBeginPeriod` does nothing for `SetTimer`** - the two are different clocks.
 
 **Two: the schedule is re-armed at each expiry, not absolute.** A handler that burns 20 or 25 ms of processor before
 the next message is taken leaves the mean at 26.7-27.0 ms; an absolute schedule would have become handler-bound at
@@ -70,8 +78,14 @@ step edges - 15 and 16, 31 and 32, 47 - where the mean is a *mixture* of two ste
 carried in whole milliseconds of tick count while the grid's step is 15.625 ms, so the grid's tick-count values
 advance 16, 15, 16, 16, 15, 16, 16, 15 and a request of 16 ms is satisfied in one scan or in two depending on where
 in that cycle the expiry fell - and which way the boundary case goes varies. The resulting sequence of one-scan and
-two-scan intervals is **not periodic**: its repeat rate at every lag from 1 to 128 is 0.49 to 0.66 against a chance
-level of about 0.53. It is a frame-by-frame coin toss.
+two-scan intervals is **not periodic**: over 2000 frames its repeat rate at every lag from 1 to 128 is **0.45 to
+0.59**, against a chance level of **0.55** for this mixture, which the same run computes. It is a frame-by-frame coin
+toss, and there is no beat anything could be designed around.
+
+```
+2121222121222221221222221221212212211221221222221212222221221222
+2221122212122222212212212122221211221212221122222212122122121212
+```
 
 That is the whole answer, and it has a blunt consequence. **`kFrameMilliseconds = 16` is the worst value in the range
 1 to 30.** One millisecond less is 59 Hz, two less is 63 Hz, and two more is a clean 31.7 Hz; 16 is the first value
@@ -307,7 +321,8 @@ made and ticked: that test holds that the frames arrive and keep arriving inside
 a rate.
 
 `tools/frame-pacing-harness.cpp` is the hand-run measurement, built with the suites so that it cannot rot and
-asserting nothing. It takes the clocks, the platform timer, the period sweep and the schedule test that settle the
-`WM_TIMER` mechanism above, and the display clock at a few divisors. It needs nothing of Skia or the views and builds
+asserting nothing. Its runs are the clocks and the displays attached to the desktop, the platform timer, the
+period sweep, the schedule test and the grid test that settle the `WM_TIMER` mechanism above, and the display clock at
+a few divisors - every figure on this page, and every claim the mechanism rests on. It needs nothing of Skia or the views and builds
 in seconds, including from one compiler command on a machine with no configured build tree - the command is in its own
 opening comment.
