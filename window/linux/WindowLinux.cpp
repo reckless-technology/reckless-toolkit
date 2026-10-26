@@ -1539,6 +1539,36 @@ class LinuxChildWindow final : public ChildWindow
         frame_ = std::move(frame);
     }
 
+    /** The platform's own timer, always, and the reason said: **there is no display clock to pace on here**, and the
+        toolkit does not pretend otherwise.
+
+        X hands a window's pixels over with XPutImage, which is a copy and not a presentation, so there is nothing to
+        put on a vertical blank and nothing that reports one. The two mechanisms that would report one are out of
+        reach for what they cost. GLX or EGL would need a GL context and a swap, which this path has not got and
+        which three shipped products' pixels do not go through. The X11 Present extension would need the view tree
+        rastered into a Pixmap and handed over with PresentPixmap against a target media stream count, which is a
+        different present path, a new library on every consumer's link line, and a rewrite of the dirty-rectangle
+        handling this file is largely about - for phase alone, since the Linux loop's rate is already right: the
+        app's poll loop keeps its deadline in a steady clock and advanced it by the period, which measured 16.000 ms
+        with a standard deviation of 0.306 ms, where Windows' window timer measured 26.9 ms and 7.1 ms
+        (docs/window/frame-pacing.md). What display synchronisation would buy on Linux is phase, not rate, and the
+        honest answer until that is worth its cost is this one.
+        @param request  what the product asks for, which is read for nothing but its `pacing`
+        @return         the platform timer, with FramePacingFallback::kNoDisplayClock where the display's clock was
+                        asked for */
+    FramePacingState SetFramePacing(const FrameRequest &request) override
+    {
+        pacing_ = ChosenPacing(request, DisplayClockReading{}); // has_clock false: there is none to read
+        return pacing_;
+    }
+
+    /** What the window is pacing on: the platform's timer, with the reason the display's clock was not to be had.
+        @return  the pacing in force */
+    FramePacingState FramePacingNow() const override
+    {
+        return pacing_;
+    }
+
     /** Viewable: mapped, with every window above it mapped - a window manager unmaps a minimised top-level window,
         which leaves it unviewable. A round trip to the server a frame.
         @return  true when the window is viewable */
@@ -1634,6 +1664,9 @@ class LinuxChildWindow final : public ChildWindow
     std::unique_ptr<LinuxConnection> connection_; ///< the connection, shared with the popups
     std::unique_ptr<ChildSurface>    surface_;    ///< the child's surface, dropped before the connection
     std::function<void()>            frame_;      ///< the frame callback; empty for none
+    /** What the window is pacing on: the platform's timer always, with the reason the display's clock was not to be
+        had where a product asked for it (SetFramePacing). */
+    FramePacingState pacing_{};
 };
 
 namespace
