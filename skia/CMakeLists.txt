@@ -171,7 +171,9 @@ target_link_libraries(reckless_window_api INTERFACE reckless_gfx_skia reckless_w
 
 if(APPLE)
     set(RECKLESS_WINDOW_SOURCE "${RECKLESS_TOOLKIT_DIR}/window/mac/WindowMac.mm" CACHE INTERNAL "")
-    set(reckless_window_system "-framework AppKit" "-framework QuartzCore"
+    # CoreVideo is the display link a Mac below 14 paces a frame callback on (ChildWindow::SetFramePacing); Core
+    # Animation's, from 14, is QuartzCore's.
+    set(reckless_window_system "-framework AppKit" "-framework CoreVideo" "-framework QuartzCore"
                                "-framework UniformTypeIdentifiers")
 elseif(WIN32)
     set(RECKLESS_WINDOW_SOURCE "${RECKLESS_TOOLKIT_DIR}/window/win/WindowWin.cpp" CACHE INTERNAL "")
