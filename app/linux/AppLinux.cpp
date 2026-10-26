@@ -4,7 +4,7 @@
 // drags it to told back (ConfigureNotify) - closed through the window manager's WM_DELETE_WINDOW, a dialog marked as
 // one and kept over its owner, each carrying the series' app icon as _NET_WM_ICON (decoded by Skia from the module's
 // own copy), which the task bar and the switcher show, and each of a visual whose pixels the child window's raster is
-// laid out in, whatever the server's default; and the event loop - a poll over the app's connection, the descriptors
+// laid out in, whatever the server's default; and the event loop - a ppoll over the app's connection, the descriptors
 // and timers the child windows ask for (window/linux/WindowLinux.cpp runs on the loop a plug-in's host would
 // give it, and here the app gives it), a pipe the termination signals write to, so a session that ends saves what the
 // app keeps, the calls after the current event, and a pipe a post from another thread writes to, which wakes the poll
@@ -27,6 +27,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -374,7 +375,7 @@ class LinuxWindow final : public AppWindow
     bool                          dialog_;  ///< a dialog: typed as one, Escape closes it.
 };
 
-/** The Standalone's platform on Linux: the app's X11 connection, its windows by id, and the loop - a poll over the
+/** The Standalone's platform on Linux: the app's X11 connection, its windows by id, and the loop - a ppoll over the
     connection, the signal pipe and the child windows' descriptors, with their timers and the calls after the current
     event. Made by AppPlatform::Create. Main thread. */
 class LinuxPlatform final : public AppPlatform
@@ -632,8 +633,15 @@ class LinuxPlatform final : public AppPlatform
                 fds.push_back({watch.fd, POLLIN, 0});
                 tokens.push_back(token);
             }
+            const std::optional<std::chrono::nanoseconds> wait = Wait();
+            timespec                                      until{};
+            if (wait)
+            {
+                until.tv_sec  = static_cast<time_t>(wait->count() / 1000000000);
+                until.tv_nsec = static_cast<long>(wait->count() % 1000000000);
+            }
             XFlush(display_);
-            poll(fds.data(), static_cast<nfds_t>(fds.size()), Timeout());
+            ppoll(fds.data(), static_cast<nfds_t>(fds.size()), wait ? &until : nullptr, nullptr);
             if ((fds[2].revents & POLLIN) != 0)
             {
                 char bytes[64];
@@ -788,25 +796,30 @@ class LinuxPlatform final : public AppPlatform
         }
     }
 
-    /** The milliseconds until the next timer is due, 0 with calls waiting, -1 with neither.
-        @return the poll timeout, in milliseconds, at most 1000 */
-    int Timeout() const
+    /** How long the loop may wait before the next timer is due: none at all with calls waiting, and no limit with
+        neither a call nor a timer. To the nanosecond, which is why the loop waits in `ppoll` rather than `poll`:
+        `poll` takes whole milliseconds, and a wait rounded down is a wait that ends before the timer is due. A timer
+        fires at or after its due time (RunDueTimers), so such a wait fires nothing and is made again at once - the
+        sub-millisecond remainder of every tick spent in a run of waits that return immediately, thousands of them a
+        frame at a frame timer's rate, each with an XFlush of the connection behind it.
+        @return the wait, at most a second; empty for no limit */
+    std::optional<std::chrono::nanoseconds> Wait() const
     {
         if (!calls_.empty())
         {
-            return 0;
+            return std::chrono::nanoseconds::zero();
         }
         if (timers_.empty())
         {
-            return -1;
+            return std::nullopt;
         }
         auto next = timers_.begin()->second.due;
         for (const auto &[token, timer] : timers_)
         {
             next = std::min(next, timer.due);
         }
-        const auto wait = std::chrono::duration_cast<std::chrono::milliseconds>(next - Clock::now()).count();
-        return static_cast<int>(std::clamp<long long>(wait, 0, 1000));
+        const auto wait = std::chrono::duration_cast<std::chrono::nanoseconds>(next - Clock::now());
+        return std::clamp(wait, std::chrono::nanoseconds::zero(), std::chrono::nanoseconds(std::chrono::seconds(1)));
     }
 
     std::string                       name_;             ///< the app's name, the windows' class.
