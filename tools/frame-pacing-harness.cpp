@@ -16,6 +16,8 @@
 //                             compositor says about its own: the grid everything else lands on
 //   platform-timer            the platform's own frame timer, exactly as the window arranges it: the baseline
 //   platform-timer-sweep      the mean interval against the period asked for, which is what explains the baseline
+//   platform-timer-grid       the tick instants WM_TIMER is generated at, and whether the scans a frame spans
+//                             make a pattern anything could be designed around
 //   platform-timer-schedule   whether the platform timer's schedule is absolute or re-armed at each expiry
 //   display-clock             the display's own clock, as window/win/WindowWin.cpp waits on it (Windows only)
 //
@@ -247,8 +249,11 @@ HWND MakeWindow()
     @param elapse             the period asked for, in milliseconds
     @param frames             how many messages to take
     @param burn_milliseconds  how long each handler burns before the next message is taken
+    @param message_times      filled with each message's own GetMessageTime, which is the tick count the message was
+                              generated at; null for none
     @return                   the intervals, in milliseconds */
-std::vector<double> PlatformTimerIntervals(HWND window, UINT elapse, int frames, double burn_milliseconds)
+std::vector<double> PlatformTimerIntervals(HWND window, UINT elapse, int frames, double burn_milliseconds,
+                                           std::vector<long> *message_times = nullptr)
 {
     std::vector<double> intervals;
     if (SetTimer(window, 1, elapse, nullptr) == 0)
@@ -273,6 +278,10 @@ std::vector<double> PlatformTimerIntervals(HWND window, UINT elapse, int frames,
         }
         last = now;
         ++taken;
+        if (message_times != nullptr)
+        {
+            message_times->push_back(static_cast<long>(message.time));
+        }
         for (const double until = now + burn_milliseconds / 1000.0; NowSeconds() < until;)
         {
             // burned, so the next message cannot be taken before this
@@ -483,6 +492,83 @@ void ReportPlatformTimerSweep()
 #endif
 }
 
+/** The grid WM_TIMER is generated on, and whether the scans a frame spans make a pattern: the two readings the
+    mechanism in docs/window/frame-pacing.md rests on that the figures above do not show. */
+void ReportPlatformTimerGrid()
+{
+#if defined(_WIN32)
+    HWND window = MakeWindow();
+    if (window == nullptr)
+    {
+        return;
+    }
+    DWORD increment  = 0;
+    DWORD resolution = 0;
+    BOOL  disabled   = FALSE;
+    GetSystemTimeAdjustment(&increment, &resolution, &disabled);
+    const double        grid = increment / 10000.0;
+    std::vector<long>   message_times;
+    std::vector<double> intervals =
+        PlatformTimerIntervals(window, kFrameMilliseconds, kFramesMeasured, 0.0, &message_times);
+    std::printf("\nthe grid WM_TIMER is generated on, SetTimer(%d), %zu messages\n", kFrameMilliseconds,
+                message_times.size());
+    std::printf("  each message's own GetMessageTime - the tick count it was generated at - and the step after it.\n");
+    std::printf("  Every one is floor(%.4f k) where the mechanism holds: the messages are generated at the system\n",
+                grid);
+    std::printf("  clock's tick instants and nowhere else, which is why timeBeginPeriod cannot help them.\n    ");
+    for (std::size_t i = 0; i + 1 < message_times.size() && i < 48; ++i)
+    {
+        std::printf("%ld(+%ld) ", message_times[i], message_times[i + 1] - message_times[i]);
+        if ((i + 1) % 6 == 0)
+        {
+            std::printf("\n    ");
+        }
+    }
+    std::printf("\n");
+
+    // Each interval in scans of the grid, and whether that sequence repeats at any lag: a mechanism with a beat
+    // would, and a one-millisecond ambiguity band at the step edge does not.
+    std::vector<int> scans;
+    for (double one : intervals)
+    {
+        scans.push_back(grid > 0.0 ? static_cast<int>(std::lround(one / grid)) : 0);
+    }
+    std::printf("  the first 128 intervals, in scans of the grid:\n    ");
+    for (std::size_t i = 0; i < scans.size() && i < 128; ++i)
+    {
+        std::printf("%d", scans[i]);
+        if ((i + 1) % 64 == 0)
+        {
+            std::printf("\n    ");
+        }
+    }
+    std::printf("\n  how often the sequence repeats itself at each lag (1.00 would be a beat to design around):\n   ");
+    for (int lag : {1, 2, 3, 4, 5, 6, 7, 8, 16, 32, 42, 64, 128})
+    {
+        int same  = 0;
+        int total = 0;
+        for (std::size_t i = 0; i + static_cast<std::size_t>(lag) < scans.size(); ++i)
+        {
+            ++total;
+            same += scans[i] == scans[i + static_cast<std::size_t>(lag)] ? 1 : 0;
+        }
+        std::printf("  %d:%.2f", lag, total > 0 ? static_cast<double>(same) / total : 0.0);
+    }
+    // And the chance level the lags are to be read against: two sequences of these proportions, shuffled.
+    double chance = 0.0;
+    for (int of : {1, 2, 3, 4})
+    {
+        const auto   many  = std::count(scans.begin(), scans.end(), of);
+        const double share = scans.empty() ? 0.0 : static_cast<double>(many) / static_cast<double>(scans.size());
+        chance += share * share;
+    }
+    std::printf("\n  chance level for this mixture: %.2f\n", chance);
+    DestroyWindow(window);
+#else
+    std::printf("\nthe grid is Windows' question: the deadline elsewhere is the toolkit's own and has none\n");
+#endif
+}
+
 /** Whether the platform timer's schedule is absolute or re-armed at each expiry: a handler that burns longer than the
     period makes an absolute schedule handler-bound, and leaves a re-armed one on its grid. */
 void ReportPlatformTimerSchedule()
@@ -564,6 +650,10 @@ int main(int argc, char **argv)
     if (asked("platform-timer-sweep"))
     {
         ReportPlatformTimerSweep();
+    }
+    if (asked("platform-timer-grid"))
+    {
+        ReportPlatformTimerGrid();
     }
     if (asked("platform-timer-schedule"))
     {

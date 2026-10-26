@@ -173,6 +173,13 @@ struct DisplayClockReading
     bool does_rate_hold_still{true};
 };
 
+/** The refresh rate a window would divide, or the reason there is none to divide (ChosenRefreshRate). */
+struct RefreshRateChoice
+{
+    double              hertz{0.0};                                    ///< the rate to divide; 0 where there is none
+    FramePacingFallback why{FramePacingFallback::kRefreshRateUnknown}; ///< kNone where `hertz` is a rate
+};
+
 /** The refresh rate to divide, from the two readings a platform can take, and the reason where there is none: the
     compositor's own where it is believable, the window's display's where the compositor gave none, and none at all
     where neither can be believed or the two disagree. The compositor is preferred because it is the clock the frames
@@ -180,16 +187,7 @@ struct DisplayClockReading
     compositor reports at 240 is the case the disagreement catches, and falling back there is right: dividing the
     wrong panel's rate would be worse than not pacing at all.
     @param reading  what the platform said
-    @return         the rate in hertz and FramePacingFallback::kNone, or 0 and the reason */
-struct RefreshRateChoice
-{
-    double              hertz{0.0};                                    ///< the rate to divide; 0 where there is none
-    FramePacingFallback why{FramePacingFallback::kRefreshRateUnknown}; ///< kNone where `hertz` is a rate
-};
-
-/** RefreshRateChoice from a platform's reading; see RefreshRateChoice.
-    @param reading  what the platform said
-    @return         the rate to divide, or the reason there is none */
+    @return         the rate in hertz and FramePacingFallback::kNone, or 0 and the reason there is none */
 inline RefreshRateChoice ChosenRefreshRate(const DisplayClockReading &reading) noexcept
 {
     const bool is_compositor_believable = IsBelievableRefreshRate(reading.compositor_hertz);
