@@ -309,8 +309,9 @@ in seven dropped, the timestamps stay on the panel while a count of callbacks en
 paces nothing itself answers the platform's timer, with `kNotAsked` until someone asks and `kNoDisplayClock` once
 someone has.
 
-`skia/tests/test_child_window.cpp`, the `child_window` CTest (label `window`), holds a **real** window on whatever
-display clock the machine has - and **asserts no rate at all**, because a timing distribution is not a pass or a
+`skia/tests/test_child_window.cpp` and `skia/tests/test_child_window_mac.mm`, the `child_window` CTest (label
+`window`), hold a **real** window on whatever display clock the machine has - macOS's half is Objective-C++ because
+it reaches AppKit's run loop, and `tests/FramePacingRule.h` is the assertion both halves make - and **asserts no rate at all**, because a timing distribution is not a pass or a
 fail and none of the three CI runners is a machine to measure one on. The Windows runners are services on a window
 station that shows nothing, where the compositor's timing is very probably not to be had; the Linux job runs under
 Xvfb, which has no vertical blank. So each test holds whichever branch its machine reached - on the display's clock,
