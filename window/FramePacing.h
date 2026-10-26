@@ -4,8 +4,9 @@
 // is what every window here has run on since the toolkit began, or the display's own clock - the frame delivered on
 // every Nth refresh of the display in front of the person, so that each frame drawn is shown for exactly N refresh
 // periods. A product asks for N, never for a frequency: a frequency has no relationship to the panel, and a frame
-// period that is not a whole number of refresh periods is held for six composition frames and then seven, which is
-// what the eye reads as stutter (docs/window/frame-pacing.md has the measurements).
+// period that is not a whole number of refresh periods is held for one count of refreshes and then another - one and
+// two on a 60 Hz panel, six and seven on a 240 Hz one - and that alternation is what the eye reads as stutter
+// (docs/window/frame-pacing.md has the measurements).
 //
 // Everything a window decides about pacing is here, and none of it needs a display, a compositor or a thread: the
 // rate to divide and whether it can be believed, whether the display holds still enough to have a period at all, the
