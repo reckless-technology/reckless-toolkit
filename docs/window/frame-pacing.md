@@ -326,7 +326,7 @@ fail and none of the three CI runners is a machine to measure one on. The Window
 station that shows nothing, where the compositor's timing is very probably not to be had; the Linux job runs under
 Xvfb, which has no vertical blank. So each test holds whichever branch its machine reached - on the display's clock,
 a believable rate and the divisor honoured; on the platform's timer, a reason that is neither `kNone` nor `kNotAsked`
-and no rate claimed - and **prints the probe**, so one run of the suite says which branch it was on. Each of them runs twice, once having asked for nothing and once having asked for the display's clock, and holds that the frames arrive on the window's own thread either way - which is how the unchanged path is held rather than inferred. macOS is the one
+and no rate claimed - and **prints the probe**, so one run says which branch it was on. CTest keeps a passing test's output to itself, so the probe is read with `ctest --preset windows -V -R child_window`, or by running `reckless_child_window_test` itself. Each of them runs twice, once having asked for nothing and once having asked for the display's clock, and holds that the frames arrive on the window's own thread either way - which is how the unchanged path is held rather than inferred. macOS is the one
 CI platform with a real window server, which the window suites already rely on, so there a display link is genuinely
 made and ticked: that test holds that the frames arrive and keep arriving inside a generous window, and still never
 a rate.
