@@ -341,9 +341,8 @@ prints the list, so a run with a name that is nowhere says what is there.
 
 ```
 set RECKLESS_MIDI_KEYBOARD=Impact LX88+
-build	estseckless_audio_device_test.exe --gtest_filter=MidiInputs.*Person*
+build\tests\reckless_audio_device_test.exe --gtest_filter=MidiInputs.*Person*
 ```
-
 
 Windows reaches a multi-channel interface differently on each API, which decides how the cable is named: **ASIO sees
 one device** with every channel on it, so the loop is `3:1` as on CoreAudio; **Windows Audio sees a stereo endpoint per
