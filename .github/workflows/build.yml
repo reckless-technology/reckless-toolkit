@@ -317,8 +317,8 @@ jobs:
       - name: Test
         run: ctest --test-dir build/ci-toolkit-minimal --output-on-failure -j "$(nproc)"
 
-  # Every product built on the toolkit - vst-plugins, Reckless IR Capture, Reckless Amphitheater, Knect 4 and Reckless
-  # Sudoku - at the head of its default branch with this pull request's toolkit in place of the commit it pins,
+  # Every product built on the toolkit - vst-plugins, Reckless IR Capture, Reckless Amphitheater, Knect 4, Reckless
+  # Sudoku and Reckless Sentinel - at the head of its default branch with this pull request's toolkit in place of the commit it pins,
   # configured as the product configures itself and a few of its targets built (tools/check-consumers.sh): a target, a
   # CTest or an option of the same name as one of a product's, a header a product's own shadows, or a function a product
   # calls that moved fails the toolkit's pull request, not the product's next bump. Linux alone, the cheapest of the three platforms;
@@ -361,6 +361,7 @@ jobs:
       - name: Every consumer, on this toolkit
         env:
           CONSUMER_VST_PLUGINS_DEPLOY_KEY: ${{ secrets.CONSUMER_VST_PLUGINS_DEPLOY_KEY }}
+          CONSUMER_SENTINEL_DEPLOY_KEY: ${{ secrets.CONSUMER_SENTINEL_DEPLOY_KEY }}
           JOBS: ${{ steps.cpp.outputs.jobs }}
         run: >
           tools/check-consumers.sh build/ci-toolkit-consumers "${{ steps.cpp.outputs.deps }}/consumers"
