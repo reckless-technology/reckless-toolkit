@@ -118,7 +118,10 @@ working for every consumer: `sign`'s bundle kinds, the identity check and the ex
   `CMAKE_CURRENT_SOURCE_DIR` / `CMAKE_CURRENT_LIST_DIR`; machine-wide settings only under `PROJECT_IS_TOP_LEVEL`;
   `reckless_warnings` only if the product has not defined it. Keep the existing target names and the bare-name include
   style: a rename breaks every consumer.
-- **No libm transcendental per sample on the audio thread**: `FastTrig.h` and `FastExpLog.h`, or a recurrence.
+- **Nothing here is signal processing.** The toolkit is the GUI, the app and the audio **device** layer; the suite's
+  DSP went back to vst-plugins' `common/dsp/`, which is where `FastTrig.h` and `FastExpLog.h` now are, and
+  `dsp-embedded` is bare-metal firmware code, a different thing again. A building block that processes samples
+  belongs in one of those, not here.
 - Double past the host boundary; `#pragma once`; full, descriptive names; every target links `reckless_warnings`, and
   the code stays warning-free on gcc, clang and MSVC (read CI's logs).
 - **Documented where declared**: every class, function, member, parameter (`@param`), return (`@return`) and template
