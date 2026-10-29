@@ -188,7 +188,7 @@ TEST(HidPaths, AnInstanceIsBetweenTheSecondAndThirdHash)
     EXPECT_EQ(InstanceOf(std::string_view("a#b#c")), "c") << "no third hash: to the end";
     EXPECT_EQ(InstanceOf(std::string_view("a#b")), "");
     EXPECT_EQ(InstanceOf(std::string_view("abc")), "");
-    EXPECT_EQ(InstanceOf(std::wstring_view(L"a#b#éx#")), "?x") << "anything not ASCII is a question mark";
+    EXPECT_EQ(InstanceOf(std::wstring_view(L"a#b#\u00E9x#")), "?x") << "anything not ASCII is a question mark";
 }
 
 TEST(XInputPads, APadIsTenButtonsSixAxesAndAHat)
