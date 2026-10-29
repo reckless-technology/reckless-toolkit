@@ -33,7 +33,8 @@ after setting, as normal variables, whichever options follow the product's (CMP0
 an option):
 
 ```
-git submodule add git@github.com:reckless-technology/reckless-toolkit.git external/reckless-toolkit
+git subtree add --prefix external/reckless-toolkit https://github.com/reckless-technology/reckless-toolkit.git main --squash
+tools/toolkit-pull.sh   # every pull after it, flattened into the one commit a linear history takes
 ```
 
 ```cmake
@@ -43,9 +44,11 @@ add_subdirectory(external/reckless-toolkit)
 target_link_libraries(my_product PRIVATE reckless_common_core reckless_common_view reckless_window)
 ```
 
-The repository is private, so a product's CI fetches the submodule with a read-only deploy key on this repository, its
-private half a secret of the product's repository; a person's clone fetches it with their own credentials
-(`git clone --recurse-submodules`, or `git submodule update --init` after a plain clone).
+Nothing is fetched to get the toolkit: its files are committed in the product, so a clone needs nothing after it and
+`git submodule update` has nothing to do. This repository is public, so neither a person nor a product's CI needs a
+credential of ours to read it. The other way round, this repository's CI reads each product for its `consumers` job,
+and there a private product is read through a read-only deploy key on it whose private half is a secret here, while a
+public one is cloned over https with no key at all (`tools/check-consumers.sh` chooses per product).
 
 ## The rules
 
@@ -54,9 +57,9 @@ private half a secret of the product's repository; a person's clone fetches it w
 - **Tuning numbers come from the products.** A number a shared class needs comes in from the product that uses it - a
   template argument, a small design struct of `static constexpr` members the product defines, or a function argument -
   never as a default here.
-- **Every consumer's suites run before a consumer's pointer moves.** A change here is merged when this repository's CI
-  is green; a product moves its submodule to it only through its own pull request, whose CI builds the product and runs
-  its suites on the new toolkit.
+- **Every consumer's suites run before a consumer takes the change.** A change here is merged when this repository's CI
+  is green; a product pulls it in with its own `tools/toolkit-pull.sh`, in a pull request of its own, whose CI builds
+  the product and runs its suites on the new toolkit.
 - **The toolkit stands alone.** Every path is from `CMAKE_CURRENT_SOURCE_DIR` or `CMAKE_CURRENT_LIST_DIR`; machine-wide
   settings (C++20, the static MSVC runtime, the macOS floor) are set only when it is the top-level project; a shared
   helper target (`reckless_warnings`) is defined only when the product has not.
@@ -85,7 +88,8 @@ Ninja, clang-format 22.1.8 and gcovr - and set the git hooks (`core.hooksPath .g
 environment" task runs them. `tools/coverage-windows.ps1` measures coverage natively on Windows, as CI's coverage job
 does on Linux. Configured on its own it sets C++20, the static MSVC runtime and the macOS floor (13.3).
 
-CI (`.github/workflows/build.yml`, on the organisation's own runners) builds and tests it top-level on Linux, Windows and
+CI (`.github/workflows/build.yml`, on GitHub's hosted images, each pinned - this repository is public, and the
+organisation's self-hosted pool does not serve a public repository) builds and tests it top-level on Linux, Windows and
 macOS (universal, every binary held to both slices and to the floor), again with nothing windowed and no audio device
 layer, measures coverage of the parts the toolkit's own suites test, and checks the formatting, the documents and the
 source documentation (`doxygen Doxyfile`, every class, function and member documented, no warning). Its last job, `CI`,
@@ -150,6 +154,7 @@ system's clipboard only in CI or where `RECKLESS_TEST_CLIPBOARD=1` asks). The en
 `RECKLESS_AUDIO_REQUIRE` (a comma-separated list of APIs whose missing test device fails rather than skips),
 `RECKLESS_REQUIRE_WINDOW` (a window suite that finds no window fails rather than skips), `RECKLESS_NET_LIVE` (the
 network's suite reaches the internet) and `RECKLESS_RUN_MEASUREMENTS` (a long measurement runs under a sanitizer too).
+
 ## Release signing
 
 Every product's release signs with the same three files, run from where the product holds the toolkit

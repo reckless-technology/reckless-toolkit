@@ -5,8 +5,8 @@ functions and suites; this file is how work here is done.
 
 ## What this is
 
-The Reckless Technology toolkit: the C++20 library the company's products share - JSON, text and the user's files
-namespace `reckless`), JSON, text and the user's files (`core/`), the drawing layer (`gfx/`) and the series' look
+The Reckless Technology toolkit: the C++20 library the company's products share (all of it in the
+namespace `reckless`): JSON, text and the user's files (`core/`), the drawing layer (`gfx/`) and the series' look
 (`look/`), the views (`view/`) and the series' panel (`panel/`), the child window on Skia (`window/`, `skia/`), an app's
 platform layer (`app/`), the audio device layer (`audio/`), the controllers a program reads beside the keyboard
 (`input/`), the network (`net/`), the update check every product runs
@@ -39,8 +39,6 @@ settled by measurement so they are not re-argued. What is left is running the ha
 
 ## The consumers
 
-| Product | Repository | State |
-|---|---|---|
 **Every consumer carries the toolkit as a git subtree** at `external/reckless-toolkit` - no submodule anywhere any
 more, the last of them converted on 2026-10-24. A pull is made by the consumer's own `tools/toolkit-pull.sh`, which
 flattens it into one linear commit, because these repositories require a linear history and are rebase-only. So a
@@ -112,10 +110,10 @@ working for every consumer: `sign`'s bundle kinds, the identity check and the ex
   parameter, a template argument or a class instead.
 - **Tuning numbers come from the products**: a template argument, a design struct of `static constexpr` members the
   product defines, or a function argument - never a default here.
-- **Every consumer's suites are run before a consumer's submodule pointer moves.** A change here lands through a pull
+- **Every consumer's suites are run before a consumer takes the change.** A change here lands through a pull
   request when this CI is green - its `consumers` job has configured every product on it and built a few of each one's
-  targets, so a clash of names or a moved header shows here first - and each product then moves its pointer in a pull
-  request of its own, whose CI builds and tests it whole on the new toolkit.
+  targets, so a clash of names or a moved header shows here first - and each product then pulls it in with its own
+  `tools/toolkit-pull.sh`, in a pull request of its own, whose CI builds and tests it whole on the new toolkit.
 - **Nothing here knows a product.** No include, link or path of a product; CMake paths from
   `CMAKE_CURRENT_SOURCE_DIR` / `CMAKE_CURRENT_LIST_DIR`; machine-wide settings only under `PROJECT_IS_TOP_LEVEL`;
   `reckless_warnings` only if the product has not defined it. Keep the existing target names and the bare-name include
