@@ -58,6 +58,7 @@ INPUT                  = README.md \
                          audio \
                          core \
                          gfx \
+                         input \
                          licence \
                          look \
                          net \
@@ -88,6 +89,7 @@ INCLUDE_PATH           = core \
                          panel \
                          window \
                          audio \
+                         input \
                          net \
                          licence \
                          update \

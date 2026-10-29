@@ -367,8 +367,9 @@ jobs:
           tools/check-consumers.sh build/ci-toolkit-consumers "${{ steps.cpp.outputs.deps }}/consumers"
           "${{ steps.python.outputs.python }}"
 
-  # Line coverage of the parts the toolkit's own suites test - core/, gfx/ (not its Skia canvas), look/, view/, net/,
-  # update/ and licence/ - from an instrumented, unoptimised gcc build with nothing windowed, every suite run but the
+  # Line coverage of the parts the toolkit's own suites test - core/, gfx/ (not its Skia canvas), input/ (not the
+  # translation units that meet a platform's controllers, which only a controller exercises: the suites hold every
+  # decision of the back ends in the headers instead), look/, view/, net/, update/ and licence/ - from an instrumented, unoptimised gcc build with nothing windowed, every suite run but the
   # device suite (whose test devices are the linux job's), and gcovr reading the counters, red under the floor. CMake's
   # instrumented compiler-identification stubs (CMakeFiles/<version>/CompilerId*), which have no source and stop gcov,
   # and the fetched dependencies' objects are left out of gcovr's search. The floor, 89 %, is a little under
@@ -415,8 +416,9 @@ jobs:
         run: ctest --test-dir build/ci-toolkit-cov --output-on-failure -j "$(nproc)" -E '^audio_devices$'
       - name: Coverage, 89 % of lines or red
         run: >
-          gcovr --root . --object-directory build/ci-toolkit-cov --filter '(core|gfx|look|view|net|update|licence)/'
-          --exclude 'gfx/skia/' --exclude '.*/tests/' --gcov-ignore-parse-errors=suspicious_hits.warn
+          gcovr --root . --object-directory build/ci-toolkit-cov --filter '(core|gfx|input|look|view|net|update|licence)/'
+          --exclude 'gfx/skia/' --exclude 'input/linux/EvdevSystemPort[.]cpp' --exclude 'input/(win|mac)/.*[.]cpp'
+          --exclude '.*/tests/' --gcov-ignore-parse-errors=suspicious_hits.warn
           --gcov-exclude-directories '.*/CMakeFiles/[0-9][^/]*/.*' --gcov-exclude-directories '.*/_deps/.*'
           --txt --print-summary --fail-under-line 89 build/ci-toolkit-cov
 

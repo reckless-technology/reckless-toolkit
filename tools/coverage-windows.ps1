@@ -11,8 +11,8 @@
     through their GNU driver at --coverage -O0, so the objects carry gcov's notes and the suites write gcov's counters.
     It builds the tree, runs every suite but the device suite (whose test devices are not the floor's business), and
     reads the counters with gcovr through Visual Studio's llvm-cov in its gcov mode (--gcov-executable "llvm-cov gcov"),
-    on CI's filters - the parts the toolkit's own suites test: core/, gfx/ (not its Skia canvas), look/, view/, net/,
-    update/ and licence/ - failing under CI's floor. gcc's gcov and llvm-cov count a line's coverage a little
+    on CI's filters - the parts the toolkit's own suites test: core/, gfx/ (not its Skia canvas), input/ (not its
+    platforms' translation units), look/, view/, net/, update/ and licence/ - failing under CI's floor. gcc's gcov and llvm-cov count a line's coverage a little
     differently, and each platform compiles its own transport, so it is the percentage against the floor that
     compares, not the line counts.
 
@@ -121,10 +121,11 @@ if (-not $SkipCoverage) {
 
     # gcovr runs llvm-cov by the name it is given, so Visual Studio's LLVM goes first on the PATH for it. The filters
     # and the floor are CI's coverage job's, word for word.
-    Write-Host "== Coverage floor (core, gfx, look, view, net, update, licence: $floor % of lines)"
+    Write-Host "== Coverage floor (core, gfx, input, look, view, net, update, licence: $floor % of lines)"
     $env:PATH = "$llvm;$env:PATH"
     & $Gcovr -r . --gcov-executable 'llvm-cov gcov' --gcov-ignore-parse-errors=suspicious_hits.warn `
-        --object-directory $tree --filter '(core|gfx|look|view|net|update|licence)/' --exclude 'gfx/skia/' `
+        --object-directory $tree --filter '(core|gfx|input|look|view|net|update|licence)/' --exclude 'gfx/skia/' `
+        --exclude 'input/linux/EvdevSystemPort[.]cpp' --exclude 'input/(win|mac)/.*[.]cpp' `
         --exclude '.*/tests/' --gcov-exclude-directories '.*/CMakeFiles/[0-9][^/]*/.*' `
         --gcov-exclude-directories '.*/_deps/.*' --txt --print-summary --fail-under-line $floor $tree
     if ($LASTEXITCODE -ne 0) { throw "gcovr failed (exit $LASTEXITCODE): under the floor, or it could not read the counters" }

@@ -8,7 +8,8 @@ functions and suites; this file is how work here is done.
 The Reckless Technology toolkit: the C++20 library the company's products share - JSON, text and the user's files
 namespace `reckless`), JSON, text and the user's files (`core/`), the drawing layer (`gfx/`) and the series' look
 (`look/`), the views (`view/`) and the series' panel (`panel/`), the child window on Skia (`window/`, `skia/`), an app's
-platform layer (`app/`), the audio device layer (`audio/`), the network (`net/`), the update check every product runs
+platform layer (`app/`), the audio device layer (`audio/`), the controllers a program reads beside the keyboard
+(`input/`), the network (`net/`), the update check every product runs
 (`update/`: the check, a product's description and the one factory its checker comes from, and the Updates menu) and
 the licence (`licence/`), with the artwork (`assets/`), the suites (`tests/`) and the CMake helpers (`cmake/`). Every
 directory is an include directory and a header is included by its bare name (`"View.h"`), so the include namespace is
@@ -165,7 +166,7 @@ deploy keys, links this checkout in at each one's `external/reckless-toolkit`, c
 builds a few of its targets - vst-plugins' `reckless_update_shared` and `reckless_plugin_view_test`, IR Capture's
 `ir_capture_ui`, Amphitheater's `amphitheater_gui`, Knect 4's `knect4_gui`, Sudoku's `sudoku_gui`, Sentinel's `RecklessSentinel` - so a target, CTest or option named as a
 product's, a header a product's shadows, or a moved function fails here), `coverage` (gcc, gcovr on `core/`, `gfx/` but
-its Skia canvas, `look/`, `view/`, `net/`, `update/` and `licence/`, red under the floor `--fail-under-line` names),
+its Skia canvas, `input/` but its platforms' translation units, `look/`, `view/`, `net/`, `update/` and `licence/`, red under the floor `--fail-under-line` names),
 `format`, `doxygen` and `CI`, the aggregate the ruleset requires. Documentation alone builds nothing.
 `RECKLESS_UPDATE_CHECK=off` everywhere. Nothing is kept between runs: each job builds from nothing and fetches what it
 needs. `.github/dependabot.yml` watches the actions' majors; its
