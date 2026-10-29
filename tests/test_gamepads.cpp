@@ -86,7 +86,7 @@ TEST(GamepadControlName, NamesCountFromOneAsADevicesOwnLabelsDo)
     using reckless::input::GamepadControlName;
     EXPECT_EQ(GamepadControlName(Control(GamepadControlKind::kButton, 3)), "Button 4");
     EXPECT_EQ(GamepadControlName(Control(GamepadControlKind::kAxisPositive, 1)), "Axis 2 +");
-    EXPECT_EQ(GamepadControlName(Control(GamepadControlKind::kAxisNegative, 0)), "Axis 1 −")
+    EXPECT_EQ(GamepadControlName(Control(GamepadControlKind::kAxisNegative, 0)), "Axis 1 \xE2\x88\x92")
         << "a negative half's minus is U+2212, not a hyphen";
     EXPECT_EQ(GamepadControlName(Control(GamepadControlKind::kHatUp, 0)), "Hat 1 up");
     EXPECT_EQ(GamepadControlName(Control(GamepadControlKind::kHatDown, 1)), "Hat 2 down");

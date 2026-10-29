@@ -65,7 +65,7 @@ inline std::string GamepadControlName(GamepadControl control)
     case GamepadControlKind::kButton:
         return "Button " + number;
     case GamepadControlKind::kAxisNegative:
-        return "Axis " + number + " −";
+        return "Axis " + number + " \xE2\x88\x92"; // U+2212 in UTF-8, spelt out so no source code page can change it
     case GamepadControlKind::kAxisPositive:
         return "Axis " + number + " +";
     case GamepadControlKind::kHatUp:
