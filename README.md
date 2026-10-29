@@ -2,8 +2,8 @@
 
 What the company's products share, written against no one product: JSON, text and the user's files,
 the drawing layer and the series' look on it, the views a panel is made of and the series' panel on them, the child
-window a panel is shown in on Skia, an app's platform layer, the audio device layer, the network, the update check and
-the licence - with the artwork they draw, the suites that hold them and the CMake helpers a product builds its binaries
+window a panel is shown in on Skia, an app's platform layer, the audio device layer, the controllers a program reads
+beside the keyboard, the network, the update check and the licence - with the artwork they draw, the suites that hold them and the CMake helpers a product builds its binaries
 with. C++20, every directory an include directory of its own and every header included by
 its bare name (`#include "View.h"`). Free software under the GNU General Public License, version 3 or later,
 copyright Jonny Reckless, published as Reckless Technology: the copyright and what the licence does not cover in
@@ -98,6 +98,7 @@ is the check `main` requires.
 | `RECKLESS_TOOLKIT_BUILD_TESTS` | ON | The toolkit's suites, and GoogleTest, which a product's suites use too. |
 | `RECKLESS_TOOLKIT_GUI` | ON | The windowed parts: Skia (fetched), `reckless_gfx_skia`, the child window and the app platform. Off, nothing of Skia is fetched. |
 | `RECKLESS_BUILD_AUDIO` | ON | The audio device layer - the toolkit's own back ends on each platform's API - and its suites. |
+| `RECKLESS_BUILD_INPUT` | ON on its own, OFF in a product | The controller layer's back ends - evdev, XInput and HID, IOKit's HID manager - and their suite; its headers and their suite are built either way ([docs/input/gamepads.md](docs/input/gamepads.md)). |
 | `RECKLESS_ASIO`, `RECKLESS_ASIO_SDK_DIR` | ON, empty | Windows: ASIO devices on Steinberg's ASIO SDK, fetched by version and hash, or the unzipped SDK the directory names. |
 | `RECKLESS_TOOLKIT_FETCH_ASIO_SDK` | OFF | Fetch the ASIO SDK on every platform, for a product's notices, compiling none of it. |
 | `RECKLESS_DEMO_MODE` | OFF | The build's demo switch (`licence/DemoMode.h`), a compile definition on `reckless_demo_mode`. |
@@ -113,6 +114,7 @@ independent with their symbols hidden, as a plug-in module's code is.
 - `reckless_demo_mode`, `reckless_monocypher`, `reckless_common_licence`.
 - `reckless_window_headers` - the window's headers with no Skia (the shell, the licence's card); `reckless_app_headers` - the app platform's seam (`app/AppPlatform.h`) on them, with no platform compiled, for a suite's platform of its own.
 - `reckless_app_shell` - a desktop app's shell on that seam, with no platform and no renderer: its window and loop (`app/AppRun.h`), its root (`app/AppRoot.h`), the window's sizes from a View menu (`app/AppWindowSizes.h`), its theme and fonts (`app/AppTheme.h`), its widgets (`app/AppWidgets.h`) and its update check (`app/AppUpdates.h`) - [docs/app/app-shell.md](docs/app/app-shell.md).
+- `reckless_common_input` - the controller layer's headers: the interface (`input/Gamepads.h`) and what turns a platform's readings into its edges, none of it on a platform's headers; with `RECKLESS_BUILD_INPUT`, `reckless_input_devices` - the back end this platform has and `MakeGamepads` ([docs/input/gamepads.md](docs/input/gamepads.md)).
 - `reckless_common_audio`; with the audio layer, `reckless_audio_devices`, on Windows with the ASIO SDK `reckless_asio_host`, and on Linux with JACK's headers `reckless_jack_loader`.
 - With the GUI: `reckless_skia`, `reckless_gfx_skia`, `reckless_window_api` (the window's header, for an adapter), `reckless_window` (the window compiled once), `reckless_app_platform` and `reckless_app_resources` (what an app's views draw with on Skia, `app/AppResources.h`).
 - With the suites: `reckless_toolkit_test_support`, `reckless_test_host_window` (with the GUI), `GTest::gtest` and `GTest::gtest_main`, and `reckless_warnings` unless the product defined it first.
@@ -136,7 +138,10 @@ product finds the fetched stb tree with `FetchContent_GetProperties(stb)`.
 
 `core`, `gfx`, `look`, `view`, `embedded_a`, `embedded_b`, `audio`, `audio_devices` (the real APIs, run alone, needing
 each API's test device - [docs/audio/device-tests.md](docs/audio/device-tests.md); on Linux `tools/audio-test-devices.sh`
-provisions ALSA's loopback card and JACK), `net`, `update`, `licence`, `app` (the queue other threads post to the main
+provisions ALSA's loopback card and JACK), `input` (the controller layer with no controller: names, held controls,
+an axis's hysteresis, hats, each platform's arithmetic and the Linux back end on a port of the suite's own),
+`input_devices` (this build's controller back end on the machine's own controllers, and on Linux a virtual controller
+made with uinput where `/dev/uinput` is writable), `net`, `update`, `licence`, `app` (the queue other threads post to the main
 thread through, the menu bar and its shortcuts, the suites' own platform, and an app's shell on it), and with the GUI
 `skia`, `list_text_views` (the list and text views drawn on Skia, their review images written where
 `RECKLESS_SCREENSHOT_DIR` names), and `child_window`, `clipboard`, `app_menu` and `app_platform` (label `window`: this
@@ -172,6 +177,7 @@ these scripts through the environment of its release job; the scripts never prin
 | `skia/` | Skia, prebuilt from a pinned skia-pack release, and the targets on it. |
 | `app/` | An app's platform layer: the application, where a window goes, the audio settings' widgets, a post to the main thread from any other, the clipboard, and the menu bar with its shortcuts (`MenuBar.h`, drawn on Linux by `MenuBarView.h`) - [docs/app/platform.md](docs/app/platform.md); and a desktop app's shell on it - its window and loop, its root, theme, widgets, resources and update check ([docs/app/app-shell.md](docs/app/app-shell.md)). |
 | `audio/` | The audio device layer: the toolkit's own back ends on CoreAudio and CoreMIDI, Windows Audio (WASAPI), ASIO and WinMM, ALSA, the ALSA sequencer and JACK, the settings an app keeps and an offline device. |
+| `input/` | The controllers a program reads beside the keyboard - gamepads, joysticks and the arcade encoders that present themselves as USB joysticks - every control a digital one and every change of one an edge: the interface (`Gamepads.h`), what turns a platform's readings into edges with hysteresis and holds every edge to alternation (`GamepadState.h`), the HID arithmetic two back ends share (`HidUsages.h`), and a back end on evdev (`linux/`), XInput and HID (`win/`) and IOKit's HID manager (`mac/`) - [docs/input/gamepads.md](docs/input/gamepads.md). |
 | `net/` | HTTP on the platform's own stack, URLs, SHA-256 and a loopback listener for a sign-in's redirect. |
 | `update/` | The update check against the company's website: the check (`UpdateCheck.h`), a product's description and the one factory its checker comes from (`UpdateProduct.h`), and the Updates menu every product offers (`UpdatesMenu.h`) - [docs/update/update-check.md](docs/update/update-check.md). |
 | `licence/` | A licence's Ed25519 signature checked offline, the machine's store, and the build's demo switch (`DemoMode.h`). |
