@@ -62,9 +62,9 @@ held their private halves in each consumer.
 The other way round, this repository's CI reads each consumer for the `consumers` job below, and there a key is still
 needed for a **private** consumer only: `vst-plugins` and `sentinel`, each through a read-only deploy key on it
 ("reckless-toolkit (public) CI consumer guard (read-only)") whose private half is this repository's secret
-`CONSUMER_VST_PLUGINS_DEPLOY_KEY` or `CONSUMER_SENTINEL_DEPLOY_KEY`. Sentinel's is held for Actions and Dependabot
-both; vst-plugins' is held for Actions alone, so a Dependabot pull request skips it. When Sentinel goes public at ship
-its line turns `public` and its key and secrets go. `amphitheater-chess`, `knect4` and `sudoku` went public and GPL on 2026-10-24 and
+`CONSUMER_VST_PLUGINS_DEPLOY_KEY` or `CONSUMER_SENTINEL_DEPLOY_KEY`, each held for Actions and for Dependabot (a
+Dependabot pull request is given only Dependabot's secrets, and a private consumer with no key is skipped). When
+Sentinel goes public at ship its line turns `public` and its key and secrets go. `amphitheater-chess`, `knect4` and `sudoku` went public and GPL on 2026-10-24 and
 are cloned over https with no key, which is what a checkout with no key can do; `tools/check-consumers.sh` chooses per
 consumer. `CONSUMER_IR_CAPTURE_DEPLOY_KEY` is obsolete with the standalone `ir-capture` repository. A new consumer gets its line in `tools/check-consumers.sh`, its key and its secret (`ssh-keygen
 -t ed25519`, `gh repo deploy-key add` on the consumer, `gh secret set` here for both apps, the key files deleted after).
