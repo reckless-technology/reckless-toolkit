@@ -52,15 +52,18 @@ toolkit change reaches a product in two steps: merge it here, then run that scri
 | Reckless Amphitheater | `amphitheater-chess` (public) | **a subtree**, added with the GUI on and its suites and the audio layer off; its window is built on the app shell (`app/AppRun.h`, `docs/app/app-shell.md`) |
 | Knect 4 | `knect4` (public) | **a subtree**, added with the GUI and the audio layer on and its suites and ASIO off; its window is built on the app shell, its landings' clicks played through the audio layer's default output |
 | Reckless Sudoku | `sudoku` (public) | **a subtree**, added with the GUI on and its suites, the audio layer and ASIO off; its window is built on the app shell, under the series' header with the company mark |
+| Reckless Sentinel | `sentinel` (private until it ships) | **a subtree**, added with the GUI and the audio layer on and its suites and ASIO off; its window is built on the app shell, reads the raw keys, and plays through the audio layer's default output |
 
 **A consumer needs no key to read this repository any more**: it is public, so a consumer's CI clones it over https,
 and the per-consumer read-only deploy keys that used to sit here (Settings, Deploy keys) can go with the secrets that
 held their private halves in each consumer.
 
 The other way round, this repository's CI reads each consumer for the `consumers` job below, and there a key is still
-needed for a **private** consumer only: `vst-plugins`, through a read-only deploy key on it ("reckless-toolkit CI
-consumer guard (read-only)") whose private half is this repository's Actions and Dependabot secret
-`CONSUMER_VST_PLUGINS_DEPLOY_KEY`. `amphitheater-chess`, `knect4` and `sudoku` went public and GPL on 2026-10-24 and
+needed for a **private** consumer only: `vst-plugins` and `sentinel`, each through a read-only deploy key on it
+("reckless-toolkit (public) CI consumer guard (read-only)") whose private half is this repository's secret
+`CONSUMER_VST_PLUGINS_DEPLOY_KEY` or `CONSUMER_SENTINEL_DEPLOY_KEY`. Sentinel's is held for Actions and Dependabot
+both; vst-plugins' is held for Actions alone, so a Dependabot pull request skips it. When Sentinel goes public at ship
+its line turns `public` and its key and secrets go. `amphitheater-chess`, `knect4` and `sudoku` went public and GPL on 2026-10-24 and
 are cloned over https with no key, which is what a checkout with no key can do; `tools/check-consumers.sh` chooses per
 consumer. `CONSUMER_IR_CAPTURE_DEPLOY_KEY` is obsolete with the standalone `ir-capture` repository. A new consumer gets its line in `tools/check-consumers.sh`, its key and its secret (`ssh-keygen
 -t ed25519`, `gh repo deploy-key add` on the consumer, `gh secret set` here for both apps, the key files deleted after).
@@ -157,10 +160,10 @@ and whether code changed), `linux` (gcc, every suite, the device suite with `REC
 `RECKLESS_AUDIO_REQUIRE=ASIO` on the SDK fetched by name and hash), `macos` (universal arm64 and x86_64, every binary
 read with `lipo` and `vtool` for both slices and the 13.3 floor, `RECKLESS_AUDIO_REQUIRE=CoreAudio`,
 `RECKLESS_REQUIRE_WINDOW`), `minimal` (no GUI, no audio device layer), `consumers` (Linux: `tools/check-consumers.sh`
-clones vst-plugins, IR Capture, Amphitheater, Knect 4 and Sudoku at their default branches' heads through the consumer guard's
+clones vst-plugins, IR Capture, Amphitheater, Knect 4, Sudoku and Sentinel at their default branches' heads through the consumer guard's
 deploy keys, links this checkout in at each one's `external/reckless-toolkit`, configures each as its own CI does and
 builds a few of its targets - vst-plugins' `reckless_update_shared` and `reckless_plugin_view_test`, IR Capture's
-`ir_capture_ui`, Amphitheater's `amphitheater_gui`, Knect 4's `knect4_gui`, Sudoku's `sudoku_gui` - so a target, CTest or option named as a
+`ir_capture_ui`, Amphitheater's `amphitheater_gui`, Knect 4's `knect4_gui`, Sudoku's `sudoku_gui`, Sentinel's `RecklessSentinel` - so a target, CTest or option named as a
 product's, a header a product's shadows, or a moved function fails here), `coverage` (gcc, gcovr on `core/`, `gfx/` but
 its Skia canvas, `look/`, `view/`, `net/`, `update/` and `licence/`, red under the floor `--fail-under-line` names),
 `format`, `doxygen` and `CI`, the aggregate the ruleset requires. Documentation alone builds nothing.

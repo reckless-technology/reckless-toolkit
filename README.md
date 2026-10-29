@@ -24,6 +24,7 @@ vst-plugins, at its `common/dsp/`.
 | Reckless Amphitheater | `reckless-technology/amphitheater-chess` | a git subtree at `external/reckless-toolkit`, added with the GUI on and its suites off |
 | Knect 4 | `reckless-technology/knect4` | a git subtree at `external/reckless-toolkit`, added with the GUI and the audio layer on, its suites and ASIO off |
 | Reckless Sudoku | `reckless-technology/sudoku` | a git subtree at `external/reckless-toolkit`, added with the GUI on, its suites, the audio layer and ASIO off |
+| Reckless Sentinel | `reckless-technology/sentinel` | a git subtree at `external/reckless-toolkit`, added with the GUI and the audio layer on, its suites and ASIO off |
 
 A product holds the toolkit as a git subtree at `external/reckless-toolkit`, pulled by its own
 `tools/toolkit-pull.sh` (which flattens each pull into one commit, keeping the linear history those repositories
