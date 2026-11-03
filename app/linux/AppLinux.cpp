@@ -37,6 +37,7 @@
 #include "include/core/SkImage.h"
 
 #include "AppPlatform.h"
+#include "SkiaCanvas.h"
 #include "WindowPlace.h"
 
 // Xlib last: it defines macros (None, Bool, Status, Success, Always) that would reach into the headers above.
@@ -1185,6 +1186,8 @@ void LinuxWindow::Event(const XEvent &event)
 
 std::unique_ptr<AppPlatform> AppPlatform::Create(const std::string &name, std::span<const std::uint8_t> icon_png)
 {
+    // Skia started for the processor before anything of it runs: the platform is what every app makes first.
+    gfx::InitialiseSkia();
     return std::make_unique<LinuxPlatform>(name, icon_png);
 }
 } // namespace reckless::app

@@ -38,6 +38,22 @@ void SetSerifFaces(std::span<const std::uint8_t> regular_ttf, std::span<const st
     @param bold_font     the bold face's font file, copied */
 void SetMonospaceFaces(std::span<const std::uint8_t> regular_font, std::span<const std::uint8_t> bold_font);
 
+/** Skia started for this processor: `SkGraphics::Init()`, which chooses the rasteriser's code for what the processor
+    has - its AVX2 and AVX-512 routines on an x86-64 that carries them, all of them in the prebuilt Skia (skia/) - where
+    until it is called Skia draws with its plain SSE2 code, at as little as a third of the speed: a filtered, scaled
+    image drawn at 4K took 20.2 ms before and 6.1 ms after (sentinel's bench, Legion5i, 2026-11-01). Nothing changes
+    on Apple silicon or any ARM, whose code is chosen when Skia is built.
+
+    Called once a process, before anything is drawn: an app's platform calls it first thing as it is made
+    (app::AppPlatform::Create), so an app on the toolkit never calls it itself. It swaps the routines Skia's drawing
+    calls through, so it must not run while another thread draws - which is why it is the first thing an app does, not
+    something the first drawing does. Safe to call again, from any thread: after the first call each is a check of a
+    flag and nothing else. A plug-in in a host makes no platform, so is not started by it. */
+void InitialiseSkia();
+
+/** @return  whether InitialiseSkia() has been called in this process (and Skia started for this processor) */
+bool IsSkiaInitialised() noexcept;
+
 /** An image decoded from a PNG's bytes; an invalid image when they are not one - the series' images are all PNG.
     @param encoded  the PNG file's bytes
     @return        the image; invalid when the bytes are not a PNG */

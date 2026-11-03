@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "AppPlatform.h"
+#include "SkiaCanvas.h"
 #include "WindowPlace.h"
 
 // windows.h last: it defines macros (min, max, CreateWindow) that would reach into the headers above.
@@ -1177,6 +1178,8 @@ LRESULT CALLBACK MessageProcedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM
 
 std::unique_ptr<AppPlatform> AppPlatform::Create(const std::string &, std::span<const std::uint8_t>)
 {
+    // Skia started for the processor before anything of it runs: the platform is what every app makes first.
+    gfx::InitialiseSkia();
     return std::make_unique<WinPlatform>(); // the windows' icon is the executable's
 }
 } // namespace reckless::app

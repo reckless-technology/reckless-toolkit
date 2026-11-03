@@ -5,7 +5,8 @@
 // box however it is justified, an image decoded from a PNG and
 // drawn and an image of any other format declined, an offscreen picture drawn into and back, an image shrunk by the
 // look's halving to the average of every pixel it covers, a meter's artwork - its document, its shadow and the
-// drawing over it (SkiaArtwork) - and the whole scene written as a PNG for review when RECKLESS_SCREENSHOT_DIR is set.
+// drawing over it (SkiaArtwork), what is drawn kept when Skia is started for the processor (InitialiseSkia) - and the
+// whole scene written as a PNG for review when RECKLESS_SCREENSHOT_DIR is set.
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -553,5 +554,85 @@ TEST(SkiaCanvas, SceneForReview)
     const auto png = EncodePng(image);
     std::ofstream(std::string(dir) + "/skia-scene.png", std::ios::binary)
         .write(reinterpret_cast<const char *>(png.data()), static_cast<std::streamsize>(png.size()));
+}
+
+/** A scene that runs through Skia's raster pipeline in every way a panel does: an image drawn scaled and filtered
+   (where SkGraphics::Init's routines made the largest difference measured), a gradient, translucent shapes with
+   antialiased edges, a stroked path and text, drawn into a fresh `width` x `height` raster.
+    @return  the raster's premultiplied BGRA or RGBA pixels, as SkSurface holds them, row by row */
+std::vector<std::uint32_t> DrawStartScene()
+{
+    LoadFaces();
+    constexpr int kWidth  = 320;
+    constexpr int kHeight = 200;
+    Image         source  = MakeImage(48, 32);
+    {
+        auto canvas = MakeImageCanvas(source);
+        canvas->SetGradient(Gradient{Color(0xffe0a038), {0.0f, 0.0f}, Color(0xff2860a0), {48.0f, 32.0f}, false});
+        canvas->FillAll();
+        canvas->SetColor(Color(0xffe8dcc8).WithAlpha(0.6f));
+        canvas->FillEllipse({8.0f, 4.0f, 30.0f, 22.0f});
+    }
+    Surface    s(kWidth, kHeight);
+    SkiaCanvas c(s.canvas());
+    c.SetResampling(Resampling::kHigh);
+    c.DrawImage(source, {3.3f, 2.7f, 251.4f, 168.9f}, false);
+    c.SetResampling(Resampling::kMedium);
+    c.DrawImage(source, {250.0f, 120.0f, 61.7f, 73.1f}, false);
+    c.SetColor(Color(0xff8cc0ae).WithAlpha(0.55f));
+    c.FillRoundedRect({40.5f, 30.25f, 150.0f, 90.0f}, 11.0f);
+    Path path;
+    path.MoveTo(10.0f, 180.0f);
+    path.CubicTo(60.0f, 120.0f, 120.0f, 200.0f, 300.0f, 20.0f);
+    c.SetColor(colors::kWhite);
+    c.StrokePath(path, Stroke(2.6f, Stroke::Join::kCurved, Stroke::Cap::kRounded), {});
+    c.SetFont(Font(15.0f).Bold());
+    c.DrawText("GAIN 20.0 dB", {20.0f, 150.0f, 200.0f, 20.0f}, Justify::kCentredLeft, false);
+
+    SkBitmap bitmap;
+    bitmap.allocPixels(SkImageInfo::MakeN32Premul(kWidth, kHeight));
+    s.surface->readPixels(bitmap, 0, 0);
+    const auto *pixels = static_cast<const std::uint32_t *>(bitmap.getPixels());
+    return {pixels, pixels + static_cast<std::size_t>(kWidth) * kHeight};
+}
+
+TEST(SkiaStart, StartingSkiaForTheProcessorKeepsWhatIsDrawn)
+{
+    // InitialiseSkia swaps Skia's portable SSE2 routines for the processor's own (AVX2, AVX-512), and every app makes
+    // the call (app::AppPlatform::Create): what a panel draws must come out the same either way. Only the first call in
+    // the process changes anything, so the scene is drawn once before it and once after; nothing else in this suite
+    // starts Skia. On Apple silicon the call changes nothing and the two are the same trivially.
+    if (IsSkiaInitialised())
+    {
+        GTEST_SKIP() << "Skia was started earlier in this process: there is no before to compare";
+    }
+    const std::vector<std::uint32_t> before = DrawStartScene();
+    InitialiseSkia();
+    EXPECT_TRUE(IsSkiaInitialised());
+    InitialiseSkia(); // a second call is a check of a flag and nothing else
+    EXPECT_TRUE(IsSkiaInitialised());
+    const std::vector<std::uint32_t> after = DrawStartScene();
+    ASSERT_EQ(before.size(), after.size());
+    int differing   = 0;
+    int largest_gap = 0;
+    for (std::size_t index = 0; index < before.size(); ++index)
+    {
+        if (before[index] == after[index])
+        {
+            continue;
+        }
+        ++differing;
+        for (int shift = 0; shift < 32; shift += 8)
+        {
+            const int one   = static_cast<int>((before[index] >> shift) & 0xffu);
+            const int other = static_cast<int>((after[index] >> shift) & 0xffu);
+            largest_gap     = std::max(largest_gap, std::abs(one - other));
+        }
+    }
+    std::printf("  Skia started: %d of %zu pixels differ, by at most %d in a channel\n", differing, before.size(),
+                largest_gap);
+    // The same picture to rounding: the routines are written to agree, and on a Windows x64 laptop with AVX2
+    // (2026-11-02) not one pixel differed; the slack is for AVX-512, which a hosted runner may have and that did not.
+    EXPECT_LE(largest_gap, 2) << differing << " pixels differ";
 }
 } // namespace

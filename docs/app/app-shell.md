@@ -36,6 +36,9 @@ int main(int argc, char **argv)
 }
 ```
 
+The platform comes first because making it starts Skia for the processor ([platform.md](platform.md)), before the
+resources decode anything.
+
 `ParseAppOptions` reads `--smoke [frames]` and keeps every other argument in `unknown`, in order; the product takes its
 own flags from there, and `RunApp` reports what is left as ignored. `RunApp` opens the window, titled `<name>  v<version>`,
 round the root at the root's size - held first to what fits the display it opens on (`AppPlatform::LargestContent`), never

@@ -1,9 +1,10 @@
 // The app's platform of this build (app/AppPlatform.h: an NSApplication on macOS, a Win32 message loop on Windows, an
-// X11 connection on a poll loop on Linux) as an app holds it: calls other threads post run on the main thread while Run
-// runs, each thread's in its order, posts made before Run waiting for it; once Run has returned nothing posted runs,
-// not even when the loop runs again and finds the wakes still queued for it. On Linux the platform needs a display, so
-// the suite runs under xvfb-run with the window suites and skips with none - failing instead where the run promises a
-// window (RECKLESS_REQUIRE_WINDOW). On macOS Run activates the app, taking the focus, as the window suites do.
+// X11 connection on a poll loop on Linux) as an app holds it: Skia started for the processor as it is made; calls other
+// threads post run on the main thread while Run runs, each thread's in its order, posts made before Run waiting for it;
+// once Run has returned nothing posted runs, not even when the loop runs again and finds the wakes still queued for it.
+// On Linux the platform needs a display, so the suite runs under xvfb-run with the window suites and skips with none -
+// failing instead where the run promises a window (RECKLESS_REQUIRE_WINDOW). On macOS Run activates the app, taking the
+// focus, as the window suites do.
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include "AppPlatform.h"
+#include "SkiaCanvas.h"
 #include "TestHostWindow.h"
 
 namespace
@@ -43,6 +45,17 @@ std::unique_ptr<reckless::app::AppPlatform> PlatformOrNull()
         GTEST_SKIP() << "no display for the platform's loop";                   \
     }
 } // namespace
+
+TEST(AppPlatform, MakingThePlatformStartsSkiaForTheProcessor)
+{
+    // Every app makes its platform first, before it draws anything, so the platform is where Skia is started for the
+    // processor (gfx::InitialiseSkia: SkGraphics::Init, its AVX2 and AVX-512 routines) - never left to each app.
+    // Nothing in this suite starts Skia but the platform, and this test comes first, so Skia is not started before it.
+    EXPECT_FALSE(reckless::gfx::IsSkiaInitialised()) << "nothing but the platform starts Skia in this suite";
+    const std::unique_ptr<reckless::app::AppPlatform> platform = PlatformOrNull();
+    REQUIRE_PLATFORM(platform);
+    EXPECT_TRUE(reckless::gfx::IsSkiaInitialised());
+}
 
 TEST(AppPlatform, AWindowsTitleIsTheOneItWasOpenedWithUntilTheAppSetsAnother)
 {

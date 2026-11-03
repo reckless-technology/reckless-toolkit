@@ -1,6 +1,7 @@
 #include "SkiaCanvas.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <optional>
 #include <string>
@@ -22,6 +23,7 @@
 #include "include/core/SkFont.h"
 #include "include/core/SkFontMetrics.h"
 #include "include/core/SkFontMgr.h"
+#include "include/core/SkGraphics.h"
 #include "include/core/SkImage.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkPath.h"
@@ -345,6 +347,28 @@ void SetMonospaceFaces(std::span<const std::uint8_t> regular_font, std::span<con
     faces.mono_bold    = faces.manager->makeFromData(SkData::MakeWithCopy(bold_font.data(), bold_font.size()));
     faces.mono_regular_span = UnitSpan(faces.mono_regular);
     faces.mono_bold_span    = UnitSpan(faces.mono_bold);
+}
+
+namespace
+{
+std::atomic<bool> is_skia_initialised{false}; ///< InitialiseSkia() has run in this process
+} // namespace
+
+void InitialiseSkia()
+{
+    // SkGraphics::Init() is idempotent and thread-safe in itself; the static makes every call after the first only the
+    // guard's check, and sets the flag once Skia's routines are chosen.
+    static const bool is_started = [] {
+        SkGraphics::Init();
+        is_skia_initialised.store(true, std::memory_order_release);
+        return true;
+    }();
+    static_cast<void>(is_started);
+}
+
+bool IsSkiaInitialised() noexcept
+{
+    return is_skia_initialised.load(std::memory_order_acquire);
 }
 
 Image DecodeImage(std::span<const std::uint8_t> encoded)
