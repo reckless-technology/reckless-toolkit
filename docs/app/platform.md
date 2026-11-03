@@ -15,6 +15,24 @@ immediately - about three thousand of them a frame at a frame timer's 60 Hz, eac
 behind it, which is a fraction of a core for nothing. Rounding the wait up instead would end the spin too, at the
 cost of firing every tick up to a millisecond late; `ppoll` costs nothing and fires on time.
 
+## Skia started for the processor
+
+**`AppPlatform::Create` starts Skia before it does anything else**, on every platform: `gfx::InitialiseSkia()`
+([SkiaCanvas.h](../../gfx/skia/SkiaCanvas.h)), which is `SkGraphics::Init()` called once a process. Until that call
+Skia draws with its portable SSE2 routines; it is the call that chooses the processor's own - AVX2 and AVX-512 on an
+x86-64 that has them, all carried by the prebuilt Skia - and Skia never makes it of its own accord. Until 2026-11-02
+nothing made it, and every Reckless app drew on SSE2 alone. A filtered, scaled image drawn at 4K took 20.2 ms without
+the call and 6.1 ms with it (Reckless Sentinel's bench, `Legion5i`, Windows x64, 2026-11-01); a whole 4K frame of one
+image upscaled bilinearly gains less, 18.7 to 15.5 ms (the same machine, 2026-11-02). Apple silicon is unaffected, its
+routines being chosen when Skia is built.
+
+The platform is the place because it is the one thing every app makes first - before its `AppResources` decode the
+series' images, before Linux's platform decodes the window's icon, long before `RunApp` opens a window - and because
+the call swaps the routines Skia's drawing goes through, so it has to come before any drawing on any thread rather
+than with the first. `RunApp` is not the place: the shell is written against no renderer, and an app has drawn by the
+time it runs. A later call is a check of a flag; the suites read whether it ran with `gfx::IsSkiaInitialised()`. A
+plug-in in a host makes no platform and is not started this way.
+
 ## A post to the UI thread
 
 `AppPlatform::Post(call)` from any thread, or `Posts()` - the queue itself, [PostQueue.h](../../core/PostQueue.h) - which

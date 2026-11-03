@@ -21,6 +21,7 @@
 
 #include "../../window/mac/ClipboardMac.h" // the child window's too: not on an include path
 #include "AppPlatform.h"
+#include "SkiaCanvas.h"
 #include "WindowPlace.h"
 
 namespace reckless::app
@@ -944,6 +945,8 @@ class MacPlatform final : public AppPlatform
 
 std::unique_ptr<AppPlatform> AppPlatform::Create(const std::string &name, std::span<const std::uint8_t>)
 {
+    // Skia started for the processor before anything of it runs: the platform is what every app makes first.
+    gfx::InitialiseSkia();
     return std::make_unique<MacPlatform>(name); // the Dock's icon is the bundle's
 }
 } // namespace reckless::app

@@ -147,7 +147,10 @@ class AppPlatform
 {
   public:
     /** The platform set up for the app named `name` - its menu, its icon in the Dock or the task bar - with
-        `icon_png` its window icon where the platform takes one from the window (Linux).
+        `icon_png` its window icon where the platform takes one from the window (Linux). Skia is started for this
+        processor first of all (gfx::InitialiseSkia, gfx/skia/SkiaCanvas.h: its AVX2 and AVX-512 code where the
+        processor has them), so an app makes this before it draws anything - before its AppResources - and never
+        starts Skia itself.
         @param name      the app's name, as the menu and the task bar show it
         @param icon_png  the icon's PNG bytes, which must outlive the call; empty for none
         @return          the platform, owned by the caller */
