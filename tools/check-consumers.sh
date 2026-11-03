@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Every product built on the toolkit, configured on this checkout of it: vst-plugins, Reckless IR Capture, Reckless
-# Amphitheater, Knect 4, Reckless Sudoku and Reckless Sentinel, each at the head of its default branch with this toolkit in place of the
+# Amphitheater, Knect 4, Reckless Sudoku and Sentinel, each at the head of its default branch with this toolkit in place of the
 # commit it pins, configured as its own CI configures it and a few of its targets built. A toolkit change that clashes
 # with a product - a target, a CTest or an option of the same name, an include a product's header shadows, a header or a
 # function a product calls that moved - fails here, on the toolkit's pull request, rather than at the product's next
@@ -37,7 +37,7 @@ products=(
     "amphitheater-chess|main|CONSUMER_AMPHITHEATER_DEPLOY_KEY|public|-DCMAKE_BUILD_TYPE=Release -DAMPHITHEATER_BUILD_TESTS=ON|amphitheater_gui"
     "knect4|main|CONSUMER_KNECT4_DEPLOY_KEY|public|-DCMAKE_BUILD_TYPE=Release -DKNECT4_BUILD_TESTS=ON|knect4_gui"
     "sudoku|main|CONSUMER_SUDOKU_DEPLOY_KEY|public|-DCMAKE_BUILD_TYPE=Release -DSUDOKU_BUILD_TESTS=ON|sudoku_gui"
-    "sentinel|main|CONSUMER_SENTINEL_DEPLOY_KEY|private|-DCMAKE_BUILD_TYPE=Release|RecklessSentinel"
+    "sentinel|main|CONSUMER_SENTINEL_DEPLOY_KEY|private|-DCMAKE_BUILD_TYPE=Release|Sentinel"
 )
 
 key_dir=$(mktemp -d)

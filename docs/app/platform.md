@@ -22,7 +22,7 @@ cost of firing every tick up to a millisecond late; `ppoll` costs nothing and fi
 Skia draws with its portable SSE2 routines; it is the call that chooses the processor's own - AVX2 and AVX-512 on an
 x86-64 that has them, all carried by the prebuilt Skia - and Skia never makes it of its own accord. Until 2026-11-02
 nothing made it, and every Reckless app drew on SSE2 alone. A filtered, scaled image drawn at 4K took 20.2 ms without
-the call and 6.1 ms with it (Reckless Sentinel's bench, `Legion5i`, Windows x64, 2026-11-01); a whole 4K frame of one
+the call and 6.1 ms with it (Sentinel's bench, `Legion5i`, Windows x64, 2026-11-01); a whole 4K frame of one
 image upscaled bilinearly gains less, 18.7 to 15.5 ms (the same machine, 2026-11-02). Apple silicon is unaffected, its
 routines being chosen when Skia is built.
 
