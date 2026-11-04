@@ -56,13 +56,15 @@ int RunApp(AppPlatform &platform, view::View &root, gfx::PointI minimum, const A
     std::unique_ptr<window::ChildWindow> child;
 
     WindowOptions window_options;
-    window_options.title     = name + "  v" + version;
-    window_options.width     = root.width();
-    window_options.height    = root.height();
-    window_options.position  = position;
-    window_options.menu_bar  = hooks.has_menu_bar;
-    window_options.closing   = [&platform] { platform.CallSoon([&platform] { platform.Quit(); }); };
-    window_options.constrain = [minimum](gfx::PointF proposed) {
+    window_options.title               = name + "  v" + version;
+    window_options.width               = root.width();
+    window_options.height              = root.height();
+    window_options.position            = position;
+    window_options.menu_bar            = hooks.has_menu_bar;
+    window_options.may_go_full_screen  = hooks.may_go_full_screen;
+    window_options.full_screen_changed = hooks.on_full_screen;
+    window_options.closing             = [&platform] { platform.CallSoon([&platform] { platform.Quit(); }); };
+    window_options.constrain           = [minimum](gfx::PointF proposed) {
         return gfx::PointF{std::max(proposed.x, static_cast<float>(minimum.x)),
                            std::max(proposed.y, static_cast<float>(minimum.y))};
     };
@@ -118,6 +120,16 @@ int RunApp(AppPlatform &platform, view::View &root, gfx::PointI minimum, const A
     if (hooks.on_open)
     {
         hooks.on_open(*window);
+    }
+    if (hooks.opens_full_screen && !options.is_smoke && window->CanGoFullScreen())
+    {
+        // Once the loop runs: a Mac takes a window to its full-screen space only from a running application.
+        platform.CallSoon([&window] {
+            if (window)
+            {
+                window->EnterFullScreen();
+            }
+        });
     }
 
     int  drawn       = 0;

@@ -60,6 +60,10 @@ struct Shortcut
     bool        primary{false};          ///< Command on macOS, Control on Windows and Linux
     bool        shift{false};            ///< a shift key
     bool        alt{false};              ///< an alt key (Option on macOS)
+    /** The Control key on macOS, a modifier of its own beside Command (the primary): Ctrl+Cmd+F, the Mac's full
+        screen. Never set on Windows and Linux, where Control is the primary modifier, so a shortcut with it chooses
+        nothing there. */
+    bool control{false};
 
     /** The primary modifier with a character key: Cmd+key on macOS, Ctrl+key elsewhere.
         @param character  the key's character, unshifted: a letter in lower case, a digit or a mark
@@ -68,7 +72,7 @@ struct Shortcut
         @return           the shortcut */
     static Shortcut Primary(char32_t character, bool shift = false, bool alt = false)
     {
-        return {ShortcutKey::kCharacter, Lowered(character), true, shift, alt};
+        return {ShortcutKey::kCharacter, Lowered(character), true, shift, alt, false};
     }
 
     /** The primary modifier with a named key: Cmd+key on macOS, Ctrl+key elsewhere.
@@ -78,7 +82,7 @@ struct Shortcut
         @return       the shortcut */
     static Shortcut Primary(ShortcutKey key, bool shift = false, bool alt = false)
     {
-        return {key, 0, true, shift, alt};
+        return {key, 0, true, shift, alt, false};
     }
 
     /** A key with no primary modifier: a function key, an arrow, a letter alone for a view that takes no typing.
@@ -88,7 +92,7 @@ struct Shortcut
         @return       the shortcut */
     static Shortcut Plain(ShortcutKey key, bool shift = false, bool alt = false)
     {
-        return {key, 0, false, shift, alt};
+        return {key, 0, false, shift, alt, false};
     }
 
     /** A character key with no primary modifier.
@@ -98,7 +102,7 @@ struct Shortcut
         @return           the shortcut */
     static Shortcut Plain(char32_t character, bool shift = false, bool alt = false)
     {
-        return {ShortcutKey::kCharacter, Lowered(character), false, shift, alt};
+        return {ShortcutKey::kCharacter, Lowered(character), false, shift, alt, false};
     }
 
     /** Whether this names no key.
@@ -113,7 +117,8 @@ struct Shortcut
         @return         true when it chooses this shortcut */
     bool Matches(const Shortcut &pressed) const noexcept
     {
-        if (empty() || pressed.key != key || pressed.primary != primary || pressed.shift != shift || pressed.alt != alt)
+        if (empty() || pressed.key != key || pressed.primary != primary || pressed.shift != shift ||
+            pressed.alt != alt || pressed.control != control)
         {
             return false;
         }
@@ -217,11 +222,12 @@ inline std::string ShortcutText(const Shortcut &shortcut, bool mac)
     }
     if (mac)
     {
-        // Option, Shift, Command, in the order a Mac's menus draw them.
-        return std::string(shortcut.alt ? "\xe2\x8c\xa5" : "") + (shortcut.shift ? "\xe2\x87\xa7" : "") +
-               (shortcut.primary ? "\xe2\x8c\x98" : "") + key;
+        // Control, Option, Shift, Command, in the order a Mac's menus draw them.
+        return std::string(shortcut.control ? "\xe2\x8c\x83" : "") + (shortcut.alt ? "\xe2\x8c\xa5" : "") +
+               (shortcut.shift ? "\xe2\x87\xa7" : "") + (shortcut.primary ? "\xe2\x8c\x98" : "") + key;
     }
-    return std::string(shortcut.primary ? "Ctrl+" : "") + (shortcut.alt ? "Alt+" : "") +
+    // Control is the primary modifier here: a Mac's Control alone is written as it.
+    return std::string(shortcut.primary || shortcut.control ? "Ctrl+" : "") + (shortcut.alt ? "Alt+" : "") +
            (shortcut.shift ? "Shift+" : "") + key;
 }
 

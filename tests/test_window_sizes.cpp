@@ -1,7 +1,9 @@
 // A window's sizes from a View menu (app/AppWindowSizes.h) on the suites' own platform (tests/FakeAppPlatform.h): each
 // size the design times it, drawn at exactly that scale and in force until the person drags the frame; a launch opening
 // at the size the app kept; a size the screen does not take dim and refused, a chosen one kept on the screen; the next
-// size up and down from a size in force or a dragged one; nothing to size with no window.
+// size up and down from a size in force or a dragged one; nothing to size with no window; and a size kept through full
+// screen - in force while the window is full screen, every size dim and refused, held again on the way back whether the
+// window is back at once or later - and a dragged window coming back with none.
 #include <gtest/gtest.h>
 
 #include <array>
@@ -43,12 +45,13 @@ struct WindowRig
     {
         sizes.Restore(percent);
         reckless::app::WindowOptions options;
-        options.width    = root.width();
-        options.height   = root.height();
-        options.position = std::pair<int, int>{40, 30};
-        options.resized  = [this](int width, int height) { root.SetBounds({width, height}); };
-        window           = platform.OpenWindow(options);
-        fake().work_area = reckless::gfx::RectI{0, 0, 3000, 2000};
+        options.width              = root.width();
+        options.height             = root.height();
+        options.position           = std::pair<int, int>{40, 30};
+        options.may_go_full_screen = true;
+        options.resized            = [this](int width, int height) { root.SetBounds({width, height}); };
+        window                     = platform.OpenWindow(options);
+        fake().work_area           = reckless::gfx::RectI{0, 0, 3000, 2000};
         sizes.SetWindow(window.get());
     }
 
@@ -162,4 +165,81 @@ TEST(WindowSizes, WithNoWindowEverySizeIsDimAndNoneIsTaken)
     rig.sizes.SetWindow(nullptr); // the window closing
     EXPECT_FALSE(rig.sizes.Menu().has_window);
     EXPECT_FALSE(rig.sizes.Choose(75));
+}
+
+TEST(WindowSizes, ASizeInForceIsKeptThroughFullScreenAndHeldAgainOnTheWayBack)
+{
+    WindowRig rig(125);
+    rig.fake().display = reckless::gfx::RectI{0, 0, 3840, 2160};
+    rig.sizes.Frame(0.0);
+    ASSERT_EQ(rig.sizes.InForce(), 125);
+
+    ASSERT_TRUE(rig.window->EnterFullScreen());
+    EXPECT_EQ(rig.root.width(), 3840) << "the root at the display's size";
+    EXPECT_FALSE(rig.root.fixed_zoom().has_value()) << "laid out at the window's size, as any other size is";
+    EXPECT_EQ(rig.sizes.InForce(), 125) << "the size it comes back to, for the app to keep";
+    rig.sizes.Frame(0.0);
+    const WindowSizeMenu full = rig.sizes.Menu();
+    EXPECT_TRUE(full.has_window);
+    EXPECT_EQ(full.in_force, 125) << "ticked";
+    EXPECT_EQ(full.fits, (std::array<bool, 5>{})) << "and every size dim";
+    EXPECT_EQ(full.larger, 0);
+    EXPECT_EQ(full.smaller, 0);
+    EXPECT_FALSE(rig.sizes.Choose(100)) << "no size is chosen while full screen";
+    EXPECT_TRUE(rig.window->IsFullScreen());
+
+    ASSERT_TRUE(rig.window->LeaveFullScreen());
+    EXPECT_EQ(rig.WindowSize(), (PointI{1250, 1000})) << "its own size again";
+    EXPECT_EQ(rig.sizes.InForce(), 125) << "still the size to keep, before the frame holds it";
+    rig.sizes.Frame(0.0);
+    ASSERT_TRUE(rig.root.fixed_zoom().has_value()) << "held again";
+    EXPECT_FLOAT_EQ(*rig.root.fixed_zoom(), 1.25f);
+    EXPECT_EQ(rig.content.width(), kDesign.x) << "laid out at the design size";
+    EXPECT_EQ(rig.sizes.InForce(), 125);
+    EXPECT_EQ(rig.sizes.Menu().larger, 150) << "and the menu as it was";
+    rig.sizes.Frame(0.0);
+    EXPECT_EQ(rig.sizes.InForce(), 125);
+}
+
+TEST(WindowSizes, BackFromFullScreenLaterTheSizeIsHeldOnceTheWindowGetsThere)
+{
+    WindowRig rig(75);
+    rig.fake().defers_full_screen = true; // as a Mac's animation takes its time
+    rig.sizes.Frame(0.0);
+    ASSERT_TRUE(rig.window->EnterFullScreen());
+    rig.sizes.Frame(0.0);
+    ASSERT_TRUE(rig.fake().FinishFullScreen());
+    rig.sizes.Frame(0.0);
+    EXPECT_EQ(rig.root.width(), 3000) << "the work area's size, with no display given";
+
+    ASSERT_TRUE(rig.window->LeaveFullScreen());
+    rig.sizes.Frame(0.0); // out of full screen, but the window not at its size yet
+    EXPECT_FALSE(rig.root.fixed_zoom().has_value());
+    EXPECT_EQ(rig.sizes.InForce(), 75) << "the size it is coming back to";
+    rig.sizes.Frame(0.0);
+    EXPECT_EQ(rig.sizes.InForce(), 75) << "and still, while it waits";
+    ASSERT_TRUE(rig.fake().FinishFullScreen());
+    ASSERT_TRUE(rig.root.fixed_zoom().has_value()) << "held as the window's own size arrives";
+    EXPECT_FLOAT_EQ(*rig.root.fixed_zoom(), 0.75f);
+    rig.sizes.Frame(0.0);
+    EXPECT_EQ(rig.sizes.InForce(), 75);
+    rig.fake().Resize(900, 700); // the person drags the frame afterwards
+    rig.sizes.Frame(0.0);
+    EXPECT_EQ(rig.sizes.InForce(), 0) << "and a dragged size lets it go, as ever";
+}
+
+TEST(WindowSizes, ADraggedWindowComesBackFromFullScreenWithNoSizeInForce)
+{
+    WindowRig rig;
+    rig.fake().Resize(900, 700); // the person drags the frame
+    rig.sizes.Frame(0.0);
+    ASSERT_EQ(rig.sizes.InForce(), 0);
+    ASSERT_TRUE(rig.window->EnterFullScreen());
+    EXPECT_EQ(rig.sizes.InForce(), 0);
+    rig.sizes.Frame(0.0);
+    ASSERT_TRUE(rig.window->LeaveFullScreen());
+    rig.sizes.Frame(0.0);
+    EXPECT_EQ(rig.WindowSize(), (PointI{900, 700}));
+    EXPECT_FALSE(rig.root.fixed_zoom().has_value());
+    EXPECT_EQ(rig.sizes.InForce(), 0);
 }

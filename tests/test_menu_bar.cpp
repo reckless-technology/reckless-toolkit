@@ -154,7 +154,8 @@ TEST(MenuBar, AShortcutIsTheKeyAndExactlyItsModifiersALetterInEitherCase)
     const Shortcut new_game = Shortcut::Primary('N');
     EXPECT_EQ(new_game.character, U'n') << "a letter kept in lower case: Shift is a modifier of its own";
     EXPECT_TRUE(new_game.Matches(Shortcut::Primary('n')));
-    EXPECT_TRUE(new_game.Matches({ShortcutKey::kCharacter, U'N', true, false, false})) << "a press of either case";
+    EXPECT_TRUE(new_game.Matches({ShortcutKey::kCharacter, U'N', true, false, false, false}))
+        << "a press of either case";
     EXPECT_FALSE(new_game.Matches(Shortcut::Primary('n', true))) << "Shift held too is another shortcut";
     EXPECT_FALSE(new_game.Matches(Shortcut::Plain('n'))) << "nor the key alone";
     EXPECT_FALSE(new_game.Matches(Shortcut::Primary('n', false, true)));
@@ -163,7 +164,8 @@ TEST(MenuBar, AShortcutIsTheKeyAndExactlyItsModifiersALetterInEitherCase)
     EXPECT_FALSE(Shortcut::Plain(ShortcutKey::kF5).Matches(Shortcut::Plain(ShortcutKey::kF6)));
     EXPECT_FALSE(Shortcut{}.Matches(Shortcut{})) << "no shortcut matches nothing";
     EXPECT_TRUE(Shortcut{}.empty());
-    EXPECT_TRUE((Shortcut{ShortcutKey::kCharacter, 0, true, false, false}).empty()) << "a character key with none";
+    EXPECT_TRUE((Shortcut{ShortcutKey::kCharacter, 0, true, false, false, false}).empty())
+        << "a character key with none";
 }
 
 TEST(MenuBar, EachPlatformWritesAShortcutItsOwnWay)

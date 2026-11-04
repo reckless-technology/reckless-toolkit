@@ -96,3 +96,42 @@ the menu, and a second press opens the other.
 
 The old `AppPlatform::SetMenu`, a flat Options menu on macOS and nothing elsewhere, works as it did; setting the bar
 replaces it, and it the bar.
+
+## Full screen
+
+`AppWindow::SetFullScreen` and the calls round it ([app-shell.md](app-shell.md#full-screen) has what an app does with
+them), for a window opened with `WindowOptions::may_go_full_screen` alone - never a dialog. Every other window is as it
+was.
+
+| Platform | Full screen | Back |
+|---|---|---|
+| Windows | borderless: the caption and the sizing frame taken off and `WS_POPUP` put on, the menu bar held off the window, and the window over the whole of the monitor it is most on (`MonitorFromWindow`, `GetMonitorInfo`'s `rcMonitor`, not its work area) at the top of the z-order, which puts the task bar under it; at once | the style, the extended style, the menu bar and the placement it had (`GetWindowPlacement`, `SetWindowPlacement`), at once |
+| macOS | the Mac's own: a full-screen space of the window's own (`toggleFullScreen:`, the collection behaviour `FullScreenPrimary`), which the green button, Control-Command-F and the Globe key's F take it to too; AppKit's animation, so begun when asked and told when it is done | the same, by `toggleFullScreen:` again or the person |
+| Linux | the window manager's (EWMH): `_NET_WM_STATE_FULLSCREEN` asked of it by a client message to the root window, the size hints let go, and its word heard back on the window's `_NET_WM_STATE` (`PropertyNotify`), so its own key is followed too; with no window manager that has it (none at all, as under `xvfb-run`, or one without EWMH), the window made undecorated (`_MOTIF_WM_HINTS`) over the whole X screen, at once | the window manager's, the size hints the owner's again; or the decoration, the hints, the place and the size the window had, at once |
+
+**Why borderless on Windows, not exclusive.** Exclusive full screen is a swap chain's, and the child window rasters on
+the CPU and hands its pixels to GDI (`SetDIBitsToDevice`): there is no swap chain to make exclusive, and a borderless
+window over the monitor is what a browser's F11 is. The monitor's DPI is the window's - the window is on it - and a
+change of DPI or of the display's resolution while full screen (`WM_DPICHANGED`, `WM_DISPLAYCHANGE`) covers the monitor
+again. A key with Alt that a shortcut takes (Alt+Enter) has its menu mnemonic swallowed (`WM_SYSCOMMAND`'s
+`SC_KEYMENU`), which Windows would otherwise look for in the bar and beep at finding none.
+
+**Why the Mac's own, not a borderless window.** It is what every Mac app's full screen is - a space of its own the
+person swipes between, the menu bar and the Dock out of the way until the pointer reaches for them, the green button
+doing it - and nothing here needs what a borderless window would buy (no animation, staying on the desktop's space). So
+an app that opts in gets the platform's behaviour, its window `FullScreenPrimary`; an app that does not keeps
+`FullScreenAuxiliary`, its green button zooming as a JUCE Standalone's does. AppKit is asked not to add an Enter Full
+Screen item of its own to the app's View menu (`NSFullScreenMenuItemEverywhere`), only once a window that may go full
+screen opens, since the app places the toolkit's item there; a change asked for while AppKit's animation runs is
+refused, as AppKit refuses it, and a size of the app's own asked for then is set once the window is out.
+
+**Why the window manager's on Linux.** A window manager places and stacks a window itself, and fights a client that
+moves one over its panels; `_NET_WM_STATE_FULLSCREEN` is how every EWMH window manager - GNOME's, KDE's, Xfce's and the
+rest - is asked. The fallback covers the whole X screen rather than one monitor, which with no window manager is the
+screen there is.
+
+**What the suites prove.** Windows' path is driven by the window suite on the real platform
+(`tests/test_app_platform.cpp`: the window's rectangle the monitor's, no caption, and back to the frame and the style it
+had, to the pixel); Linux's runs the same suite under `xvfb-run` in CI, which has no window manager, so it is the
+fallback that CI proves and the window manager's path that a desktop does; a Mac's is AppKit's animation into a space,
+which the suite does not run, a machine's spaces being the person's.

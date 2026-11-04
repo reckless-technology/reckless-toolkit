@@ -8,13 +8,18 @@
 // back wholly on the screen it is most on, a dialog centred over its owner and kept inside that screen. A dialog is a
 // child window of its owner, so it stays over it; the main window is resized by its frame, each size dragged to held to
 // the owner's constraint on its content (windowWillResize), zoomed to the most the constraint allows on the screen
-// (windowWillUseStandardFrame), and each size taken told (windowDidResize).
+// (windowWillUseStandardFrame), and each size taken told (windowDidResize). A window opened with full screen allowed
+// goes to a full-screen space of its own, the Mac's own full screen (toggleFullScreen:, its collection behaviour
+// FullScreenPrimary), which its green button, Control-Command-F and the Globe key's F all take it to and back from as
+// every Mac app's do; any other window stays out of every full-screen space (FullScreenAuxiliary), its green button
+// zooming it. The change is AppKit's animation, so it is begun when asked and told when it is done.
 #import <AppKit/AppKit.h>
 
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -102,6 +107,13 @@ class MacPlatform;
     /** Whether a key is one of the menu bar's shortcuts, which the window takes before the menu bar does (its
         performKeyEquivalent) to hand it to the views first. May be empty. */
     std::function<bool(NSEvent *)> is_shortcut;
+    std::function<void(bool)>      full_screen_changed; ///< told each change of full screen once AppKit has made it.
+    /** Told as a change of full screen ends, made or failed, with whether the window is full screen: what the owner
+        held back until it ended (a size of its own). May be empty. */
+    std::function<void(bool)> full_screen_ended;
+    bool   is_full_screen; ///< full screen, or going there: the state last asked for, by the app or the person.
+    bool   is_changing;    ///< AppKit's animation into or out of full screen is under way.
+    NSRect windowed_frame; ///< the frame it had before it went full screen, Cocoa's way up.
 }
 @end
 
@@ -120,9 +132,9 @@ class MacPlatform;
 
 - (NSSize)windowWillResize:(NSWindow *)sender toSize:(NSSize)frameSize
 {
-    if (!constrain)
+    if (!constrain || is_full_screen || is_changing)
     {
-        return frameSize;
+        return frameSize; // full screen is the screen's size, whatever the owner's constraint
     }
     // The content the frame would hold, held to the owner's constraint, and the frame round that.
     NSRect content = [sender contentRectForFrameRect:NSMakeRect(0, 0, frameSize.width, frameSize.height)];
@@ -163,6 +175,80 @@ class MacPlatform;
         const NSRect content = [self contentRectForFrameRect:self.frame];
         const auto   f       = resized;
         f(static_cast<int>(std::lround(content.size.width)), static_cast<int>(std::lround(content.size.height)));
+    }
+}
+
+- (void)windowWillEnterFullScreen:(NSNotification *)notification
+{
+    (void)notification;
+    if (!is_full_screen)
+    {
+        windowed_frame = self.frame; // the person's green button: the frame it comes back to
+    }
+    is_full_screen = true;
+    is_changing    = true;
+}
+
+- (void)windowDidEnterFullScreen:(NSNotification *)notification
+{
+    (void)notification;
+    is_changing = false;
+    if (full_screen_changed)
+    {
+        const auto f = full_screen_changed;
+        f(true);
+    }
+    if (full_screen_ended)
+    {
+        const auto f = full_screen_ended;
+        f(true);
+    }
+}
+
+- (void)windowDidFailToEnterFullScreen:(NSWindow *)window
+{
+    (void)window;
+    is_full_screen = false;
+    is_changing    = false;
+    if (full_screen_ended)
+    {
+        const auto f = full_screen_ended;
+        f(false);
+    }
+}
+
+- (void)windowWillExitFullScreen:(NSNotification *)notification
+{
+    (void)notification;
+    is_full_screen = false;
+    is_changing    = true;
+}
+
+- (void)windowDidExitFullScreen:(NSNotification *)notification
+{
+    (void)notification;
+    is_changing = false;
+    if (full_screen_changed)
+    {
+        const auto f = full_screen_changed;
+        f(false);
+    }
+    if (full_screen_ended)
+    {
+        const auto f = full_screen_ended;
+        f(false);
+    }
+}
+
+- (void)windowDidFailToExitFullScreen:(NSWindow *)window
+{
+    (void)window;
+    is_full_screen = true;
+    is_changing    = false;
+    if (full_screen_ended)
+    {
+        const auto f = full_screen_ended;
+        f(true);
     }
 }
 
@@ -274,21 +360,18 @@ std::vector<gfx::RectI> VisibleAreas()
 
 /** The key a key down names, as the shortcuts match it: the function keys and the editing and moving keys by their key
     codes, any other key by the character it types with no modifier applied - the keyboard's layout's own - and
-    Command as the primary modifier, Shift, and Option as Alt. A key with Control held names none, Control being no
-    modifier a shortcut is written with.
+    Command as the primary modifier, Shift, Option as Alt, and Control as itself (Shortcut::control), which only a
+    shortcut written with it matches: Control-Command-F, full screen.
     @param event  the key down
     @return       the key pressed; empty for a key that names none */
 Shortcut StrokeOf(NSEvent *event)
 {
     Shortcut                   stroke;
     const NSEventModifierFlags flags = [event modifierFlags];
-    if ((flags & NSEventModifierFlagControl) != 0)
-    {
-        return stroke;
-    }
-    stroke.primary = (flags & NSEventModifierFlagCommand) != 0;
-    stroke.shift   = (flags & NSEventModifierFlagShift) != 0;
-    stroke.alt     = (flags & NSEventModifierFlagOption) != 0;
+    stroke.control                   = (flags & NSEventModifierFlagControl) != 0;
+    stroke.primary                   = (flags & NSEventModifierFlagCommand) != 0;
+    stroke.shift                     = (flags & NSEventModifierFlagShift) != 0;
+    stroke.alt                       = (flags & NSEventModifierFlagOption) != 0;
     switch ([event keyCode])
     {
     case 53:
@@ -358,11 +441,15 @@ Shortcut StrokeOf(NSEvent *event)
 
 /** A shortcut as an NSMenuItem's key equivalent, which the item shows beside its title.
     @param shortcut  the shortcut
-    @param mask      set to the modifiers' mask: Command for the primary modifier, Shift, Option for Alt
+    @param mask      set to the modifiers' mask: Command for the primary modifier, Shift, Option for Alt, Control
     @return          the key equivalent; empty for no shortcut */
 NSString *KeyEquivalentOf(const Shortcut &shortcut, NSEventModifierFlags &mask)
 {
     mask = 0;
+    if (shortcut.control)
+    {
+        mask |= NSEventModifierFlagControl;
+    }
     if (shortcut.primary)
     {
         mask |= NSEventModifierFlagCommand;
@@ -465,6 +552,7 @@ class MacWindow final : public AppWindow
     /** Create the window, put it where it stood, else centred over its owner, else centred on the screen, and show it.
         @param options  the title, the content's size in points, the owner, the constraint and the callbacks */
     explicit MacWindow(const WindowOptions &options)
+        : may_go_full_screen_(options.may_go_full_screen && !options.dialog)
     {
         const NSWindowStyleMask style   = StyleOf(options);
         const NSRect            content = NSMakeRect(0, 0, options.width, options.height);
@@ -476,7 +564,17 @@ class MacWindow final : public AppWindow
         window_->constrain              = options.constrain;
         window_->resized                = options.resized;
         window_->dialog                 = options.dialog;
-        if (options.constrain)
+        window_->full_screen_changed    = options.full_screen_changed;
+        window_->is_full_screen         = false;
+        window_->is_changing            = false;
+        if (may_go_full_screen_)
+        {
+            // A full-screen space of its own, as a Mac app's window has: the green button, Control-Command-F and the
+            // Globe key's F take it there; Option with the green button zooms it as before.
+            window_.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
+            window_->full_screen_ended = [this](bool is_full_screen) { FullScreenEnded(is_full_screen); };
+        }
+        else if (options.constrain)
         {
             // Resized by its frame and zoomed, as a JUCE Standalone's window is, but never a full-screen space of its
             // own: JUCE's window with no maximise button, whose zoom button zooms (windowWillUseStandardFrame).
@@ -515,12 +613,14 @@ class MacWindow final : public AppWindow
     /** Unhook the window's callbacks and delegate, detach it from its parent window and close it. */
     ~MacWindow() override
     {
-        window_->closing     = nullptr;
-        window_->constrain   = nullptr;
-        window_->resized     = nullptr;
-        window_->shortcut    = nullptr;
-        window_->is_shortcut = nullptr;
-        window_.delegate     = nil;
+        window_->closing             = nullptr;
+        window_->constrain           = nullptr;
+        window_->resized             = nullptr;
+        window_->shortcut            = nullptr;
+        window_->is_shortcut         = nullptr;
+        window_->full_screen_changed = nullptr;
+        window_->full_screen_ended   = nullptr;
+        window_.delegate             = nil;
         if (NSWindow *parent = window_.parentWindow)
         {
             [parent removeChildWindow:window_];
@@ -542,7 +642,7 @@ class MacWindow final : public AppWindow
 
     std::pair<int, int> Position() const override
     {
-        const NSRect frame = window_.frame;
+        const NSRect frame = WindowedFrame();
         return {static_cast<int>(std::lround(frame.origin.x)),
                 static_cast<int>(std::lround(MainScreenHeight() - NSMaxY(frame)))};
     }
@@ -559,6 +659,10 @@ class MacWindow final : public AppWindow
 
     void SetContentSize(int width, int height) override
     {
+        if (HoldsSizeForFullScreen(width, height, false))
+        {
+            return; // set once the window is back from full screen
+        }
         // The content's top left kept: Cocoa's frame grows from its bottom left, so the bottom moves by the change.
         NSRect content = [window_ contentRectForFrameRect:window_.frame];
         content.origin.y += content.size.height - height;
@@ -569,6 +673,10 @@ class MacWindow final : public AppWindow
 
     void SetContentSizeOnScreen(int width, int height) override
     {
+        if (HoldsSizeForFullScreen(width, height, true))
+        {
+            return; // set once the window is back from full screen
+        }
         // The screen the window is most on now, before it grows; the frame at the new size, its content's top left
         // kept, moved onto that screen's visible frame in from any edge it would cross. AppKit tells the owner the size
         // taken (windowDidResize), as a drag's.
@@ -590,15 +698,17 @@ class MacWindow final : public AppWindow
 
     gfx::PointI LargestContent() const override
     {
-        // The visible frame of the screen the window is most on, less the frame's own title bar.
+        // The visible frame of the screen the window is most on, less the frame's own title bar - the window's as it is
+        // out of full screen, which full screen hides.
+        const NSRect                  frame = WindowedFrame();
         const std::vector<gfx::RectI> areas = VisibleAreas();
-        const gfx::RectI             *area  = AreaFor(DownwardsOf(window_.frame), areas);
+        const gfx::RectI             *area  = AreaFor(DownwardsOf(frame), areas);
         if (area == nullptr)
         {
             return {0, 0};
         }
-        const NSRect frame   = window_.frame;
-        const NSRect content = [window_ contentRectForFrameRect:frame];
+        const NSRect content = [NSWindow contentRectForFrameRect:frame
+                                                       styleMask:window_.styleMask & ~NSWindowStyleMaskFullScreen];
         return {std::max(1, area->width() - static_cast<int>(std::ceil(NSWidth(frame) - NSWidth(content)))),
                 std::max(1, area->height() - static_cast<int>(std::ceil(NSHeight(frame) - NSHeight(content))))};
     }
@@ -625,7 +735,95 @@ class MacWindow final : public AppWindow
         return utf8 != nullptr ? std::string(utf8) : std::string();
     }
 
+    bool CanGoFullScreen() const override
+    {
+        return may_go_full_screen_;
+    }
+
+    bool IsFullScreen() const override
+    {
+        return window_->is_full_screen;
+    }
+
+    bool SetFullScreen(bool is_full_screen) override
+    {
+        // AppKit takes no second change while its animation runs, so neither is one begun here.
+        if (!may_go_full_screen_ || is_full_screen == window_->is_full_screen || window_->is_changing)
+        {
+            return false;
+        }
+        if (is_full_screen)
+        {
+            window_->windowed_frame = window_.frame;
+            if (window_.miniaturized)
+            {
+                [window_ deminiaturize:nil];
+            }
+        }
+        window_->is_full_screen = is_full_screen;
+        [window_ toggleFullScreen:nil];
+        return true;
+    }
+
   private:
+    /** The frame the window has out of full screen: its own, or the one it had before it went full screen.
+        @return  the frame, Cocoa's way up */
+    NSRect WindowedFrame() const
+    {
+        return window_->is_full_screen || window_->is_changing ? window_->windowed_frame : window_.frame;
+    }
+
+    /** A size of the app's own asked for while the window is full screen, or on its way in or out: held, the window
+        taken out of full screen, and set once it is (FullScreenEnded).
+        @param width      the content's width, in points
+        @param height     the content's height, in points
+        @param on_screen  true for SetContentSizeOnScreen, false for SetContentSize
+        @return           true when the size was held, false for a window not full screen, which takes it now */
+    bool HoldsSizeForFullScreen(int width, int height, bool on_screen)
+    {
+        if (!window_->is_full_screen && !window_->is_changing)
+        {
+            return false;
+        }
+        held_size_ = HeldSize{width, height, on_screen};
+        SetFullScreen(false); // nothing while the animation runs: FullScreenEnded takes it out at the end
+        return true;
+    }
+
+    /** A change of full screen ended: a size held for it set where the window is out of full screen now, and the
+        window taken out where it went in with a size waiting.
+        @param is_full_screen  whether the window is full screen now */
+    void FullScreenEnded(bool is_full_screen)
+    {
+        if (!held_size_)
+        {
+            return;
+        }
+        if (is_full_screen)
+        {
+            SetFullScreen(false);
+            return;
+        }
+        const HeldSize held = *held_size_;
+        held_size_.reset();
+        if (held.on_screen)
+        {
+            SetContentSizeOnScreen(held.width, held.height);
+        }
+        else
+        {
+            SetContentSize(held.width, held.height);
+        }
+    }
+
+    /** A size of the app's own, held while the window is full screen. */
+    struct HeldSize
+    {
+        int  width;     ///< the content's width, in points
+        int  height;    ///< the content's height, in points
+        bool on_screen; ///< SetContentSizeOnScreen's, else SetContentSize's
+    };
+
     /** The window's frame put at `frame`'s top left, y down from the top of the main screen.
         @param frame  the frame wanted, in points; only its top left is used */
     void MoveTo(gfx::RectI frame)
@@ -633,7 +831,9 @@ class MacWindow final : public AppWindow
         [window_ setFrameTopLeftPoint:NSMakePoint(frame.x(), MainScreenHeight() - frame.y())];
     }
 
-    RecklessAppWindow *window_{nil}; ///< the NSWindow, which this object owns and closes in its destructor.
+    RecklessAppWindow      *window_{nil};        ///< the NSWindow, which this object owns and closes in its destructor.
+    bool                    may_go_full_screen_; ///< opened with full screen allowed, and no dialog.
+    std::optional<HeldSize> held_size_;          ///< a size the app asked for while full screen, to set out of it.
 };
 
 /** The Standalone's platform on macOS: the shared NSApplication with its menu bar, its windows and its timers on the
@@ -702,6 +902,13 @@ class MacPlatform final : public AppPlatform
 
     std::unique_ptr<AppWindow> OpenWindow(const WindowOptions &options) override
     {
+        if (options.may_go_full_screen)
+        {
+            // The app's menu carries the full-screen item it is given (app/AppFullScreen.h): AppKit is not to add an
+            // Enter Full Screen of its own to the app's View menu beside it. Only for an app that asks, so the menus of
+            // every other app stay as they were.
+            [[NSUserDefaults standardUserDefaults] registerDefaults:@{@"NSFullScreenMenuItemEverywhere" : @NO}];
+        }
         auto window = std::make_unique<MacWindow>(options);
         // Every window offers the keys that reach it to the bar's shortcuts, the bar being the app's, not a window's.
         const std::weak_ptr<MenuBarController> menu = menu_;
