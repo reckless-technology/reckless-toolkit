@@ -21,20 +21,23 @@ WindowSizes::WindowSizes(AppRoot &root, gfx::PointI design) : root_(root), desig
 
 void WindowSizes::Restore(int percent)
 {
-    const gfx::PointI size = root_.SetFixedZoom(design_, ZoomOf(IsOffered(percent) ? percent : 100));
+    windowed_percent_      = IsOffered(percent) ? percent : 100;
+    const gfx::PointI size = root_.SetFixedZoom(design_, ZoomOf(windowed_percent_));
     root_.SetBounds({size.x, size.y});
 }
 
 void WindowSizes::SetWindow(AppWindow *window)
 {
-    window_ = window;
-    room_   = {0, 0};
+    window_          = window;
+    room_            = {0, 0};
+    was_full_screen_ = IsFullScreen();
+    coming_back_.reset();
     RefreshRoom();
 }
 
 bool WindowSizes::Choose(int percent)
 {
-    if (!IsOffered(percent) || window_ == nullptr || !Fits(percent))
+    if (!IsOffered(percent) || window_ == nullptr || !Fits(percent) || IsFullScreen())
     {
         return false;
     }
@@ -43,12 +46,15 @@ bool WindowSizes::Choose(int percent)
     {
         window_->SetContentSizeOnScreen(size.x, size.y); // the root follows the window's resize
     }
+    windowed_percent_ = percent;
+    coming_back_.reset();
     RefreshRoom();
     return true;
 }
 
 void WindowSizes::Frame(double seconds)
 {
+    FollowFullScreen();
     elapsed_ += seconds;
     if (elapsed_ >= kRefreshSeconds)
     {
@@ -61,6 +67,10 @@ WindowSizeMenu WindowSizes::Menu() const
     WindowSizeMenu menu;
     menu.has_window = window_ != nullptr;
     menu.in_force   = InForce();
+    if (IsFullScreen())
+    {
+        return menu; // the size it will come back to ticked, and every size dim: none is chosen while full screen
+    }
     for (std::size_t index = 0; index < kWindowSizes.size(); ++index)
     {
         menu.fits[index] = menu.has_window && Fits(kWindowSizes[index]);
@@ -93,6 +103,12 @@ WindowSizeMenu WindowSizes::Menu() const
 
 int WindowSizes::InForce() const
 {
+    // Full screen, or back from it and the size not held again yet: the size the window had, and comes back to.
+    return IsFullScreen() || was_full_screen_ || coming_back_ ? windowed_percent_ : HeldByRoot();
+}
+
+int WindowSizes::HeldByRoot() const
+{
     const std::optional<float> zoom = root_.fixed_zoom();
     if (!zoom)
     {
@@ -121,6 +137,43 @@ bool WindowSizes::Fits(int percent) const
     }
     const gfx::PointI size = SizeAt(percent);
     return size.x <= room_.x && size.y <= room_.y;
+}
+
+bool WindowSizes::IsFullScreen() const
+{
+    return window_ != nullptr && window_->IsFullScreen();
+}
+
+void WindowSizes::FollowFullScreen()
+{
+    if (IsFullScreen())
+    {
+        was_full_screen_ = true; // the size it had kept, for the window it comes back to
+        return;
+    }
+    if (was_full_screen_)
+    {
+        // Back: the size it had held again, at once where the window is at it already, else once it gets there.
+        was_full_screen_ = false;
+        if (IsOffered(windowed_percent_))
+        {
+            const gfx::PointI now{root_.width(), root_.height()};
+            root_.SetFixedZoom(design_, ZoomOf(windowed_percent_));
+            if (HeldByRoot() == 0)
+            {
+                coming_back_ = now;
+            }
+        }
+    }
+    if (coming_back_)
+    {
+        if (root_.width() == coming_back_->x && root_.height() == coming_back_->y)
+        {
+            return; // the window's own size not here yet
+        }
+        coming_back_.reset();
+    }
+    windowed_percent_ = HeldByRoot();
 }
 
 void WindowSizes::RefreshRoom()

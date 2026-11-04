@@ -11,7 +11,11 @@
 // for the calls posted. A window's position is its client area's top left on the root
 // window, its gravity static, so it comes back where it stood however tall the window manager's title bar is - wholly
 // inside the desktop's work area (WindowPlace.h). The app answers X errors itself, as JUCE does, with a line on
-// stderr: Xlib's own handler ends the process, and every knob turned since the start with it.
+// stderr: Xlib's own handler ends the process, and every knob turned since the start with it. A window opened with
+// full screen allowed asks the window manager for full screen (EWMH: _NET_WM_STATE_FULLSCREEN, a client message to the
+// root window) and hears the state it is in from the property the window manager keeps (PropertyNotify), so a full
+// screen of the window manager's own key is followed too; where the window manager has none (an old one, or none at
+// all), the window is made undecorated (_MOTIF_WM_HINTS) over the whole screen, and put back as it was.
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
@@ -287,6 +291,62 @@ FrameExtents ExtentsOf(Display *display, ::Window window, float scale)
     }
     return extents;
 }
+
+/** The atoms a window's property of atoms holds (_NET_WM_STATE on a window, _NET_SUPPORTED on the root).
+    @param display  the app's connection
+    @param window   the window the property is on
+    @param name     the property's name
+    @return         its atoms; none where it is missing */
+std::vector<Atom> AtomsOf(Display *display, ::Window window, const char *name)
+{
+    Atom              type   = 0;
+    int               format = 0;
+    unsigned long     items  = 0;
+    unsigned long     after  = 0;
+    unsigned char    *data   = nullptr;
+    std::vector<Atom> atoms;
+    if (XGetWindowProperty(display, window, XInternAtom(display, name, False), 0, 4096, False, XA_ATOM, &type, &format,
+                           &items, &after, &data) == Success &&
+        data != nullptr && format == 32)
+    {
+        const auto *longs = reinterpret_cast<const unsigned long *>(data); // format 32 arrives as longs
+        atoms.assign(longs, longs + items);
+    }
+    if (data != nullptr)
+    {
+        XFree(data);
+    }
+    return atoms;
+}
+
+/** Whether a window manager runs that takes a window full screen as EWMH asks: one that says it is there
+    (_NET_SUPPORTING_WM_CHECK on the root) and lists _NET_WM_STATE_FULLSCREEN among what it supports (_NET_SUPPORTED).
+    @param display  the app's connection
+    @return         true where _NET_WM_STATE_FULLSCREEN can be asked for */
+bool HasEwmhFullScreen(Display *display)
+{
+    const ::Window root = DefaultRootWindow(display);
+    Atom           type = 0;
+    int            format{0};
+    unsigned long  items{0};
+    unsigned long  after{0};
+    unsigned char *data = nullptr;
+    const bool     has_manager =
+        XGetWindowProperty(display, root, XInternAtom(display, "_NET_SUPPORTING_WM_CHECK", False), 0, 1, False,
+                           XA_WINDOW, &type, &format, &items, &after, &data) == Success &&
+        data != nullptr && items == 1;
+    if (data != nullptr)
+    {
+        XFree(data);
+    }
+    if (!has_manager)
+    {
+        return false;
+    }
+    const std::vector<Atom> supported = AtomsOf(display, root, "_NET_SUPPORTED");
+    return std::find(supported.begin(), supported.end(), XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", False)) !=
+           supported.end();
+}
 } // namespace
 
 class LinuxPlatform;
@@ -323,6 +383,9 @@ class LinuxWindow final : public AppWindow
     gfx::PointI         LargestContent() const override;
     void                SetTitle(const std::string &title) override;
     std::string         Title() const override;
+    bool                CanGoFullScreen() const override;
+    bool                IsFullScreen() const override;
+    bool                SetFullScreen(bool is_full_screen) override;
 
     /** The X window's id, the key the platform finds the window by.
         @return the id; 0 when the window was not made */
@@ -359,6 +422,27 @@ class LinuxWindow final : public AppWindow
         @param placed  true when the position is one the app asked for (USPosition), false when it is a default */
     void SetSizeHints(int x, int y, bool placed);
 
+    /** Full screen asked of the window manager (EWMH): a _NET_WM_STATE client message to the root window, adding or
+        removing _NET_WM_STATE_FULLSCREEN, and before the window is mapped the property itself, which a window manager
+        reads as it takes the window on.
+        @param is_full_screen  true to add full screen, false to take it away */
+    void AskWindowManager(bool is_full_screen);
+
+    /** Full screen with no window manager's: the window undecorated (_MOTIF_WM_HINTS) over the whole screen, or put
+        back - its decoration, its size hints and its place and size as they were - each told at once.
+        @param is_full_screen  true for full screen, false for the window it was */
+    void FillScreenOurselves(bool is_full_screen);
+
+    /** The size hints set for the window it is out of full screen - its place and size before full screen - and with
+        none of its limits while it is full screen. */
+    void SetWindowedSizeHints();
+
+    /** The window manager's word on full screen read again (_NET_WM_STATE), and a change told to the app. */
+    void FollowWindowManager();
+
+    /** The app told of a change of full screen, where the state differs from the one it was last told. */
+    void TellFullScreen();
+
     LinuxPlatform &platform_;    ///< the platform this window is in the table of.
     Display       *display_;     ///< the platform's connection.
     ::Window       window_{0};   ///< the X window; 0 when it was not made.
@@ -374,6 +458,15 @@ class LinuxWindow final : public AppWindow
     int                           fixed_height_{0}; ///< the bar's height, in design pixels, over what scales.
     std::function<void(int, int)> resized_; ///< told the content's design size after the person dragged the frame.
     bool                          dialog_;  ///< a dialog: typed as one, Escape closes it.
+    std::function<void(bool)>     full_screen_changed_;   ///< told each change of full screen; may be empty.
+    bool                          may_go_full_screen_;    ///< opened with full screen allowed, and no dialog.
+    bool                          is_full_screen_{false}; ///< full screen, or asked to be: the state last asked for
+    bool                          is_full_screen_told_{false}; ///< the state the app was last told
+    bool                          is_filling_screen_{false};   ///< full screen made here, with no window manager's
+    bool                          is_mapped_{false};           ///< the window manager has shown the window
+    std::pair<int, int>           windowed_position_{0, 0};    ///< its client area's top left before full screen
+    gfx::PointI                   windowed_size_{0, 0};        ///< its client area's size before full screen, in pixels
+    FrameExtents                  windowed_extents_;           ///< the window manager's frame before full screen
 };
 
 /** The Standalone's platform on Linux: the app's X11 connection, its windows by id, and the loop - a ppoll over the
@@ -901,7 +994,9 @@ std::unique_ptr<window::RunLoop> LinuxPlatform::ChildLoop()
 
 LinuxWindow::LinuxWindow(LinuxPlatform &platform, const WindowOptions &options)
     : platform_(platform), display_(platform.display()), closing_(options.closing), constrain_(options.constrain),
-      aspect_(options.aspect), fixed_height_(options.fixed_height), resized_(options.resized), dialog_(options.dialog)
+      aspect_(options.aspect), fixed_height_(options.fixed_height), resized_(options.resized), dialog_(options.dialog),
+      full_screen_changed_(options.full_screen_changed),
+      may_go_full_screen_(options.may_go_full_screen && !options.dialog)
 {
     const int      screen = DefaultScreen(display_);
     const ::Window root   = RootWindow(display_, screen);
@@ -934,7 +1029,9 @@ LinuxWindow::LinuxWindow(LinuxPlatform &platform, const WindowOptions &options)
                              (XMatchVisualInfo(display_, screen, 32, TrueColor, &visual) != 0 && LaysOutBgra(visual));
     XSetWindowAttributes attributes{};
     unsigned long        mask = CWEventMask | CWBackPixel | CWBorderPixel;
-    attributes.event_mask     = StructureNotifyMask | KeyPressMask | FocusChangeMask;
+    // A window that may go full screen hears its properties too: the window manager's word on its state.
+    attributes.event_mask = StructureNotifyMask | KeyPressMask | FocusChangeMask |
+                            (may_go_full_screen_ ? static_cast<long>(PropertyChangeMask) : 0L);
     // Black, opaque: in a TrueColor visual its pixel is the alpha alone.
     attributes.background_pixel = own_visual ? (visual.depth == 32 ? 0xff000000ul : 0ul) : BlackPixel(display_, screen);
     attributes.border_pixel     = 0;
@@ -1030,6 +1127,11 @@ void LinuxWindow::SetSizeHints(int x, int y, bool placed)
                 size->min_aspect.y = size->max_aspect.y = aspect.y;
             }
         }
+        if (is_full_screen_)
+        {
+            // Full screen is the screen's size: no least, most or aspect for a window manager to hold it to.
+            size->flags = PWinGravity | PPosition | (placed ? USPosition : 0);
+        }
         XSetWMNormalHints(display_, window_, size);
         XFree(size);
     }
@@ -1037,6 +1139,10 @@ void LinuxWindow::SetSizeHints(int x, int y, bool placed)
 
 std::pair<int, int> LinuxWindow::Position() const
 {
+    if (is_full_screen_ || is_full_screen_told_)
+    {
+        return windowed_position_; // full screen, it stands over the screen: where it stood before
+    }
     int      x     = 0;
     int      y     = 0;
     ::Window child = 0;
@@ -1069,6 +1175,7 @@ void LinuxWindow::BringToFront()
 
 void LinuxWindow::SetContentSize(int width, int height)
 {
+    SetFullScreen(false); // a size of the app's own is the window's
     // The size hints first, which hold the window to its size, then the size; the gravity static, so the client area's
     // top left stays where it stands.
     pixel_width_      = std::max(1, static_cast<int>(std::lround(static_cast<float>(width) * scale_)));
@@ -1081,6 +1188,7 @@ void LinuxWindow::SetContentSize(int width, int height)
 
 void LinuxWindow::SetContentSizeOnScreen(int width, int height)
 {
+    SetFullScreen(false); // a size of the app's own is the window's
     // The frame at the new size, its client area's top left kept, moved onto the desktop's work area in from any edge
     // it would cross; the size hints first, then the client area moved and sized - the gravity static, so the place is
     // the client area's. A size the app asks for draws no ConfigureNotify the owner hears (Event), so it is told here.
@@ -1106,9 +1214,11 @@ void LinuxWindow::SetContentSizeOnScreen(int width, int height)
 
 gfx::PointI LinuxWindow::LargestContent() const
 {
-    // The desktop's work area less the window manager's frame round the window, in design units, rounded down.
-    const gfx::RectI   area    = WorkArea(display_);
-    const FrameExtents extents = ExtentsOf(display_, window_, scale_);
+    // The desktop's work area less the window manager's frame round the window, in design units, rounded down: the
+    // frame it had before full screen while it is full screen, which has none.
+    const gfx::RectI   area = WorkArea(display_);
+    const FrameExtents extents =
+        is_full_screen_ || is_full_screen_told_ ? windowed_extents_ : ExtentsOf(display_, window_, scale_);
     return {std::max(1, static_cast<int>(
                             std::floor(static_cast<float>(area.width() - extents.left - extents.right) / scale_))),
             std::max(1, static_cast<int>(
@@ -1148,6 +1258,165 @@ std::string LinuxWindow::Title() const
     return title;
 }
 
+bool LinuxWindow::CanGoFullScreen() const
+{
+    return may_go_full_screen_;
+}
+
+bool LinuxWindow::IsFullScreen() const
+{
+    return is_full_screen_;
+}
+
+bool LinuxWindow::SetFullScreen(bool is_full_screen)
+{
+    if (!may_go_full_screen_ || is_full_screen == is_full_screen_)
+    {
+        return false;
+    }
+    if (is_full_screen && !is_full_screen_told_)
+    {
+        // What it comes back to: its place, its size and the frame round it, as they are now.
+        windowed_position_ = Position();
+        windowed_size_     = {pixel_width_, pixel_height_};
+        windowed_extents_  = ExtentsOf(display_, window_, scale_);
+    }
+    if (is_filling_screen_ || (is_full_screen && !HasEwmhFullScreen(display_)))
+    {
+        FillScreenOurselves(is_full_screen);
+        return true;
+    }
+    is_full_screen_ = is_full_screen;
+    // Hints first, so the window manager takes the window to the screen's size or back to its own limits: full screen
+    // with none, back with the owner's again.
+    SetWindowedSizeHints();
+    AskWindowManager(is_full_screen);
+    return true;
+}
+
+void LinuxWindow::SetWindowedSizeHints()
+{
+    // At the size it had out of full screen, for a window of one size whose least and most are its size; none at all
+    // while full screen (SetSizeHints).
+    const int width  = pixel_width_;
+    const int height = pixel_height_;
+    pixel_width_     = windowed_size_.x;
+    pixel_height_    = windowed_size_.y;
+    SetSizeHints(windowed_position_.first, windowed_position_.second, true);
+    pixel_width_  = width;
+    pixel_height_ = height;
+}
+
+void LinuxWindow::AskWindowManager(bool is_full_screen)
+{
+    const Atom state      = XInternAtom(display_, "_NET_WM_STATE", False);
+    const Atom fullscreen = XInternAtom(display_, "_NET_WM_STATE_FULLSCREEN", False);
+    if (!is_mapped_ && is_full_screen)
+    {
+        // Not taken on yet: the window manager reads the state as it takes the window on, and may not hear a message
+        // for a window it does not manage.
+        XChangeProperty(display_, window_, state, XA_ATOM, 32, PropModeReplace,
+                        reinterpret_cast<const unsigned char *>(&fullscreen), 1);
+    }
+    XEvent message{};
+    message.xclient.type         = ClientMessage;
+    message.xclient.window       = window_;
+    message.xclient.message_type = state;
+    message.xclient.format       = 32;
+    message.xclient.data.l[0]    = is_full_screen ? 1 : 0; // _NET_WM_STATE_ADD, _NET_WM_STATE_REMOVE
+    message.xclient.data.l[1]    = static_cast<long>(fullscreen);
+    message.xclient.data.l[2]    = 0;
+    message.xclient.data.l[3]    = 1; // asked by an application
+    XSendEvent(display_, DefaultRootWindow(display_), False, SubstructureRedirectMask | SubstructureNotifyMask,
+               &message);
+    XFlush(display_);
+}
+
+void LinuxWindow::FillScreenOurselves(bool is_full_screen)
+{
+    is_full_screen_    = is_full_screen;
+    is_filling_screen_ = is_full_screen;
+    // _MOTIF_WM_HINTS: flags, functions, decorations, input mode, status - decorations (flag 2) none. Taken away again
+    // on the way back, which gives the window manager's own decoration back.
+    const Atom motif = XInternAtom(display_, "_MOTIF_WM_HINTS", False);
+    if (is_full_screen)
+    {
+        const long hints[5] = {2, 0, 0, 0, 0};
+        XChangeProperty(display_, window_, motif, motif, 32, PropModeReplace,
+                        reinterpret_cast<const unsigned char *>(hints), 5);
+    }
+    else
+    {
+        XDeleteProperty(display_, window_, motif);
+    }
+    const int        screen = DefaultScreen(display_);
+    const gfx::RectI frame =
+        is_full_screen
+            ? gfx::RectI{0, 0, DisplayWidth(display_, screen), DisplayHeight(display_, screen)}
+            : gfx::RectI{windowed_position_.first, windowed_position_.second, windowed_size_.x, windowed_size_.y};
+    pixel_width_  = std::max(1, frame.width());
+    pixel_height_ = std::max(1, frame.height());
+    SetSizeHints(frame.x(), frame.y(), true);
+    XMoveResizeWindow(display_, window_, frame.x(), frame.y(), static_cast<unsigned>(pixel_width_),
+                      static_cast<unsigned>(pixel_height_));
+    if (is_full_screen)
+    {
+        XRaiseWindow(display_, window_);
+    }
+    XFlush(display_);
+    // A size the app asks for draws no ConfigureNotify the owner hears (Event), so it is told here.
+    if (resized_)
+    {
+        const auto f = resized_;
+        f(std::max(1, static_cast<int>(std::lround(static_cast<float>(pixel_width_) / scale_))),
+          std::max(1, static_cast<int>(std::lround(static_cast<float>(pixel_height_) / scale_))));
+    }
+    TellFullScreen();
+}
+
+void LinuxWindow::FollowWindowManager()
+{
+    if (is_filling_screen_)
+    {
+        return; // full screen of the window's own: no window manager's word to follow
+    }
+    const std::vector<Atom> state = AtomsOf(display_, window_, "_NET_WM_STATE");
+    const bool              is_now =
+        std::find(state.begin(), state.end(), XInternAtom(display_, "_NET_WM_STATE_FULLSCREEN", False)) != state.end();
+    if (is_now == is_full_screen_told_)
+    {
+        return;
+    }
+    if (is_now && !is_full_screen_)
+    {
+        // The window manager's own key, not the app's: the size hints let go, so the window manager's size holds.
+        windowed_size_    = {pixel_width_, pixel_height_};
+        windowed_extents_ = ExtentsOf(display_, window_, scale_);
+        is_full_screen_   = true;
+        SetWindowedSizeHints();
+    }
+    else if (!is_now && is_full_screen_)
+    {
+        is_full_screen_ = false; // back by the window manager's own key: the owner's limits again
+        SetWindowedSizeHints();
+    }
+    TellFullScreen();
+}
+
+void LinuxWindow::TellFullScreen()
+{
+    if (is_full_screen_ == is_full_screen_told_)
+    {
+        return;
+    }
+    is_full_screen_told_ = is_full_screen_;
+    if (full_screen_changed_)
+    {
+        const auto f = full_screen_changed_;
+        f(is_full_screen_);
+    }
+}
+
 void LinuxWindow::Event(const XEvent &event)
 {
     if (event.type == ClientMessage &&
@@ -1169,8 +1438,26 @@ void LinuxWindow::Event(const XEvent &event)
             platform_.PressShortcut(StrokeOf(key));
         }
     }
-    else if (event.type == ConfigureNotify &&
-             (event.xconfigure.width != pixel_width_ || event.xconfigure.height != pixel_height_))
+    else if (event.type == MapNotify)
+    {
+        is_mapped_ = true;
+    }
+    else if (event.type == PropertyNotify && event.xproperty.atom == XInternAtom(display_, "_NET_WM_STATE", False))
+    {
+        FollowWindowManager(); // the window manager's word on full screen, whoever asked
+    }
+    else if (event.type == ConfigureNotify && may_go_full_screen_ && !is_filling_screen_)
+    {
+        // The state first, so a full screen of the window manager's own key is known before its size is; out of full
+        // screen, the place it stands is the one to come back to.
+        FollowWindowManager();
+        if (!is_full_screen_ && !is_full_screen_told_)
+        {
+            windowed_position_ = Position();
+        }
+    }
+    if (event.type == ConfigureNotify &&
+        (event.xconfigure.width != pixel_width_ || event.xconfigure.height != pixel_height_))
     {
         // The window manager resized the window - the person dragged its frame - to a size the app did not ask for.
         pixel_width_  = event.xconfigure.width;

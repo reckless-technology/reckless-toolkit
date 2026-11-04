@@ -76,6 +76,7 @@ class FakeAppWindow final : public app::AppWindow
         @param height  the content's height, in design pixels */
     void SetContentSize(int width, int height) override
     {
+        LeaveFullScreenAtOnce();
         options_.width  = width;
         options_.height = height;
     }
@@ -86,6 +87,7 @@ class FakeAppWindow final : public app::AppWindow
         @param height  the content's height, in design pixels */
     void SetContentSizeOnScreen(int width, int height) override
     {
+        LeaveFullScreenAtOnce();
         options_.width  = width;
         options_.height = height;
         if (work_area)
@@ -158,6 +160,82 @@ class FakeAppWindow final : public app::AppWindow
         }
     }
 
+    /** Whether the window was opened with full screen allowed, and is no dialog, as on every platform.
+        @return  WindowOptions::may_go_full_screen, for a window that is not a dialog */
+    bool CanGoFullScreen() const override
+    {
+        return options_.may_go_full_screen && !options_.dialog;
+    }
+
+    /** Whether the window is full screen, or going there while the suite holds the change (`defers_full_screen`).
+        @return  the state last asked for */
+    bool IsFullScreen() const override
+    {
+        return is_full_screen_;
+    }
+
+    /** Full screen asked for: the window's content the display's size (`display`), or its own again, told to
+        `resized` and then to `full_screen_changed`, as every platform tells them - at once, or once the suite finishes
+        the change (FinishFullScreen) while `defers_full_screen` is set, as a Mac's animation finishes it. Where it
+        stood is kept, Position giving it throughout.
+        @param is_full_screen  true for full screen, false for the window it was
+        @return                true when the change was made or begun; false for a window that may not go full
+                               screen, or one in the state asked for */
+    bool SetFullScreen(bool is_full_screen) override
+    {
+        if (!CanGoFullScreen() || is_full_screen == is_full_screen_)
+        {
+            return false;
+        }
+        is_full_screen_ = is_full_screen;
+        if (is_full_screen)
+        {
+            windowed_size_ = {options_.width, options_.height};
+        }
+        ++full_screen_changes_;
+        is_full_screen_pending_ = true;
+        if (!defers_full_screen)
+        {
+            FinishFullScreen();
+        }
+        return true;
+    }
+
+    /** The change SetFullScreen began made: the content at its new size, told to `resized`, then to
+        `full_screen_changed`. Nothing where no change is waiting.
+        @return  true when a change was finished */
+    bool FinishFullScreen()
+    {
+        if (!is_full_screen_pending_)
+        {
+            return false;
+        }
+        is_full_screen_pending_ = false;
+        const gfx::PointI size  = is_full_screen_ ? DisplaySize() : windowed_size_;
+        Resize(size.x, size.y);
+        if (options_.full_screen_changed)
+        {
+            const auto changed = options_.full_screen_changed;
+            changed(is_full_screen_);
+        }
+        return true;
+    }
+
+    /** How many changes of full screen the window began (SetFullScreen).
+        @return  the count */
+    int full_screen_changes() const noexcept
+    {
+        return full_screen_changes_;
+    }
+
+    /** The whole display the window stands on, which full screen covers, in the window's units, which the suite sets;
+        none for the work area's size, else 1920 x 1080. */
+    std::optional<gfx::RectI> display;
+
+    /** Each change of full screen begun by SetFullScreen and finished by FinishFullScreen, as a Mac's animation
+        finishes it; false for every change at once, as Windows makes it. */
+    bool defers_full_screen{false};
+
     /** The person resizes the window: its content `width` x `height` design pixels, told to its `resized`.
         @param width   the content's width, in design pixels
         @param height  the content's height, in design pixels */
@@ -173,10 +251,35 @@ class FakeAppWindow final : public app::AppWindow
     }
 
   private:
-    app::WindowOptions options_;              ///< what the window was opened with, its size as it is now
-    FakeAppPlatform   &platform_;             ///< the platform that lists it
-    int                brought_to_front_{0};  ///< how many times BringToFront ran
-    int                on_screen_resizes_{0}; ///< how many times SetContentSizeOnScreen ran
+    /** @return  the display's size, which full screen takes: `display`'s, else `work_area`'s, else 1920 x 1080 */
+    gfx::PointI DisplaySize() const
+    {
+        if (display)
+        {
+            return {display->width(), display->height()};
+        }
+        return work_area ? gfx::PointI{work_area->width(), work_area->height()} : gfx::PointI{1920, 1080};
+    }
+
+    /** Full screen left and the change finished at once, before a size of the app's own, as every platform leaves
+        it. */
+    void LeaveFullScreenAtOnce()
+    {
+        if (is_full_screen_)
+        {
+            SetFullScreen(false);
+            FinishFullScreen();
+        }
+    }
+
+    app::WindowOptions options_;                       ///< what the window was opened with, its size as it is now
+    FakeAppPlatform   &platform_;                      ///< the platform that lists it
+    int                brought_to_front_{0};           ///< how many times BringToFront ran
+    int                on_screen_resizes_{0};          ///< how many times SetContentSizeOnScreen ran
+    bool               is_full_screen_{false};         ///< full screen, or going there: the state last asked for
+    bool               is_full_screen_pending_{false}; ///< a change begun and not yet finished (FinishFullScreen)
+    gfx::PointI        windowed_size_{0, 0};           ///< the content's size before it went full screen
+    int                full_screen_changes_{0};        ///< how many changes SetFullScreen began
 };
 
 /** The fake platform: windows, timers, the calls after the current event, the menu, the posts from other threads,

@@ -10,7 +10,11 @@
 // owner's constraint on the content (WM_SIZING) - and a size given it any other way, a snap to a side of the screen,
 // held as JUCE's window holds one (WM_WINDOWPOSCHANGING) - and each size taken told (WM_SIZE). The end of a session
 // reaches the top-level windows alone (WM_QUERYENDSESSION, WM_ENDSESSION), which hand it to the app's ending. The
-// window's icon is the executable's own (the recipe compiles the series' app icon into it as resource 1).
+// window's icon is the executable's own (the recipe compiles the series' app icon into it as resource 1). A window
+// opened with full screen allowed goes full screen borderless - its caption, frame and menu bar taken off, a popup over
+// the whole of the monitor it is most on, which puts the task bar under it - and comes back with the style, the menu
+// bar and the placement it had (GetWindowPlacement, SetWindowPlacement), as a browser's F11 does: exclusive full screen
+// is a swap chain's, and the child window draws through GDI.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -452,10 +456,12 @@ class WinWindow final : public AppWindow
         @param hooks    the app's ending, the shortcuts, the menu bar's commands and the menu bar it opens with */
     WinWindow(const WindowOptions &options, WindowHooks hooks)
         : closing_(options.closing), rescaled_(options.rescaled), constrain_(options.constrain),
-          resized_(options.resized), session_ending_(std::move(hooks.session_ending)),
-          shortcut_(std::move(hooks.shortcut)), command_(std::move(hooks.command)), gone_(std::move(hooks.gone)),
-          dialog_(options.dialog), design_width_(options.width), design_height_(options.height),
-          style_(StyleOf(options)), ex_style_(ExStyleOf(options)), has_menu_(hooks.menu != nullptr)
+          resized_(options.resized), full_screen_changed_(options.full_screen_changed),
+          session_ending_(std::move(hooks.session_ending)), shortcut_(std::move(hooks.shortcut)),
+          command_(std::move(hooks.command)), gone_(std::move(hooks.gone)), dialog_(options.dialog),
+          design_width_(options.width), design_height_(options.height), style_(StyleOf(options)),
+          ex_style_(ExStyleOf(options)), has_menu_(hooks.menu != nullptr),
+          may_go_full_screen_(options.may_go_full_screen && !options.dialog)
     {
         HWND owner = nullptr;
         if (const auto *o = dynamic_cast<const WinWindow *>(options.owner))
@@ -527,6 +533,10 @@ class WinWindow final : public AppWindow
             SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
             DestroyWindow(hwnd_);
         }
+        if (held_menu_ != nullptr)
+        {
+            DestroyMenu(held_menu_); // taken off for full screen: no window destroys it
+        }
     }
 
     void *Handle() const override
@@ -541,9 +551,9 @@ class WinWindow final : public AppWindow
 
     std::pair<int, int> Position() const override
     {
-        if (IsIconic(hwnd_))
+        if (IsIconic(hwnd_) || is_full_screen_)
         {
-            return normal_position_; // minimised, it stands at -32000: where it stood before
+            return normal_position_; // minimised, it stands at -32000; full screen, over the monitor: where it stood
         }
         RECT r{};
         GetWindowRect(hwnd_, &r);
@@ -561,6 +571,7 @@ class WinWindow final : public AppWindow
 
     void SetContentSize(int width, int height) override
     {
+        SetFullScreen(false); // a size of the app's own is the window's
         design_width_  = width;
         design_height_ = height;
         SetOwnSize(0, 0, Outer(), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -568,6 +579,7 @@ class WinWindow final : public AppWindow
 
     void SetContentSizeOnScreen(int width, int height) override
     {
+        SetFullScreen(false); // a size of the app's own is the window's
         if (IsZoomed(hwnd_) || IsIconic(hwnd_))
         {
             ShowWindow(hwnd_, SW_RESTORE); // a maximised or minimised window's size is not its own to set
@@ -610,6 +622,17 @@ class WinWindow final : public AppWindow
             }
             return;
         }
+        if (is_full_screen_)
+        {
+            // Off the window while it is full screen: held for the window it comes back to, which keeps its size.
+            if (held_menu_ != nullptr)
+            {
+                DestroyMenu(held_menu_);
+            }
+            held_menu_ = menu;
+            has_menu_  = menu != nullptr;
+            return;
+        }
         HMENU old = GetMenu(hwnd_);
         ::SetMenu(hwnd_, menu);
         if (old != nullptr)
@@ -635,6 +658,38 @@ class WinWindow final : public AppWindow
         std::wstring wide(static_cast<std::size_t>(length) + 1, L'\0');
         wide.resize(static_cast<std::size_t>(GetWindowTextW(hwnd_, wide.data(), length + 1)));
         return Utf8Of(wide);
+    }
+
+    bool CanGoFullScreen() const override
+    {
+        return may_go_full_screen_ && hwnd_ != nullptr;
+    }
+
+    bool IsFullScreen() const override
+    {
+        return is_full_screen_;
+    }
+
+    bool SetFullScreen(bool is_full_screen) override
+    {
+        if (!CanGoFullScreen() || is_full_screen == is_full_screen_)
+        {
+            return false;
+        }
+        if (is_full_screen)
+        {
+            EnterFullScreenNow();
+        }
+        else
+        {
+            LeaveFullScreenNow();
+        }
+        if (full_screen_changed_)
+        {
+            const auto f = full_screen_changed_;
+            f(is_full_screen_);
+        }
+        return true;
     }
 
     /** The window's messages: a close asked for, Escape on a dialog, a move, a monitor of another DPI, the session's
@@ -732,7 +787,7 @@ class WinWindow final : public AppWindow
             }
             break;
         case WM_MOVE:
-            if (!IsIconic(hwnd_))
+            if (!IsIconic(hwnd_) && !is_full_screen_) // full screen, it stands over the monitor: not its own place
             {
                 RECT r{};
                 GetWindowRect(hwnd_, &r);
@@ -744,7 +799,14 @@ class WinWindow final : public AppWindow
             // Windows suggests (so a window dragged across stays under the pointer), and the drawing told.
             dpi_                  = LOWORD(wparam);
             const auto *suggested = reinterpret_cast<const RECT *>(lparam);
-            SetOwnSize(suggested->left, suggested->top, Outer(), SWP_NOZORDER | SWP_NOACTIVATE);
+            if (is_full_screen_)
+            {
+                CoverMonitor(); // full screen: the whole of the monitor still, at its DPI
+            }
+            else
+            {
+                SetOwnSize(suggested->left, suggested->top, Outer(), SWP_NOZORDER | SWP_NOACTIVATE);
+            }
             if (rescaled_)
             {
                 const auto f = rescaled_;
@@ -752,6 +814,21 @@ class WinWindow final : public AppWindow
             }
             return 0;
         }
+        case WM_DISPLAYCHANGE:
+            if (is_full_screen_)
+            {
+                CoverMonitor(); // a monitor's resolution changed, or one came or went: covered again
+            }
+            break;
+        case WM_SYSCOMMAND:
+            // The menu's mnemonic for a key with Alt that a shortcut used (Alt+Enter for full screen): the character
+            // its key down typed, which Windows would look for in the bar and beep at finding none.
+            if ((wparam & 0xFFF0) == SC_KEYMENU && lparam != 0 && is_alt_key_used_)
+            {
+                is_alt_key_used_ = false;
+                return 0;
+            }
+            break;
         case WM_QUERYENDSESSION:
             return TRUE; // the app saves what it keeps when the session does end
         case WM_ENDSESSION:
@@ -804,12 +881,85 @@ class WinWindow final : public AppWindow
             return false;
         }
         const Shortcut stroke = StrokeOf(vk);
+        is_alt_key_used_      = false;
         if (stroke.empty() || (TypesCharacter(stroke) && !stroke.primary && !stroke.alt))
         {
             return false;
         }
         const auto shortcut = shortcut_;
-        return shortcut(stroke);
+        const bool is_used  = shortcut(stroke);
+        is_alt_key_used_    = is_used && stroke.alt && !stroke.primary;
+        return is_used;
+    }
+
+    /** The window made a borderless popup over the whole of the monitor it is most on - its caption and frame taken
+        off, its menu bar held - after what it was is kept: its placement, its styles, its content's design size. The
+        task bar goes under a window that covers its monitor. */
+    void EnterFullScreenNow()
+    {
+        if (IsIconic(hwnd_))
+        {
+            ShowWindow(hwnd_, SW_RESTORE); // a minimised window's placement is not the one to come back to
+        }
+        placement_.length = sizeof(placement_);
+        GetWindowPlacement(hwnd_, &placement_);
+        windowed_style_       = static_cast<DWORD>(GetWindowLongPtrW(hwnd_, GWL_STYLE));
+        windowed_ex_style_    = static_cast<DWORD>(GetWindowLongPtrW(hwnd_, GWL_EXSTYLE));
+        windowed_design_size_ = {design_width_, design_height_};
+        is_full_screen_       = true; // before it moves: WM_MOVE keeps where it stood
+        held_menu_            = GetMenu(hwnd_);
+        if (held_menu_ != nullptr)
+        {
+            ::SetMenu(hwnd_, nullptr);
+        }
+        SetWindowLongPtrW(hwnd_, GWL_STYLE,
+                          static_cast<LONG_PTR>((windowed_style_ & ~static_cast<DWORD>(WS_CAPTION | WS_THICKFRAME)) |
+                                                static_cast<DWORD>(WS_POPUP)));
+        SetWindowLongPtrW(
+            hwnd_, GWL_EXSTYLE,
+            static_cast<LONG_PTR>(windowed_ex_style_ & ~static_cast<DWORD>(WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE |
+                                                                           WS_EX_CLIENTEDGE | WS_EX_STATICEDGE)));
+        CoverMonitor();
+    }
+
+    /** The window as it was before full screen: its styles, its menu bar and its placement put back, the frame worked
+        out again round them. */
+    void LeaveFullScreenNow()
+    {
+        is_full_screen_ = false;
+        SetWindowLongPtrW(hwnd_, GWL_STYLE, static_cast<LONG_PTR>(windowed_style_));
+        SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, static_cast<LONG_PTR>(windowed_ex_style_));
+        if (held_menu_ != nullptr)
+        {
+            ::SetMenu(hwnd_, held_menu_);
+            held_menu_ = nullptr;
+        }
+        // The design size it had, for a monitor of another DPI to size it by on the way back (WM_DPICHANGED); WM_SIZE
+        // tells the size it takes.
+        design_width_  = windowed_design_size_.x;
+        design_height_ = windowed_design_size_.y;
+        setting_size_  = true;
+        SetWindowPlacement(hwnd_, &placement_);
+        SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        setting_size_ = false;
+        DrawMenuBar(hwnd_);
+    }
+
+    /** The window over the whole of the monitor it is most on - the monitor's rectangle, not its work area - at that
+        monitor's DPI, in front of every window that is not always on top; WM_SIZE tells the size taken. */
+    void CoverMonitor()
+    {
+        MONITORINFO info{};
+        info.cbSize = sizeof(info);
+        if (!GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), &info))
+        {
+            return;
+        }
+        const RECT &whole = info.rcMonitor;
+        SetOwnSize(static_cast<int>(whole.left), static_cast<int>(whole.top),
+                   {whole.right - whole.left, whole.bottom - whole.top},
+                   SWP_NOOWNERZORDER | SWP_FRAMECHANGED); // and at the top, in front of every other window
     }
 
     /** A character for this window, its own or handed on: the key that typed it offered to the shortcuts, read back
@@ -900,6 +1050,15 @@ class WinWindow final : public AppWindow
     bool                                    has_menu_;              ///< the window carries a menu bar.
     std::pair<int, int>                     normal_position_{0, 0}; ///< where it stood when last it was not minimised
     bool                                    setting_size_{false};   ///< inside SetOwnSize
+    std::function<void(bool)>               full_screen_changed_;   ///< told each change of full screen; may be empty.
+    bool                                    may_go_full_screen_;    ///< opened with full screen allowed, and no dialog.
+    bool                                    is_full_screen_{false}; ///< borderless over its monitor.
+    bool            is_alt_key_used_{false}; ///< the last key down, with Alt, was a shortcut's: its mnemonic is not.
+    WINDOWPLACEMENT placement_{};            ///< the placement it had before full screen.
+    DWORD           windowed_style_{0};      ///< the style it had before full screen.
+    DWORD           windowed_ex_style_{0};   ///< the extended style it had before full screen.
+    gfx::PointI     windowed_design_size_{0, 0}; ///< the content's design size before full screen.
+    HMENU           held_menu_{nullptr};         ///< the menu bar taken off for full screen, owned; null for none.
 };
 
 /** The Standalone's platform on Windows: the process made DPI aware, a class for the app's windows, a message-only

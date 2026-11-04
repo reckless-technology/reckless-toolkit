@@ -100,6 +100,63 @@ class AppWindow
     {
         return {};
     }
+
+    /** Whether the window may go full screen: opened with WindowOptions::may_go_full_screen, on a platform that has
+        full screen. False for every window that did not ask, and for the default.
+        @return  true when SetFullScreen can take the window full screen */
+    virtual bool CanGoFullScreen() const
+    {
+        return false;
+    }
+
+    /** Whether the window is full screen - covering the whole of one display, its title bar, its frame and on Windows
+        its menu bar gone - or is on its way there: the state last asked for, by the app or by the person (macOS's
+        green button, a window manager's own key), which the platform may take a moment to finish (macOS's animation,
+        a window manager's answer). WindowOptions::full_screen_changed says when it has. False for the default.
+        @return  true while full screen, or going there */
+    virtual bool IsFullScreen() const
+    {
+        return false;
+    }
+
+    /** The window taken full screen, or back to the window it was. Full screen covers the display the window is most
+        on: on Windows a borderless window over the whole monitor, the task bar under it; on macOS the window's own
+        full-screen space, as its green button makes one; on Linux the window manager's full screen (EWMH
+        _NET_WM_STATE_FULLSCREEN), or with a window manager that has none the window undecorated over the screen. Back
+        from full screen the window has the frame, the place and the size it had before, to the pixel. Each change is
+        told to `resized` at the new size (WindowOptions::resized), as a resize the person made is, the window's scale
+        (Scale) the display's, and to WindowOptions::full_screen_changed. While full screen, Position is where the
+       window stood before, and LargestContent what the display takes of a window, so an app keeps and sizes the window
+       it will come back to; a size set (SetContentSize, SetContentSizeOnScreen) leaves full screen first. Nothing is
+       done for a window that may not go full screen (CanGoFullScreen), nor for one already in the state asked for.
+        @param is_full_screen  true for full screen, false for the window it was
+        @return                true when the change was made or begun; false where nothing was done */
+    virtual bool SetFullScreen(bool is_full_screen)
+    {
+        static_cast<void>(is_full_screen); // a platform with no full screen
+        return false;
+    }
+
+    /** The window taken full screen: SetFullScreen(true).
+        @return  true when the change was made or begun */
+    bool EnterFullScreen()
+    {
+        return SetFullScreen(true);
+    }
+
+    /** The window back from full screen to the window it was: SetFullScreen(false).
+        @return  true when the change was made or begun */
+    bool LeaveFullScreen()
+    {
+        return SetFullScreen(false);
+    }
+
+    /** The window taken full screen where it is not, and back where it is: what a menu's Full screen item does.
+        @return  true when the change was made or begun */
+    bool ToggleFullScreen()
+    {
+        return SetFullScreen(!IsFullScreen());
+    }
 };
 
 /** What a window is opened with: its title, its content's design size, whether it is a dialog, and the calls the
@@ -138,6 +195,18 @@ struct WindowOptions
         window's own bar, across its top above the content, which keeps its design size; nothing on macOS, whose bar
         is the screen's, nor on Linux, where the app places a drawn bar in its content (MakeMenuBarView). */
     bool menu_bar{false};
+
+    /** The window may go full screen (AppWindow::SetFullScreen), and on macOS its green button takes it to a
+        full-screen space of its own. Off, the window never goes full screen, and on macOS stays out of every
+        full-screen space, its green button zooming it as a JUCE Standalone's does - every window opened before this
+        option was. */
+    bool may_go_full_screen{false};
+
+    /** The window went full screen (true) or came back from it (false), whoever asked - the app, or the person by the
+        green button on macOS or a window manager's own key on Linux: told once the platform says the change is made -
+        on Windows and macOS after the resize it brings, on Linux as the window manager says it, which may be either
+        side of its resize. May be empty. */
+    std::function<void(bool is_full_screen)> full_screen_changed;
 };
 
 /** The platform under the Standalone as the app holds it: windows, a timer, a deferred call, the menu, the event loop
