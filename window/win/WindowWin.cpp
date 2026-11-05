@@ -75,8 +75,18 @@ constexpr UINT kCallSoonMessage = WM_APP + 17;
 constexpr UINT kChooseFileMessage = WM_APP + 18;
 
 /** The message the display clock's thread posts to the window when a frame is due (ChildWindow::SetFramePacing).
-    Never posted to a window on the platform's timer, which is every window until a product asks. */
+    Never posted to a window on the platform's timer, which is every window until a product asks. Its WPARAM says which
+    of a frame's two passes it is: kFrameAsksToRun as the clock posts it, kFrameRuns as the window posts it to itself.
+ */
 constexpr UINT kDisplayFrameMessage = WM_APP + 19;
+
+/** The first pass of a frame: whether there is work ahead of it on the thread is read here, and the frame stands back
+    or goes on to its second pass. */
+constexpr WPARAM kFrameAsksToRun = 0;
+
+/** The second pass of a frame: the callback runs. A posted message of its own, so that every frame of one refresh has
+    read the queue before any of them has invalidated a window, and none takes another's paint for work ahead of it. */
+constexpr WPARAM kFrameRuns = 1;
 
 /** The message the display clock's thread posts to the window when it has given up on the display and the platform's
     own timer is to take over. */
@@ -86,6 +96,11 @@ constexpr UINT kDisplayClockGaveUpMessage = WM_APP + 20;
     always end at the due time, so that a machine coming back from sleep with a timer that never signalled reads the
     compositor again rather than sitting there. It is not a frame period and nothing is paced by it. */
 constexpr DWORD kClockWaitsAtMostMilliseconds = 1000;
+
+/** How long after a window has stood a frame back the clock's thread asks again, in seconds: long enough that the
+    window's thread is back in its queue and has taken the paint or the timer the frame stood back for, since a posted
+    message would outrank it again. Not a frame period, and nothing is paced by it. */
+constexpr double kStoodBackFrameAsksAgainSeconds = 0.001;
 
 /** The module this code is linked into: its window class is registered against it.
     @return the module's instance handle */
@@ -441,7 +456,9 @@ double DisplayRefreshHertzOf(HWND window) noexcept
     The waiting is in a thread of the window's own and each frame is posted to the window (kDisplayFrameMessage), so
     the callback runs on the window's thread as the timer's always has, and a plug-in's editor inside a host's loop is
     served as well as an app on its own loop. **At most one frame is in flight**: a window whose thread is busy - a
-    modal loop, a dialog, a drag - is never handed a backlog to run in a burst.
+    modal loop, a dialog, a drag - is never handed a backlog to run in a burst. A window may stand the frame back
+    (DoesFrameStandBack, FrameStoodBack), and the clock then posts the same frame again shortly, off its own schedule,
+    until it is taken: the schedule goes on underneath, and a refresh that passes meanwhile is simply not a frame.
 
     A product's lead (FrameRequest::lead_microseconds) wakes each frame that long before the vertical blank it is due
     at rather than at it, so a frame that takes a few milliseconds is finished as the compositor takes it instead of
@@ -481,10 +498,11 @@ class WinDisplayClock
         is_frame_in_flight_.store(false, std::memory_order_relaxed);
         // Without the high resolution the timer is the system clock's 15.625 ms again, which is the whole fault being
         // fixed, so a Windows that refuses the flag is told apart from one that takes it rather than paced badly.
-        timer_ = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
-                                        TIMER_MODIFY_STATE | SYNCHRONIZE);
-        stop_  = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        if (timer_ == nullptr || stop_ == nullptr)
+        timer_      = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                             TIMER_MODIFY_STATE | SYNCHRONIZE);
+        stop_       = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        stood_back_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (timer_ == nullptr || stop_ == nullptr || stood_back_ == nullptr)
         {
             Stop();
             return false;
@@ -516,6 +534,11 @@ class WinDisplayClock
             CloseHandle(stop_);
             stop_ = nullptr;
         }
+        if (stood_back_ != nullptr)
+        {
+            CloseHandle(stood_back_);
+            stood_back_ = nullptr;
+        }
         display_hertz_.store(0.0, std::memory_order_release);
         lead_microseconds_.store(0, std::memory_order_release);
     }
@@ -525,6 +548,17 @@ class WinDisplayClock
     void FrameTaken() noexcept
     {
         is_frame_in_flight_.store(false, std::memory_order_release);
+    }
+
+    /** The frame the window was just handed left for now, with work ahead of it on the thread: still in flight, so no
+        other is posted over it, and posted again shortly (kStoodBackFrameAsksAgainSeconds). Nothing on a stopped
+        clock. */
+    void FrameStoodBack() noexcept
+    {
+        if (stood_back_ != nullptr)
+        {
+            SetEvent(stood_back_);
+        }
     }
 
     /** Why the clock gave up on the display, where it has: what the window reads as it handles
@@ -567,11 +601,18 @@ class WinDisplayClock
     {
         for (;;)
         {
-            const double seconds = due_seconds - QpcSeconds();
-            if (seconds <= 0.0)
+            const double now = QpcSeconds();
+            if (ask_again_seconds_ > 0.0 && now >= ask_again_seconds_)
+            {
+                ask_again_seconds_ = 0.0;
+                PostMessageW(window_, kDisplayFrameMessage, kFrameAsksToRun, 0);
+            }
+            if (due_seconds <= now)
             {
                 return Woke::kDue;
             }
+            const double seconds =
+                (ask_again_seconds_ > 0.0 && ask_again_seconds_ < due_seconds ? ask_again_seconds_ : due_seconds) - now;
             LARGE_INTEGER due{};
             // Negative is relative, in hundreds of nanoseconds: the only form that needs nothing of the system clock,
             // which a time change or a daylight saving moves under an absolute one.
@@ -584,11 +625,15 @@ class WinDisplayClock
             {
                 return Woke::kStopped;
             }
-            const HANDLE waited_on[] = {stop_, timer_};
-            const DWORD  woke        = WaitForMultipleObjects(2, waited_on, FALSE, kClockWaitsAtMostMilliseconds);
+            const HANDLE waited_on[] = {stop_, stood_back_, timer_};
+            const DWORD  woke        = WaitForMultipleObjects(3, waited_on, FALSE, kClockWaitsAtMostMilliseconds);
             if (woke == WAIT_OBJECT_0 || woke == WAIT_FAILED)
             {
                 return Woke::kStopped;
+            }
+            if (woke == WAIT_OBJECT_0 + 1)
+            {
+                ask_again_seconds_ = QpcSeconds() + kStoodBackFrameAsksAgainSeconds;
             }
         }
     }
@@ -680,7 +725,7 @@ class WinDisplayClock
             // One frame in flight at a time: where the window has not taken the last one, this one is given up
             // rather than queued behind it, and the clock's own catching up decides what happens next.
             if (!is_frame_in_flight_.exchange(true, std::memory_order_acq_rel) &&
-                PostMessageW(window_, kDisplayFrameMessage, 0, 0) == FALSE)
+                PostMessageW(window_, kDisplayFrameMessage, kFrameAsksToRun, 0) == FALSE)
             {
                 is_frame_in_flight_.store(false, std::memory_order_release);
             }
@@ -688,11 +733,13 @@ class WinDisplayClock
         }
     }
 
-    HANDLE            timer_{nullptr};            ///< the high-resolution waitable timer each frame is waited on.
-    HANDLE            stop_{nullptr};             ///< set to end the thread, waited on beside the timer.
-    std::thread       thread_;                    ///< the thread that waits; not joinable while the clock is stopped.
-    HWND              window_{nullptr};           ///< the window each frame is posted to.
-    FrameRequest      request_{};                 ///< the divisor and the frames to make up, the product's.
+    HANDLE            timer_{nullptr};         ///< the high-resolution waitable timer each frame is waited on.
+    HANDLE            stop_{nullptr};          ///< set to end the thread, waited on beside the timer.
+    HANDLE            stood_back_{nullptr};    ///< set as the window stands a frame back, waited on beside the timer.
+    double            ask_again_seconds_{0.0}; ///< when a frame stood back is posted again; 0 for none. The thread's.
+    std::thread       thread_;                 ///< the thread that waits; not joinable while the clock is stopped.
+    HWND              window_{nullptr};        ///< the window each frame is posted to.
+    FrameRequest      request_{};              ///< the divisor and the frames to make up, the product's.
     std::atomic<bool> is_frame_in_flight_{false}; ///< a frame posted and not yet taken off the window's queue.
     std::atomic<int>  gave_up_because_{
         static_cast<int>(FramePacingFallback::kNone)}; ///< FramePacingFallback, as an int for std::atomic.
@@ -1103,8 +1150,8 @@ class WinSurface : public view::Host
             if (paced_message_)
             {
                 // Copied: answering the clock's giving up replaces the callback, and a call may not destroy itself.
-                const std::function<void(UINT)> paced = paced_message_;
-                paced(message);
+                const std::function<void(UINT, WPARAM)> paced = paced_message_;
+                paced(message, wparam);
             }
             return 0;
         case kCallSoonMessage: {
@@ -1280,8 +1327,8 @@ class WinSurface : public view::Host
         (ChildWindow::SetFramePacing). **Empty until a product asks to be paced on the display's clock**, and nothing
         posts those messages until then: a popup's and an unasked child window's is empty for the window's whole
         life, and the frame callback runs from WM_TIMER alone, exactly as it always did. */
-    std::function<void(UINT message)> paced_message_;
-    bool                              no_activate_{false}; ///< a click does not activate the window: a popup's.
+    std::function<void(UINT message, WPARAM pass)> paced_message_;
+    bool no_activate_{false}; ///< a click does not activate the window: a popup's.
     /** The window a key no view took is handed on to (ChildWindow::HandOnKeysTo); null to hand on none. */
     HWND key_target_{nullptr};
     /** Told of every raw key edge (ChildWindow::SetRawKeyCallback); empty until an owner asks, and then nothing of the
@@ -1615,7 +1662,7 @@ class WinChildWindow final : public ChildWindow, public WinSurface
         {
             // Installed once a product has asked and never taken back: a frame still on the queue as the clock stops
             // is a frame callback the platform timer would have run anyway.
-            paced_message_ = [this](UINT message) { HandlePacedMessage(message); };
+            paced_message_ = [this](UINT message, WPARAM pass) { HandlePacedMessage(message, pass); };
         }
         ArrangePacing();
         return FramePacingNow();
@@ -1705,14 +1752,41 @@ class WinChildWindow final : public ChildWindow, public WinSurface
         SetTimer(hwnd_, kFrameTimer, kFrameMilliseconds, nullptr);
     }
 
-    /** A message the display clock's thread posted, on this window's thread: a frame due - the clock told it has been
-        taken, and the callback run as the timer's is - or the clock giving up, which puts the window back on the
-        platform's timer with the reason kept for the product to read.
-        @param message  kDisplayFrameMessage or kDisplayClockGaveUpMessage */
-    void HandlePacedMessage(UINT message)
+    /** A message the display clock's thread posted, on this window's thread: a frame due, in its two passes, or the
+        clock giving up, which puts the window back on the platform's timer with the reason kept for the product to
+        read. In its first pass the frame reads the thread's queue, and with a paint or an expired timer of any window
+        waiting - this one's, another panel's, a host's - it stands back behind them (DoesFrameStandBack), since a
+        posted message outranks both and would otherwise take the thread from them. It reads what is really there,
+        GetQueueStatus' high word, across every module on the thread: each plug-in carries its own copy of this code,
+        so no count kept here could see the others. In its second pass the clock is told the frame has been taken and
+        the callback runs, as the timer's does. Passing through the queue between the two is what lets every frame of
+        one refresh read the queue before any has invalidated a window, so they do not take each other for work ahead.
+        @param message  kDisplayFrameMessage or kDisplayClockGaveUpMessage
+        @param pass     for a frame, kFrameAsksToRun or kFrameRuns */
+    void HandlePacedMessage(UINT message, WPARAM pass)
     {
         if (message == kDisplayFrameMessage)
         {
+            if (pass == kFrameAsksToRun)
+            {
+                const double now = QpcSeconds();
+                if (frame_first_asked_seconds_ == 0.0)
+                {
+                    frame_first_asked_seconds_ = now;
+                }
+                const bool is_work_ahead = HIWORD(GetQueueStatus(QS_PAINT | QS_TIMER)) != 0;
+                if (DoesFrameStandBack(is_work_ahead, now - frame_first_asked_seconds_))
+                {
+                    clock_.FrameStoodBack();
+                    return;
+                }
+                frame_first_asked_seconds_ = 0.0;
+                if (PostMessageW(hwnd_, kDisplayFrameMessage, kFrameRuns, 0) == FALSE)
+                {
+                    clock_.FrameTaken(); // a queue with no room: the frame lost, as a busy thread loses one
+                }
+                return;
+            }
             clock_.FrameTaken();
             if (frame_)
             {
@@ -1727,6 +1801,7 @@ class WinChildWindow final : public ChildWindow, public WinSurface
     FrameRequest     request_{}; ///< what the product asked for; FrameRequest{} until it asks, which is the default.
     FramePacingState pacing_{};  ///< what the window is pacing on, and why where it fell back.
     WinDisplayClock  clock_;     ///< the display clock's thread; stopped, and holding nothing, until a product asks.
+    double frame_first_asked_seconds_{0.0}; ///< when the frame standing back first asked to run; 0 for none standing.
 };
 
 namespace
