@@ -153,9 +153,10 @@ working for every consumer: `sign`'s bundle kinds, the identity check and the ex
 `.github/workflows/build.yml`, on GitHub's hosted images, each pinned - `ubuntu-24.04`, `windows-2025` (MSVC through
 vswhere and `VsDevCmd.bat`) and `macos-15`, a fresh machine for every job. This repository is public, and the
 organisation's self-hosted pool does not serve public repositories (a job queued for it would wait for ever); the
-workflow's opening comment says so. The hosted Linux kernel has no sound support, so `tools/audio-test-devices.sh`
-installs the ALSA and JACK headers - the back ends compile - and the device suites are left out there
-(`RECKLESS_AUDIO_DEVICES=none`): the Linux device suites run on a developer's machine and in vst-plugins' CI, on the
+workflow's opening comment says so. The hosted Linux kernel has no sound support - or, on some images, sound but no
+snd-aloop in its build configuration - so `tools/audio-test-devices.sh` installs the ALSA and JACK headers - the back
+ends compile - and the device suites are left out there (`RECKLESS_AUDIO_DEVICES=none`; a self-hosted machine whose
+kernel lacks snd-aloop fails instead, docs/audio/device-tests.md): the Linux device suites run on a developer's machine and in vst-plugins' CI, on the
 organisation's own runners. Jobs: `changes` (the commits' identity, `check-docs.py --tracked`,
 and whether code changed), `linux` (gcc, every suite, the device suite with `RECKLESS_AUDIO_REQUIRE=ALSA,JACK` after
 `tools/audio-test-devices.sh` wherever the kernel has sound, the window suites under `xvfb-run` with `RECKLESS_REQUIRE_WINDOW`), `windows` (MSVC,
