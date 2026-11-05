@@ -438,6 +438,19 @@ varies by waiting: a single jump washes out of the readings being judged within 
 never settles, so the window gives up only when the readings have refused to settle for as many frames as are judged
 together.
 
+**A compositor reads its rate off what it has lately composed, so its reading wanders where there is little to compose.**
+On Legion5i's panel at 240 Hz (2026-11-05), with one window drawing 30 pictures a second and nothing else moving, it read
+181 to 257 Hz, 35.6 % of its readings further than a twentieth from the panel's rate, the longest run of them 8 frames, and a
+window taking one of those at its word left the clock: 36.83 frames a second, on the timer as often as the clock, with 4,
+7 and 8 refresh periods between them. A caller of `DwmFlush` keeps the compositor busy enough that none of this shows, so a
+measurement that flushes will not see it. So on Windows, wherever the display's mode has a believable rate, a reading is
+not taken at its word (`window::CompositorWander`): one that disagrees with the mode is set aside for the mode until it has
+gone on for `window::kCompositorMayWanderForReadings`, and whether the period holds still is not judged at all, since the
+mode is a rate to divide whatever the reading does. The same window then holds 30.00 frames a second on the clock, a
+standard deviation of 0.82 to 1.02 ms. A window really on another monitor, or a panel that really has left its mode for
+long enough, disagrees and falls back as it did, within those readings rather than at once. What is left of the steadiness
+test above is for a display whose mode names no rate, and for a Mac, whose link hands over a period of its own.
+
 **`DwmFlush` blocks the thread with no message pump.** It measures almost perfectly - 4.176 ms mean, 0.327 ms
 standard deviation against a 4.1622 ms period, phase-locked by construction - and each call blocks the calling
 thread for a whole refresh period with no messages pumped. Four of them back to back for 60 Hz on a 240 Hz panel is

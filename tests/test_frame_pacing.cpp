@@ -802,6 +802,29 @@ TEST(FrameStandsBack, AsksAgainSoonUnlessItIsAskingFasterThanTheThreadCanGetOn)
         << "and the first answer that took long enough to be a paint brings it back down";
 }
 
+TEST(CompositorWander, AReadingThatDisagreesIsSetAsideUntilItHasGoneOnLongEnoughToBelieve)
+{
+    using reckless::window::CompositorWander;
+    using reckless::window::kCompositorMayWanderForReadings;
+    CompositorWander wander;
+    EXPECT_FALSE(wander.Note(240.0, 240.0)) << "a reading that agrees is taken as it is";
+    EXPECT_FALSE(wander.Note(235.0, 240.0)) << "and so is one within a twentieth";
+    EXPECT_TRUE(wander.Note(181.0, 240.0)) << "a reading far off, the panel having not changed, is set aside";
+    EXPECT_FALSE(wander.Note(240.0, 240.0)) << "and one that agrees again starts the count again";
+    for (std::size_t reading = 0; reading < kCompositorMayWanderForReadings; ++reading)
+    {
+        EXPECT_TRUE(wander.Note(60.0, 240.0)) << "reading " << reading;
+    }
+    EXPECT_FALSE(wander.Note(60.0, 240.0)) << "one that goes on disagreeing is a monitor of another rate, and believed";
+    EXPECT_FALSE(wander.Note(60.0, 240.0)) << "and goes on being believed";
+    wander.Forget();
+    EXPECT_TRUE(wander.Note(60.0, 240.0)) << "another display judged from nothing";
+
+    CompositorWander no_mode;
+    EXPECT_FALSE(no_mode.Note(60.0, 0.0)) << "with no mode to set a reading aside for, a reading is all there is";
+    EXPECT_FALSE(no_mode.Note(0.0, 240.0)) << "and a compositor that says nothing has said nothing to set aside";
+}
+
 TEST(FrameStandsBack, OnlyForWorkAheadAndNotForEver)
 {
     using reckless::window::DoesFrameStandBack;

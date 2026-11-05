@@ -655,20 +655,16 @@ class WinDisplayClock
     {
         FrameClock        clock;
         RefreshSteadiness steadiness;
+        CompositorWander  wander;
         HMONITOR          display        = nullptr;
         double            display_hertz  = 0.0;
         double            period_divided = 0.0;
         std::size_t       unsteady       = 0;
         for (;;)
         {
-            const CompositionTiming timing         = CompositionTimingNow();
-            const HMONITOR          under          = MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST);
-            const bool              is_display_new = under != display;
-            // A period further from the one being divided than one period read twice could be: the mode changed, or
-            // the window arrived on a display of another rate.
-            const bool has_period_moved =
-                timing.period_seconds > 0.0 && std::fabs(timing.period_seconds - period_divided) >
-                                                   kRefreshPeriodsHoldStillWithin * timing.period_seconds;
+            CompositionTiming timing         = CompositionTimingNow();
+            const HMONITOR    under          = MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST);
+            const bool        is_display_new = under != display;
             if (is_display_new)
             {
                 // Another display under the window: another grid to land on, and nothing of the one being left is
@@ -676,15 +672,37 @@ class WinDisplayClock
                 display  = under;
                 unsteady = 0;
                 steadiness.Forget();
+                wander.Forget();
+                display_hertz = DisplayRefreshHertzOf(window_);
             }
-            if (is_display_new || has_period_moved)
+            if (wander.Note(timing.hertz, display_hertz))
+            {
+                timing.hertz          = display_hertz;
+                timing.period_seconds = 1.0 / display_hertz;
+            }
+            // A period further from the one being divided than one period read twice could be: the mode changed, or
+            // the window arrived on a display of another rate.
+            const bool has_period_moved =
+                timing.period_seconds > 0.0 && std::fabs(timing.period_seconds - period_divided) >
+                                                   kRefreshPeriodsHoldStillWithin * timing.period_seconds;
+            if (has_period_moved)
             {
                 // The rate to divide is read again rather than carried over - a mode change on the one display is
                 // caught here, and reading it only when something has moved keeps it off every frame's path.
                 display_hertz = DisplayRefreshHertzOf(window_);
             }
-            steadiness.Note(timing.period_seconds);
-            unsteady = steadiness.does_hold_still() ? 0 : unsteady + 1;
+            if (IsBelievableRefreshRate(display_hertz))
+            {
+                // The compositor's reading wanders inside the agreement as it does outside it, and the display's mode
+                // is a rate to divide whatever it does: a panel that really has left that rate disagrees, and is found.
+                unsteady = 0;
+                steadiness.Forget();
+            }
+            else
+            {
+                steadiness.Note(timing.period_seconds);
+                unsteady = steadiness.does_hold_still() ? 0 : unsteady + 1;
+            }
 
             DisplayClockReading reading;
             reading.has_clock        = timing.is_read;
@@ -1728,9 +1746,13 @@ class WinChildWindow final : public ChildWindow, public WinSurface
     {
         const CompositionTiming timing = CompositionTimingNow();
         DisplayClockReading     reading;
-        reading.has_clock        = timing.is_read;
-        reading.compositor_hertz = timing.hertz;
-        reading.display_hertz    = DisplayRefreshHertzOf(hwnd_);
+        reading.has_clock     = timing.is_read;
+        reading.display_hertz = DisplayRefreshHertzOf(hwnd_);
+        // One reading is not enough to refuse on: the compositor's wanders (CompositorWander), and the clock's own
+        // thread goes on to judge it.
+        CompositorWander wander;
+        reading.compositor_hertz =
+            wander.Note(timing.hertz, reading.display_hertz) ? reading.display_hertz : timing.hertz;
         return ChosenPacing(request_, reading);
     }
 
