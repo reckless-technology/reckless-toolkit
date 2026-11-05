@@ -830,12 +830,23 @@ class WinWindow final : public AppWindow
             }
             break;
         case WM_SYSCOMMAND:
-            // The menu's mnemonic for a key with Alt that a shortcut used (Alt+Enter for full screen): the character
-            // its key down typed, which Windows would look for in the bar and beep at finding none.
-            if ((wparam & 0xFFF0) == SC_KEYMENU && lparam != 0 && is_alt_key_used_)
+            // The menu's mnemonic for a key with Alt - the character its key down typed, here or in the child window,
+            // which hands it on (window/win/WindowWin.cpp) - that Windows would look for in the bar (or the system
+            // menu, with none) and beep at finding none (WM_MENUCHAR, answered MNC_IGNORE): swallowed for a key a
+            // shortcut used, and for Alt+Enter whatever took it, a carriage return no title starts with - full
+            // screen's key where an app has it, silent where it has not. Any other key with Alt is the bar's.
+            if ((wparam & 0xFFF0) == SC_KEYMENU && lparam != 0 && (is_alt_key_used_ || lparam == VK_RETURN))
             {
                 is_alt_key_used_ = false;
                 return 0;
+            }
+            break;
+        case WM_MENUCHAR:
+            // Alt+Enter's menu where it still reached one - from a child window that hands on no keys (a window with
+            // no bar), which Windows looks through the system menu for itself: closed, without MNC_IGNORE's beep.
+            if (LOWORD(wparam) == VK_RETURN)
+            {
+                return MAKELRESULT(0, MNC_CLOSE);
             }
             break;
         case WM_QUERYENDSESSION:

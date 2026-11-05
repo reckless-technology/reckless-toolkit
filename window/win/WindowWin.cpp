@@ -1028,6 +1028,15 @@ class WinSurface : public view::Host
                 return 0;
             }
             break;
+        case WM_SYSCOMMAND:
+            // A key with Alt's menu, which Windows' WM_SYSCHAR sends the window with the focus - this one - and not
+            // the window whose bar it is: handed on to that window, which looks through its bar as it does for a key
+            // it has the focus for itself, and swallows the mnemonic of a key a shortcut took (app/win/AppWin.cpp).
+            if ((wparam & 0xFFF0) == SC_KEYMENU && key_target_ != nullptr)
+            {
+                return SendMessageW(key_target_, message, wparam, lparam);
+            }
+            break;
         case WM_KEYUP:
         case WM_SYSKEYUP:
             // Windows' own, as it always was: nothing but an owner that asked for raw keys hears a key let go, and
