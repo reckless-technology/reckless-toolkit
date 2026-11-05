@@ -1225,9 +1225,10 @@ class MacChildWindow final : public ChildWindow, public MacSurface
         [[NSRunLoop currentRunLoop] addTimer:link_watch_ forMode:NSRunLoopCommonModes];
     }
 
-    /** A link gone silent answered: the window is on the timer it has always used, so frames keep arriving as they do
-        for a window never paced at all, and says why. The link is left as it is, and its next tick takes the window
-        straight back (PacedTick), so a product that only ever asks once still has its clock when the window shows. */
+    /** A link gone silent answered: the window says so and why, and where the product has asked for frames off a screen
+        (FrameRequest::keeps_frames_off_screen) runs on the timer it has always used, as a window never paced at all
+        does. The link is left as it is, and its next tick takes the window straight back (PacedTick), so a product that
+        only ever asks once still has its clock when the window shows. */
     void LookAtTheLink()
     {
         if (is_link_silent_ || !IsDisplayLinkSilent(last_tick_seconds_, CACurrentMediaTime()))
@@ -1237,7 +1238,10 @@ class MacChildWindow final : public ChildWindow, public MacSurface
         is_link_silent_ = true;
         pacing_         = {
             FramePacing::kPlatformTimer, 0, pacing_.display_hertz, 0.0, FramePacingFallback::kDisplayLinkSilent, 0};
-        StartPlatformTimer();
+        if (request_.keeps_frames_off_screen)
+        {
+            StartPlatformTimer();
+        }
     }
 
     /** One tick of the display link, on the window's thread: a refresh of the display the window is on. The frame

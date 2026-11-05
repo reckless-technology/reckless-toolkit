@@ -108,6 +108,14 @@ struct FrameRequest
         is in force. A frame that misses the blank it led is shown a whole refresh later, so the margin is the
         product's to choose with care. */
     std::int32_t lead_microseconds{0};
+
+    /** Whether the frame callback goes on running while a window is on no screen, where its display's clock stops for
+        that - a Mac's display link, which macOS stops for a window that is hidden. True, a window whose clock has
+       fallen silent runs on the platform's timer until the clock ticks again, so a product goes on being told, and can
+       tell its panel the window no longer shows or stand its pacing down. False, the default, a window is left with no
+        frames until it shows again. Read only where `pacing` asks for the display's clock, and it changes nothing on
+        Windows, whose clock does not stop. */
+    bool keeps_frames_off_screen{false};
 };
 
 /** What a window ended up pacing on, for a product to report, log or adapt to (ChildWindow::SetFramePacing,

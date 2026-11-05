@@ -225,11 +225,10 @@ TEST(ChildWindowFramePacing, TicksOnTheDisplayLinkOfTheOneCiPlatformWithAWindowS
     }
 }
 
-TEST(ChildWindowFramePacing, AHiddenWindowStillHasFramesAndSaysWhyAndTheClockComesBackAsItShows)
+TEST(ChildWindowFramePacing, AHiddenWindowThatDoesNotAskHasNoFramesUntilItShowsAndSaysWhyMeanwhile)
 {
-    // macOS stops a display link made from a view whose window is hidden, and with nothing else to run it the frame
-    // callback would stop too: no frame, so nothing to tell the panel it no longer shows and no way for a product to
-    // stand its pacing down. A window hidden goes on the timer it has always used and says why, with no one asking.
+    // What a product that has not asked has always had, and may rely on: its frames stop with the link, and come back
+    // on the clock as the window shows, its schedule its own.
     reckless::test::TestHostWindow top(240, 160);
     ASSERT_TRUE(top.Valid());
     top.Show(true);
@@ -240,6 +239,57 @@ TEST(ChildWindowFramePacing, AHiddenWindowStillHasFramesAndSaysWhyAndTheClockCom
     int frames = 0;
     child->SetFrameCallback([&] { ++frames; });
     const FramePacingState asked = child->SetFramePacing({FramePacing::kDisplayClock, 1, 1, 0});
+    if (asked.pacing != FramePacing::kDisplayClock)
+    {
+        child->SetFrameCallback(nullptr);
+        child.reset();
+        GTEST_SKIP() << "no display link on this machine, so nothing to fall silent";
+    }
+    const auto run_for = [](NSTimeInterval seconds) {
+        const NSTimeInterval until = [NSDate timeIntervalSinceReferenceDate] + seconds;
+        while ([NSDate timeIntervalSinceReferenceDate] < until)
+        {
+            [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode
+                                  beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+        }
+    };
+    run_for(0.5);
+    EXPECT_GT(frames, 0);
+    top.Show(false);
+    run_for(reckless::window::kDisplayLinkSilentSeconds * 3.0);
+    const int hidden_from = frames;
+    run_for(0.5);
+    std::printf(
+        "[ frame pacing ] macOS, hidden, having not asked for frames off a screen: %d frames in half a second, %s\n",
+        frames - hidden_from, reckless::window::TextOf(child->FramePacingNow().why));
+    std::fflush(stdout);
+    EXPECT_EQ(frames, hidden_from) << "no timer takes over for a product that did not ask for one";
+    EXPECT_EQ(child->FramePacingNow().why, FramePacingFallback::kDisplayLinkSilent) << "and the window still says why";
+
+    top.Show(true);
+    run_for(0.5);
+    EXPECT_GT(frames, hidden_from) << "shown again the frames come back";
+    EXPECT_EQ(child->FramePacingNow().pacing, FramePacing::kDisplayClock) << "on the clock, with no one asking";
+    child->SetFrameCallback(nullptr);
+    child.reset(); // before the window it sits in
+}
+
+TEST(ChildWindowFramePacing, AHiddenWindowThatAsksStillHasFramesAndSaysWhyAndTheClockComesBackAsItShows)
+{
+    // macOS stops a display link made from a view whose window is hidden, and with nothing else to run it the frame
+    // callback would stop too: no frame, so nothing to tell the panel it no longer shows and no way for a product to
+    // stand its pacing down. A product that asks for frames off a screen is put on the timer the window has always
+    // used, and is told why, with no one asking again.
+    reckless::test::TestHostWindow top(240, 160);
+    ASSERT_TRUE(top.Valid());
+    top.Show(true);
+    reckless::view::View root;
+    root.SetBounds({240, 160});
+    auto child = reckless::window::CreateChildWindow(top.Parent(), root, 240, 160, 1.0f);
+    ASSERT_NE(child, nullptr);
+    int frames = 0;
+    child->SetFrameCallback([&] { ++frames; });
+    const FramePacingState asked = child->SetFramePacing({FramePacing::kDisplayClock, 1, 1, 0, true});
     HoldsWhicheverPacingItReached(asked, 1, "macOS, a window about to be hidden");
     if (asked.pacing != FramePacing::kDisplayClock)
     {
