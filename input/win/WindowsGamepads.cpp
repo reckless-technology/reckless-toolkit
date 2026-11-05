@@ -70,6 +70,12 @@ constexpr LONGLONG kXInputReadIntervalHundredsOfNanoseconds = 10'000;
 /** The most reports one device's read takes in one poll, so a device that never stops sending cannot hold a poll. */
 constexpr int kMostReportsPerPoll = 256;
 
+/** How many input reports the HID class driver keeps for a controller between reads: the most it takes
+    (HidD_SetNumInputBuffers refuses 513), where it keeps 32 unless asked. A controller that reports every millisecond
+    fills 32 in any stall of the program's thread past 32 ms - a window dragged, a menu open - and the oldest reports
+    go first, presses among them; 512 is half a second of such a controller. */
+constexpr ULONG kHidInputReportsKept = 512;
+
 /** UTF-16 as UTF-8.
     @param wide  the text, null-terminated
     @return      the UTF-8 text */
@@ -253,7 +259,8 @@ class HidPad
     }
 
     /** The interface opened for overlapped reads - for reading and writing where Windows allows it, as some drivers
-        ask, else for reading alone - and its read's event made.
+        ask, else for reading alone - the reports the class driver keeps for it deepened (kHidInputReportsKept), and its
+        read's event made.
         @return  true when it is open */
     bool OpenHandle()
     {
@@ -269,6 +276,10 @@ class HidPad
         {
             return false;
         }
+        // The class driver's ring for this handle deepened from its 32 reports, so a stall of the program's thread
+        // loses none of a fast controller's. A driver that refuses keeps its own, and the controller is read all the
+        // same.
+        static_cast<void>(HidD_SetNumInputBuffers(handle_, kHidInputReportsKept));
         overlapped_.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         return overlapped_.hEvent != nullptr;
     }
