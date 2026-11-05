@@ -184,6 +184,10 @@ go here too.
 **Windows has two APIs, and a pad must not appear on both.** An XInput pad is also a HID device, so the HID back end
 passes over every path whose hardware id carries `IG_`, which is how Windows marks an XInput pad's HID interface; XInput
 reads it instead, with its triggers as axes of their own (the HID view of an XInput pad folds both into one). A HID
+controller's handle is given the deepest ring of reports the class driver keeps (`HidD_SetNumInputBuffers`, 512 where
+it keeps 32 unless asked: measured on Legion5i on 2026-11-04, every one of the 23 HID interfaces it would open read 32
+and took 512, and refused 513), so that a controller reporting every millisecond loses no report - no press - in a
+stall of the program's thread of up to half a second, a window dragged or a menu open. A HID
 descriptor that gives an unsigned field's maximum in too few bytes - 255 as the byte `0xFF`, which reads as -1 - is
 taken at the field's whole range (`hid::RepairedLogicalRange`), as every driver that reads such devices takes it.
 
