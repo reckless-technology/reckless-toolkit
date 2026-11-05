@@ -20,6 +20,8 @@
 //                             make a pattern anything could be designed around
 //   platform-timer-schedule   whether the platform timer's schedule is absolute or re-armed at each expiry
 //   display-clock             the display's own clock, as window/win/WindowWin.cpp waits on it (Windows only)
+//   paint-rank                the order a thread's queue hands over a posted message, a WM_PAINT and a WM_TIMER, and
+//                             which of several invalid windows is painted first (Windows only)
 //
 // The display clock's measurement is Windows' alone. macOS's is a display link, whose ticks come from the window
 // server and are held by the child window's own suite; Linux has no display clock at all, and the platform-timer
@@ -662,6 +664,150 @@ void ReportPlatformTimerSchedule()
 #endif
 }
 
+#if defined(_WIN32)
+/** The messages the paint-rank run's windows have been handed, in the order the queue handed them over. */
+std::vector<std::string> taken_messages;
+
+/** The message the paint-rank run posts, standing for a frame the display's clock hands a window. */
+constexpr UINT kPostedFrame = WM_APP + 19;
+
+/** The paint-rank run's windows: each message that matters noted as it is taken, each window named by its title.
+    @param window   the window
+    @param message  the message
+    @param wparam   the message's first parameter
+    @param lparam   the message's second parameter
+    @return         the message's result */
+LRESULT CALLBACK RankWindowProcedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
+{
+    switch (message)
+    {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT paint{};
+        BeginPaint(window, &paint);
+        char title[16]{};
+        GetWindowTextA(window, title, 16);
+        taken_messages.push_back(std::string("paint ") + title);
+        EndPaint(window, &paint);
+        return 0;
+    }
+    case WM_TIMER:
+        taken_messages.push_back("timer");
+        KillTimer(window, wparam);
+        return 0;
+    case kPostedFrame:
+        taken_messages.push_back("posted");
+        return 0;
+    default:
+        return DefWindowProcW(window, message, wparam, lparam);
+    }
+}
+
+/** Everything in the thread's queue taken, as a window's loop takes it. */
+void DrainTheQueue()
+{
+    MSG message{};
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+    {
+        DispatchMessageW(&message);
+    }
+}
+
+/** What the queue handed over since this was last asked, printed under `what` and then forgotten.
+    @param what  what was set going */
+void ReportTakenMessages(const char *what)
+{
+    std::printf("  %s:\n   ", what);
+    for (const std::string &taken : taken_messages)
+    {
+        std::printf(" %s,", taken.c_str());
+    }
+    std::printf("\n");
+    taken_messages.clear();
+}
+
+/** The queue's order, on four windows of this harness's own, with the timer's expiry and the invalidation and the post
+    all waiting before anything is taken. */
+void ReportPaintRank()
+{
+    WNDCLASSW window_class{};
+    window_class.lpfnWndProc   = RankWindowProcedure;
+    window_class.hInstance     = GetModuleHandleW(nullptr);
+    window_class.lpszClassName = L"RecklessPaintRankHarness";
+    RegisterClassW(&window_class);
+    std::vector<HWND> windows;
+    for (const wchar_t *name : {L"w0", L"w1", L"w2", L"w3"})
+    {
+        // The window made last sits on top of the z-order, so w3 first and w0 last.
+        const int place = static_cast<int>(windows.size()) * 60;
+        HWND      made  = CreateWindowExW(WS_EX_NOACTIVATE, window_class.lpszClassName, name, WS_POPUP, 40 + place,
+                                          40 + place, 300, 200, nullptr, nullptr, window_class.hInstance, nullptr);
+        ShowWindow(made, SW_SHOWNOACTIVATE);
+        windows.push_back(made);
+    }
+    DrainTheQueue();
+    Sleep(50);
+    DrainTheQueue();
+    taken_messages.clear();
+    const auto let_it_all_wait = [] {
+        Sleep(100);
+        DrainTheQueue();
+    };
+    std::printf("\nwhat a thread's queue hands over first\n");
+    SetTimer(windows[0], 1, 1, nullptr);
+    InvalidateRect(windows[0], nullptr, FALSE);
+    PostMessageW(windows[0], kPostedFrame, 0, 0);
+    let_it_all_wait();
+    ReportTakenMessages("a timer set, then the window invalidated, then a message posted");
+    PostMessageW(windows[0], kPostedFrame, 0, 0);
+    InvalidateRect(windows[0], nullptr, FALSE);
+    SetTimer(windows[0], 1, 1, nullptr);
+    let_it_all_wait();
+    ReportTakenMessages("a message posted, then the window invalidated, then a timer set");
+    for (int index : {0, 3, 1, 2})
+    {
+        InvalidateRect(windows[static_cast<std::size_t>(index)], nullptr, FALSE);
+    }
+    let_it_all_wait();
+    ReportTakenMessages("four windows invalidated in the order w0 w3 w1 w2");
+    SetWindowPos(windows[0], HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    DrainTheQueue();
+    for (int index : {1, 2, 3, 0})
+    {
+        InvalidateRect(windows[static_cast<std::size_t>(index)], nullptr, FALSE);
+    }
+    let_it_all_wait();
+    ReportTakenMessages("w0 raised to the top, then all four invalidated in the order w1 w2 w3 w0");
+    InvalidateRect(windows[1], nullptr, FALSE);
+    InvalidateRect(windows[0], nullptr, FALSE);
+    Sleep(20);
+    MSG message{};
+    for (int taken = 0; taken < 8 && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE); ++taken)
+    {
+        DispatchMessageW(&message);
+        if (message.message == WM_PAINT)
+        {
+            InvalidateRect(message.hwnd, nullptr, FALSE); // invalid again at once, as a window whose next frame has run
+        }
+    }
+    ReportTakenMessages("two windows invalid, each invalidated again as soon as it paints, the first eight taken");
+    DrainTheQueue();
+    taken_messages.clear();
+    for (HWND window : windows)
+    {
+        DestroyWindow(window);
+    }
+    UnregisterClassW(window_class.lpszClassName, window_class.hInstance);
+}
+#else
+/** The queue's order is Windows' question: nothing else here hands over paints from a queue of this shape. */
+void ReportPaintRank()
+{
+    std::printf("\nwhat a thread's queue hands over first is Windows' question\n");
+}
+#endif
+
 /** The display's own clock measured as the window waits on it, at a few divisors. */
 void ReportDisplayClock()
 {
@@ -721,6 +867,10 @@ int main(int argc, char **argv)
     if (asked("display-clock"))
     {
         ReportDisplayClock();
+    }
+    if (asked("paint-rank"))
+    {
+        ReportPaintRank();
     }
     std::printf("\n");
     return 0;
