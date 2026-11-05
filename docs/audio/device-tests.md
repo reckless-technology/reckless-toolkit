@@ -223,8 +223,21 @@ by a product's build - which is how the toolkit's hosted Linux job ran from the 
 2026-10-25. The
 question is about the kernel and not the kind of runner, which keeps the property worth keeping: **a machine whose
 kernel has sound and whose loopback card is missing still fails**, because there the provisioning is broken rather
-than impossible. vst-plugins is private, runs on the organisation's own machines, and is therefore where the suite
-actually exercises a device.
+than impossible.
+
+**A hosted image is not always the azure kernel.** On 2026-11-04 a toolkit job was put on an image running an AWS
+kernel, `7.0.0-1014-aws`, which has sound modules - so the no-sound case above did not apply - but was built without
+`CONFIG_SND_ALOOP`, and has no `linux-modules-extra` package to try: the step failed, and a re-run on another image
+passed. A kernel whose own build configuration says it has no snd-aloop can have no loopback card whatever is
+installed, so the script reads `/boot/config-$(uname -r)` before it tries a package, and **on a GitHub-hosted runner**
+(`RUNNER_ENVIRONMENT=github-hosted`) treats that kernel as it treats one with no sound - the device suites left out,
+`RECKLESS_AUDIO_DEVICES=none`, the headers installed, and the reason printed - as it does a hosted kernel that has no
+configuration to read and that no package brings the module to. **Anywhere else it fails**, naming the kernel: a
+self-hosted machine or a desk that should have test devices and cannot is a machine to fix, not a job to pass. A
+kernel whose configuration says it was built with snd-aloop and that still has none fails everywhere, hosted or not.
+
+vst-plugins is private, runs on the organisation's own machines, and is therefore where the suite actually exercises
+a device.
 
 ## Why a case took a minute, while RtAudio served ALSA
 

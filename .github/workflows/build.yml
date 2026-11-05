@@ -146,8 +146,9 @@ jobs:
       - name: Build
         run: cmake --build build/ci-toolkit -j ${{ steps.cpp.outputs.jobs }}
       # Everything but the window suites and the device suite. Where the machine has test devices the APIs are
-      # required, so a missing one fails rather than skips; where the kernel has no sound at all (a hosted runner:
-      # the step above says so and sets RECKLESS_AUDIO_DEVICES) the device suites are left out and the rest runs,
+      # required, so a missing one fails rather than skips; where the kernel has no sound at all, or a hosted
+      # runner's kernel was built without snd-aloop (the step above says so and sets RECKLESS_AUDIO_DEVICES), the
+      # device suites are left out and the rest runs,
       # which is every other suite this job has - Skia, the views, the look, the net and update code.
       - name: Test
         run: |

@@ -13,7 +13,9 @@
 #     runs without it (--no-realtime);
 #   - ALSA's loopback card (the kernel's snd-aloop module, which a runner's kernel has but does not load): playback on
 #     its device 0 comes back as capture on its device 1, bit for bit. Loaded here, and left loaded - it stays until the
-#     machine restarts, and a desktop that has one sees one more card. A card already there is left as it is;
+#     machine restarts, and a desktop that has one sees one more card. A card already there is left as it is. A kernel
+#     with no sound, or a GitHub-hosted runner's kernel built without snd-aloop, can have none: the device suites are
+#     then left out (RECKLESS_AUDIO_DEVICES=none) rather than failed, and anywhere else such a kernel fails;
 #   - read and write on the card's nodes in /dev/snd for this user. They are root:audio 0660, and a runner's user may
 #     not be in the audio group (reckless-ci-lin-0's `runner` is not): an ACL entry for the user on the loopback card's
 #     own nodes - its control and its PCMs, nothing of another card - given with setfacl (the acl package), each run,
@@ -30,21 +32,15 @@ user=$(id -un)
 can_sudo=false
 if sudo -n true 2> /dev/null; then can_sudo=true; fi
 
-# A kernel built without sound at all can have no test device, whatever is installed: Ubuntu's azure kernels are
-# built that way (Launchpad 1970586, "No sound support on Linux AWS/Azure kernels"), which is what GitHub's hosted
-# runners run - zero sound modules in the tree and no CONFIG_SND_ALOOP in the build config. Nothing here can fix
-# that, so the suites that need a device are left out and the job says so. This is a question about the kernel and
-# not about the kind of runner: a machine whose kernel has sound and whose loopback card is missing still fails
-# below, loudly, because there the provisioning is broken rather than impossible.
-sound_modules=$(find "/lib/modules/$(uname -r)" -path '*sound*' -name '*.ko*' 2> /dev/null | wc -l)
-if [ ! -d /proc/asound ] && [ "$sound_modules" -eq 0 ]; then
-    echo "this kernel has no sound support: no /proc/asound, no sound modules, " \
-        "CONFIG_SND_ALOOP $(grep -s SND_ALOOP "/boot/config-$(uname -r)" || echo absent)"
+kernel_config="/boot/config-$(uname -r)"
+
+# The device suites left out of this job, and the job told so (RECKLESS_AUDIO_DEVICES=none, which build.yml's test
+# steps read), because this kernel can have no test device - and the headers installed all the same: compiling the
+# toolkit's ALSA and JACK back ends needs no sound in the kernel, and without them the configure promises neither API,
+# so the back ends go uncompiled and a break in either is first met by a product's build. The script ends here.
+leave_device_suites_out() {
     echo "::notice::the audio device suites cannot run on this kernel and are left out; everything else runs"
     if [ -n "${GITHUB_ENV:-}" ]; then echo "RECKLESS_AUDIO_DEVICES=none" >> "$GITHUB_ENV"; fi
-    # The headers all the same: compiling the toolkit's ALSA and JACK back ends needs no sound in the kernel, and
-    # without them the configure promises neither API, so the back ends go uncompiled and a break in either is first
-    # met by a product's build.
     headers=()
     pkg-config --exists alsa 2> /dev/null || headers+=(libasound2-dev)
     pkg-config --exists jack 2> /dev/null || headers+=(libjack-jackd2-dev)
@@ -58,6 +54,23 @@ if [ ! -d /proc/asound ] && [ "$sound_modules" -eq 0 ]; then
         sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${headers[@]}"
     fi
     exit 0
+}
+
+# Whether this kernel's own build configuration says it was built with snd-aloop, as a module or built in. False
+# where the line is absent, set off, or there is no configuration to read.
+is_aloop_in_kernel_config() { grep -Eqs '^CONFIG_SND_ALOOP=(y|m)$' "$kernel_config"; }
+
+# A kernel built without sound at all can have no test device, whatever is installed: Ubuntu's azure kernels are
+# built that way (Launchpad 1970586, "No sound support on Linux AWS/Azure kernels"), which is what GitHub's hosted
+# runners run - zero sound modules in the tree and no CONFIG_SND_ALOOP in the build config. Nothing here can fix
+# that, so the suites that need a device are left out and the job says so. This is a question about the kernel and
+# not about the kind of runner: a machine whose kernel has sound and whose loopback card is missing still fails
+# below, loudly, because there the provisioning is broken rather than impossible.
+sound_modules=$(find "/lib/modules/$(uname -r)" -path '*sound*' -name '*.ko*' 2> /dev/null | wc -l)
+if [ ! -d /proc/asound ] && [ "$sound_modules" -eq 0 ]; then
+    echo "this kernel has no sound support: no /proc/asound, no sound modules, " \
+        "CONFIG_SND_ALOOP $(grep -s SND_ALOOP "$kernel_config" || echo absent)"
+    leave_device_suites_out
 fi
 
 # The packages: the two development headers, jackd and setfacl.
@@ -84,6 +97,20 @@ card=$(loopback_card)
 if [ -z "$card" ]; then
     if ! $can_sudo; then
         echo "::error::no ALSA loopback card: sudo modprobe snd-aloop" >&2
+        exit 1
+    fi
+    # A kernel with sound but built without snd-aloop - which a GitHub-hosted job met on 2026-11-04, put on an image
+    # running an AWS kernel (7.0.0-1014-aws) that has sound modules, no CONFIG_SND_ALOOP, and no
+    # linux-modules-extra package to try - can have no loopback card whatever is installed. On a GitHub-hosted
+    # runner, where nothing is the organisation's to provision, that is the no-sound case above: the device suites
+    # are left out and the job says why. On any other machine it is a machine that should have test devices and has
+    # not, so it fails here, loudly, naming the kernel rather than trying a package that cannot help.
+    if ! modinfo snd-aloop > /dev/null 2>&1 && [ -r "$kernel_config" ] && ! is_aloop_in_kernel_config; then
+        echo "this kernel ($(uname -r)) was built without snd-aloop: $(grep -s SND_ALOOP "$kernel_config" || echo "no CONFIG_SND_ALOOP in $kernel_config")"
+        if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ]; then
+            leave_device_suites_out
+        fi
+        echo "::error::this kernel ($(uname -r)) was built without snd-aloop, so no package can bring the loopback card; this machine needs a kernel built with CONFIG_SND_ALOOP" >&2
         exit 1
     fi
     # GitHub's hosted images run an Azure kernel whose base package carries no snd-aloop: the module is in
@@ -113,7 +140,12 @@ if [ -z "$card" ]; then
         # The kernel's own build configuration, which settles it: a module the kernel was not built with cannot be
         # installed by any package. Launchpad 1970586 is this exact thing - snd-aloop is built for Ubuntu's GCP
         # kernels and not for its AWS and Azure ones.
-        echo "  CONFIG_SND_ALOOP:        $(grep -s SND_ALOOP "/boot/config-$(uname -r)" || echo 'absent from this kernel config')"
+        echo "  CONFIG_SND_ALOOP:        $(grep -s SND_ALOOP "$kernel_config" || echo 'absent from this kernel config')"
+        # A hosted runner whose kernel has no configuration to read, and no package that brings the module: as
+        # impossible to provision as one whose configuration says no, and left out the same way.
+        if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] && ! is_aloop_in_kernel_config; then
+            leave_device_suites_out
+        fi
         echo "::error::this kernel has no snd-aloop and $extra did not bring one (the lines above say what is there)"
         exit 1
     fi
