@@ -97,7 +97,7 @@ which no back end here gives.
 |---|---|
 | Linux | the kernel's own stamp on each event, the node's clock set to `CLOCK_MONOTONIC` as it is opened (`EVIOCSCLOCKID`) - which is the steady clock in both libstdc++ and libc++. A node that refuses keeps the kernel's default wall clock, and its events are stamped as they are read instead |
 | macOS | each value's own stamp (`IOHIDValueGetTimeStamp`), mach absolute time in the machine's ticks, turned into nanoseconds with `mach_timebase_info` and carried onto the steady clock by how long ago it was (`OnTheGamepadClock`): libc++'s steady clock on a Mac reads `CLOCK_MONOTONIC_RAW`, which counts time asleep and mach absolute time does not, so the two are not assumed to be one clock |
-| Windows, XInput | the moment the state was read: as `Poll` reads it |
+| Windows, XInput | the moment the back end's own thread read the state, which it does a thousand times a second ([below](#each-platform)) |
 | Windows, HID | the moment `Poll` drained the report: HID gives no time of its own, so this is honest and no better than the poll |
 | every platform | a device's controls held as it appears: when it was found; a device's ups as it goes: when it was found gone; the device read again after the kernel dropped events: the time of the report that ended the drop |
 
@@ -166,9 +166,9 @@ platform lists, which for an arcade encoder is usually the one wired to its firs
 | API | the kernel's event interface (evdev), `/dev/input/event*` read-only and non-blocking | XInput (`xinput1_4`, loaded at run time); HID (`SetupDi`, `hid.dll`, overlapped `ReadFile`) | IOKit's HID manager on the main run loop |
 | Which devices | those udev would tag `ID_INPUT_JOYSTICK`: a controller's buttons, or X and Y with nothing of a pointer, a touch surface or a pen; never a motion sensor | XInput's four slots; HID top-level collections that are a joystick, a game pad or a multi-axis controller (Generic Desktop 0x04, 0x05, 0x08), passing over XInput's (`IG_` in the path) | HID joysticks, game pads and multi-axis controllers, matched by the manager |
 | Hot-plug | `/dev/input` watched with inotify; looked at once a second where inotify is not there | a configuration manager notification (`CM_Register_Notification`, no window needed); XInput's empty slots asked once a second | the manager's matching and removal callbacks |
-| Where the work is done | in `Poll` | in `Poll` | the callbacks queue on the run loop; `Poll` drains the queue |
+| Where the work is done | in `Poll` | HID in `Poll`; XInput on a thread of the back end's own, queued for `Poll` | the callbacks queue on the run loop; `Poll` drains the queue |
 
-Four things are worth knowing beyond the table.
+Five things are worth knowing beyond the table.
 
 **Linux grants access to a controller a moment after it appears.** The kernel makes the node owned by root; udev then
 gives the seat's user access to it (its `uaccess` rule, for a device it tags `ID_INPUT_JOYSTICK`), which changes the
@@ -186,6 +186,18 @@ passes over every path whose hardware id carries `IG_`, which is how Windows mar
 reads it instead, with its triggers as axes of their own (the HID view of an XInput pad folds both into one). A HID
 descriptor that gives an unsigned field's maximum in too few bytes - 255 as the byte `0xFF`, which reads as -1 - is
 taken at the field's whole range (`hid::RepairedLogicalRange`), as every driver that reads such devices takes it.
+
+**XInput keeps no queue, so the back end keeps one.** `XInputGetState` says only what a pad holds now, and a press
+let go between two reads is never seen: read once a frame, a tap shorter than a frame was lost. So XInput is read on
+a thread of the back end's own, every slot that holds a pad once a millisecond on a high-resolution waitable timer -
+pads report every 4 to 8 ms - and each read whose packet number has moved (`xinput::IsSlotNews`) is queued with the
+time it was read; `Poll` takes the queue and tells it to the devices in order (`xinput::ApplySlotReadings`), so a tap
+between two polls is a down and an up, each with its own time, and every promise above still holds. The empty slots,
+whose read is slow, are still asked once a second - and at once when a HID interface arrives, which is how a pad being
+plugged in shows itself. With no pad in any slot the thread sleeps between those looks. The slots are read once on the
+program's thread as the back end is made, so `Devices` lists a pad before the first `Poll`, and the thread is stopped
+and joined as the back end goes. A queue no one takes is bounded: past 4096 readings a slot's newest state is written
+over its last queued one, and a pad's coming and going are always queued.
 
 **macOS delivers nothing until its run loop has run.** The manager's callbacks run on the main run loop, so a
 `Gamepads` made on macOS lists no devices until the run loop has turned at least once, and a program polls from its
@@ -210,7 +222,8 @@ the raw keys' is ([window/RawKey.h](../../window/RawKey.h)):
   numbers are copied, and [EvdevSystemPort.h](../../input/linux/EvdevSystemPort.h) holds every one to the kernel's own
   with a `static_assert`.
 - [input/win/XInputPads.h](../../input/win/XInputPads.h) and [HidPaths.h](../../input/win/HidPaths.h) - an XInput
-  pad's buttons, axes and cross, and a HID path's XInput mark and instance.
+  pad's buttons, axes and cross, what the XInput thread finds to be news and queues, the queue told to the devices,
+  and a HID path's XInput mark and instance.
 
 The suites hold all of that on **every platform**, in the `input` CTest: `tests/test_gamepads.cpp` (the promises,
 including a long deterministic walk of random readings held to alternation), `tests/test_gamepad_formats.cpp` (each
@@ -229,4 +242,6 @@ passed.)
 
 What only a person with the hardware can hold is the Windows and macOS back ends on real controllers, and the
 platform calls of each: they are compiled by CI on their platforms, and their decisions are the shared headers', but
-nothing in a suite plugs a controller into them.
+nothing in a suite plugs a controller into them. The XInput thread's start, stop and join are held on any Windows by
+`input_devices`, which makes and lets go of the back end twenty times over; that a light tap of a few milliseconds
+on a real pad arrives as a down and an up in one `Poll`, each with its time, needs the pad.

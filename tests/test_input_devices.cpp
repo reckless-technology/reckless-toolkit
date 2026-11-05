@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <set>
 #include <thread>
@@ -85,12 +86,36 @@ TEST(MakeGamepads, ThisMachinesControllersArePolledAndLetGo)
                   << device.button_count << " buttons, " << device.axis_count << " axes, " << device.hat_count
                   << " hats\n";
     }
+    std::map<std::uint32_t, std::int64_t> latest;
     for (const GamepadEdge &edge : edges)
     {
         EXPECT_EQ(ids.count(edge.device_id), 1u) << "every edge is of a device listed";
+        EXPECT_NE(edge.time_nanoseconds, 0) << "every edge has a time";
+        EXPECT_GE(edge.time_nanoseconds, latest[edge.device_id]) << "and one device's never go backwards";
+        latest[edge.device_id] = edge.time_nanoseconds;
     }
     EXPECT_TRUE(Alternates(edges));
     std::cout << "[ machine ] " << devices.size() << " controller(s), " << edges.size() << " edge(s)\n";
+}
+
+TEST(MakeGamepads, IsMadeAndLetGoOfOverAndOverWithoutLeavingAnythingRunning)
+{
+    // A back end with a thread of its own - Windows reads XInput on one - starts it as it is made and stops and joins
+    // it as it goes, however soon after: made and let go of in a row, polled or not, nothing is left behind to hang
+    // or to read a back end that has gone.
+    for (int round = 0; round < 20; ++round)
+    {
+        std::unique_ptr<reckless::input::Gamepads> gamepads = reckless::input::MakeGamepads(kThresholds);
+        ASSERT_NE(gamepads, nullptr);
+        if (round % 2 == 1)
+        {
+            std::vector<GamepadEdge> edges;
+            gamepads->Poll(edges);
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+            gamepads->Poll(edges);
+            EXPECT_TRUE(Alternates(edges));
+        }
+    }
 }
 
 TEST(MakeGamepads, IsNeverNullAndTwoAreIndependent)

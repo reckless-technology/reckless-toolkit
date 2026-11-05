@@ -2,8 +2,10 @@
 // serves; Windows' HID API for every other joystick, game pad and multi-axis controller - found with SetupDi, read
 // with overlapped ReadFile and parsed with the HidP_ functions on the device's preparsed data - passing over every HID
 // path of an XInput controller, which XInput reads already. A configuration manager notification, which needs no
-// window, says when a HID interface arrives or goes, so the devices are looked for again only then; XInput's empty
-// slots are asked about once a second, since asking an empty slot is slow.
+// window, says when a HID interface arrives or goes, so the devices are looked for again only then. XInput keeps no
+// queue of its own - a state read once a frame misses a press let go before the next - so it is read on a thread of
+// the back end's own a thousand times a second, each change queued with its time for Poll; its empty slots are asked
+// about once a second, since asking an empty slot is slow.
 #include "WindowsGamepads.h"
 
 #include <algorithm>
@@ -12,8 +14,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -52,6 +56,16 @@ static_assert(xinput::kSlotCount == XUSER_MAX_COUNT);
 
 /** How long between asking XInput's empty slots, and between looks for HID devices where no notification comes. */
 constexpr ULONGLONG kLookIntervalMilliseconds = 1000;
+
+/** How long the XInput thread waits between reads of the slots that hold a controller, in hundreds of nanoseconds:
+    a millisecond, so every report of a pad that reports every 4 to 8 ms is read, and a tap shorter than a frame is
+    seen down and up. */
+constexpr LONGLONG kXInputReadIntervalHundredsOfNanoseconds = 10'000;
+
+// The high resolution a waitable timer has carried since Windows 10 1803 (window/win/WindowWin.cpp names it too).
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
 
 /** The most reports one device's read takes in one poll, so a device that never stops sending cannot hold a poll. */
 constexpr int kMostReportsPerPoll = 256;
@@ -488,6 +502,188 @@ xinput::PadState PadStateOf(const XINPUT_GAMEPAD &pad)
                             pad.sThumbLY, pad.sThumbRX,     pad.sThumbRY};
 }
 
+/**
+    XInput read on a thread of its own: every slot that holds a controller a thousand times a second, the empty slots
+    once a second and whenever the back end says a device has arrived (LookNow), and every read that is news - a
+    controller arrived or gone, a state changed - queued with its time for the back end's Poll to take (Take). XInput
+    keeps no queue of its own, so this is what turns a press let go between two frames into a down and an up rather
+    than nothing.
+
+    The thread is started by Start, after the back end has read the slots once itself, and stopped and joined by the
+    destructor.
+*/
+class XInputReader
+{
+  public:
+    /** A reader of `library`, not yet reading.
+        @param library  XInput; outlives the reader */
+    explicit XInputReader(const XInputLibrary &library) : xinput_(library)
+    {
+    }
+
+    /** The thread stopped and joined, and its timer and events closed. */
+    ~XInputReader()
+    {
+        if (stop_ != nullptr)
+        {
+            SetEvent(stop_);
+        }
+        if (thread_.joinable())
+        {
+            thread_.join();
+        }
+        for (const HANDLE handle : {timer_, stop_, look_})
+        {
+            if (handle != nullptr)
+            {
+                CloseHandle(handle);
+            }
+        }
+    }
+
+    XInputReader(const XInputReader &)            = delete; ///< not copied: its thread points at it
+    XInputReader &operator=(const XInputReader &) = delete; ///< not copied: its thread points at it
+
+    /** Every slot read once, here and now, without the thread: what the back end tells its devices as it is made, so
+        that Devices lists a controller before the first Poll. The slots are then the thread's.
+        @param readings  where each slot's news is appended */
+    void ReadFirst(std::vector<xinput::SlotReading> &readings)
+    {
+        ReadSlots(true, &readings);
+    }
+
+    /** The thread started. A Windows whose waitable timer has not the high resolution (before 10 1803) is given a
+        plain one, whose millisecond is the system clock's 15.625 ms: XInput is then read at the tick, which is still
+        more often than a frame.
+        @return  true where the thread runs; false where no event could be made, and the back end then reads nothing
+                 more of XInput */
+    bool Start()
+    {
+        timer_ = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                        TIMER_MODIFY_STATE | SYNCHRONIZE);
+        if (timer_ == nullptr)
+        {
+            timer_ = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_MODIFY_STATE | SYNCHRONIZE);
+        }
+        stop_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        look_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (timer_ == nullptr || stop_ == nullptr || look_ == nullptr)
+        {
+            return false;
+        }
+        thread_ = std::thread([this] { Read(); });
+        return true;
+    }
+
+    /** The empty slots asked at the thread's next turn rather than within the second: what the back end does when a
+        HID interface arrives, which is how a newly plugged XInput pad announces itself. */
+    void LookNow() const noexcept
+    {
+        if (look_ != nullptr)
+        {
+            SetEvent(look_);
+        }
+    }
+
+    /** Every reading queued since the last call, oldest first, the queue left empty.
+        @param readings  emptied, then given the readings; its capacity is kept for the next call's queue */
+    void Take(std::vector<xinput::SlotReading> &readings)
+    {
+        readings.clear();
+        const std::lock_guard<std::mutex> lock(mutex_);
+        readings.swap(queue_);
+    }
+
+  private:
+    /** The slots read: every one where `should_look_in_empty_slots`, otherwise only those that held a controller,
+        each read's news queued - or appended to `first` where it is given, the thread not yet started.
+        @param should_look_in_empty_slots  whether to ask the empty slots too
+        @param first                       where the news goes before the thread starts; null once it has */
+    void ReadSlots(bool should_look_in_empty_slots, std::vector<xinput::SlotReading> *first)
+    {
+        for (int slot = 0; slot < xinput::kSlotCount; ++slot)
+        {
+            xinput::WatchedSlot &watched = watched_[static_cast<std::size_t>(slot)];
+            if (!watched.is_connected && !should_look_in_empty_slots)
+            {
+                continue;
+            }
+            XINPUT_STATE       state{};
+            const bool         is_connected = xinput_.State(static_cast<DWORD>(slot), state);
+            const std::int64_t time         = GamepadClockNanoseconds();
+            if (!xinput::IsSlotNews(watched, is_connected, state.dwPacketNumber))
+            {
+                continue;
+            }
+            const xinput::SlotReading reading{slot, is_connected, PadStateOf(state.Gamepad), time};
+            if (first != nullptr)
+            {
+                first->push_back(reading);
+            }
+            else
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                xinput::QueueSlotReading(queue_, reading);
+            }
+        }
+    }
+
+    /** The thread's whole body: the slots read, and a millisecond waited where any holds a controller - or, where
+        none does, until the next look at the empty slots - until the reader is stopped. */
+    void Read()
+    {
+        ULONGLONG last_look = GetTickCount64();
+        bool      does_look = false;
+        for (;;)
+        {
+            const ULONGLONG now = GetTickCount64();
+            does_look           = does_look || now - last_look >= kLookIntervalMilliseconds;
+            ReadSlots(does_look, nullptr);
+            if (does_look)
+            {
+                last_look = now;
+                does_look = false;
+            }
+            const bool is_any_connected = std::any_of(
+                watched_.begin(), watched_.end(), [](const xinput::WatchedSlot &slot) { return slot.is_connected; });
+            DWORD woke = WAIT_TIMEOUT;
+            if (is_any_connected)
+            {
+                LARGE_INTEGER due{};
+                due.QuadPart = -kXInputReadIntervalHundredsOfNanoseconds; // relative: the system clock cannot move it
+                if (SetWaitableTimer(timer_, &due, 0, nullptr, nullptr, FALSE) == FALSE)
+                {
+                    return;
+                }
+                const HANDLE waited_on[] = {stop_, look_, timer_};
+                woke                     = WaitForMultipleObjects(3, waited_on, FALSE, INFINITE);
+            }
+            else
+            {
+                const ULONGLONG since = GetTickCount64() - last_look;
+                const DWORD     until_look =
+                    since >= kLookIntervalMilliseconds ? 0 : static_cast<DWORD>(kLookIntervalMilliseconds - since);
+                const HANDLE waited_on[] = {stop_, look_};
+                woke                     = WaitForMultipleObjects(2, waited_on, FALSE, until_look);
+            }
+            if (woke == WAIT_OBJECT_0 || woke == WAIT_FAILED)
+            {
+                return;
+            }
+            does_look = woke == WAIT_OBJECT_0 + 1;
+        }
+    }
+
+    const XInputLibrary                                &xinput_;         ///< XInput, where the system has it
+    std::array<xinput::WatchedSlot, xinput::kSlotCount> watched_{};      ///< the slots as the thread last read them
+    std::mutex                                          mutex_;          ///< guards queue_
+    std::vector<xinput::SlotReading>                    queue_;          ///< the news read since Poll last took it
+    HANDLE                                              timer_{nullptr}; ///< the millisecond waited between reads
+    HANDLE                                              stop_{nullptr};  ///< set to end the thread
+    HANDLE                                              look_{nullptr};  ///< set to ask the empty slots now
+    std::thread                                         thread_;         ///< the thread; not joinable until Start
+};
+
 /** The controllers Windows has. */
 class WindowsGamepads final : public Gamepads
 {
@@ -506,12 +702,17 @@ class WindowsGamepads final : public Gamepads
             notification_ = nullptr;
         }
         LookForHid(pending_);
-        PollXInput(pending_, true);
         StampEdges(pending_, 0, GamepadClockNanoseconds());
+        // XInput's slots read once here, so a controller is listed before the first Poll, and then on the thread.
+        reader_.ReadFirst(readings_);
+        xinput::ApplySlotReadings(readings_, slot_devices_, roster_, pending_);
+        readings_.clear();
+        reader_.Start();
         last_look_ = GetTickCount64();
     }
 
-    /** The notification withdrawn - which waits for one in progress - and every controller closed. */
+    /** The notification withdrawn - which waits for one in progress - the XInput thread stopped and joined, and every
+        controller closed. */
     ~WindowsGamepads() override
     {
         if (notification_ != nullptr)
@@ -548,13 +749,18 @@ class WindowsGamepads final : public Gamepads
         {
             LookForHid(edges);
         }
-        PollXInput(edges, has_changed || has_second_gone);
+        if (has_changed)
+        {
+            reader_.LookNow(); // an XInput pad arriving is a HID interface arriving too
+        }
         if (has_changed || has_second_gone)
         {
             last_look_ = now;
         }
-        // Every edge not stamped as it was made - XInput's states, and the ups of a device gone - was seen in this
-        // poll.
+        // XInput's news since the last poll, in the order its thread read it, each edge with the time of its read.
+        reader_.Take(readings_);
+        xinput::ApplySlotReadings(readings_, slot_devices_, roster_, edges);
+        // Every edge not stamped as it was made - the ups of a HID device gone - was seen in this poll.
         StampEdges(edges, first, GamepadClockNanoseconds());
     }
 
@@ -566,13 +772,6 @@ class WindowsGamepads final : public Gamepads
     }
 
   private:
-    /** One of XInput's slots. */
-    struct XInputSlot
-    {
-        std::uint32_t device_id{0}; ///< the controller in it; 0 where it is empty
-        DWORD         packet{0};    ///< the state's packet number last told
-    };
-
     /** Told by the configuration manager, on a thread of its own, that a HID interface arrived or went.
         @param notification  the registration
         @param context       the flag to set
@@ -661,52 +860,18 @@ class WindowsGamepads final : public Gamepads
         }
     }
 
-    /** XInput's slots read: each controller's state told where it changed, a controller gone let go of, and - where
-        `should_look_in_empty_slots` - the empty slots asked whether a controller has come.
-        @param edges                       where the edges are appended
-        @param should_look_in_empty_slots  whether to ask the empty slots */
-    void PollXInput(std::vector<GamepadEdge> &edges, bool should_look_in_empty_slots)
-    {
-        for (DWORD slot = 0; slot < static_cast<DWORD>(xinput::kSlotCount); ++slot)
-        {
-            XInputSlot &held = slots_[slot];
-            if (held.device_id == 0 && !should_look_in_empty_slots)
-            {
-                continue;
-            }
-            XINPUT_STATE state{};
-            if (!xinput_.State(slot, state))
-            {
-                if (held.device_id != 0)
-                {
-                    roster_.Remove(held.device_id, edges);
-                    held.device_id = 0;
-                }
-                continue;
-            }
-            const bool is_new = held.device_id == 0;
-            if (is_new)
-            {
-                held.device_id = roster_.Add(xinput::PadLayout(static_cast<int>(slot))).device_id();
-            }
-            if (is_new || state.dwPacketNumber != held.packet)
-            {
-                held.packet = state.dwPacketNumber;
-                xinput::ApplyPadState(PadStateOf(state.Gamepad), *roster_.Find(held.device_id), edges);
-            }
-        }
-    }
-
-    GamepadRoster                              roster_;             ///< every controller open
-    XInputLibrary                              xinput_;             ///< XInput, where the system has it
-    std::array<XInputSlot, xinput::kSlotCount> slots_{};            ///< XInput's slots
-    GUID                                       hid_guid_{};         ///< the HID interface class
-    std::vector<std::unique_ptr<HidPad>>       pads_;               ///< the HID controllers open
-    std::vector<std::wstring>                  not_controllers_;    ///< HID interfaces opened and found not controllers
-    std::vector<GamepadEdge>                   pending_;            ///< what was found down as this was made
-    std::atomic<bool>                          has_changed_{false}; ///< set by the notification: look for HID again
-    HCMNOTIFICATION                            notification_{nullptr}; ///< the notification; null where none was given
-    ULONGLONG                                  last_look_{0};          ///< when the empty slots were last asked
+    GamepadRoster                        roster_;                ///< every controller open
+    XInputLibrary                        xinput_;                ///< XInput, where the system has it
+    XInputReader                         reader_{xinput_};       ///< XInput's thread; stopped before xinput_ goes
+    xinput::SlotDevices                  slot_devices_{};        ///< the device in each of XInput's slots
+    std::vector<xinput::SlotReading>     readings_;              ///< XInput's news, taken from reader_ each poll
+    GUID                                 hid_guid_{};            ///< the HID interface class
+    std::vector<std::unique_ptr<HidPad>> pads_;                  ///< the HID controllers open
+    std::vector<std::wstring>            not_controllers_;       ///< HID interfaces opened and found not controllers
+    std::vector<GamepadEdge>             pending_;               ///< what was found down as this was made
+    std::atomic<bool>                    has_changed_{false};    ///< set by the notification: look for HID again
+    HCMNOTIFICATION                      notification_{nullptr}; ///< the notification; null where none was given
+    ULONGLONG                            last_look_{0};          ///< when HID was last looked at
 };
 } // namespace
 
