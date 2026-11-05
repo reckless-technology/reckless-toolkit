@@ -275,7 +275,11 @@ TEST(ChildWindowFramePacing, AHiddenWindowStillHasFramesAndSaysWhyAndTheClockCom
 
     top.Show(true);
     run_for(0.5);
+    const int shown_from = frames;
+    run_for(1.0);
     const FramePacingState shown = child->FramePacingNow();
+    EXPECT_LE(frames - shown_from, static_cast<int>(1.5 * shown.frames_a_second) + 5)
+        << "and the timer that stood in for the link has stopped: this is no rate, only that frames do not come twice";
     EXPECT_EQ(shown.pacing, FramePacing::kDisplayClock) << "shown again, with no one asking, the clock comes back";
     EXPECT_EQ(shown.why, FramePacingFallback::kNone);
     EXPECT_GT(shown.frames_a_second, 0.0);

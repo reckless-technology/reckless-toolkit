@@ -97,11 +97,6 @@ constexpr UINT kDisplayClockGaveUpMessage = WM_APP + 20;
     compositor again rather than sitting there. It is not a frame period and nothing is paced by it. */
 constexpr DWORD kClockWaitsAtMostMilliseconds = 1000;
 
-/** How long after a window has stood a frame back the clock's thread asks again, in seconds: long enough that the
-    window's thread is back in its queue and has taken the paint or the timer the frame stood back for, since a posted
-    message would outrank it again. Not a frame period, and nothing is paced by it. */
-constexpr double kStoodBackFrameAsksAgainSeconds = 0.001;
-
 /** The module this code is linked into: its window class is registered against it.
     @return the module's instance handle */
 HINSTANCE ModuleInstance() noexcept
@@ -496,6 +491,8 @@ class WinDisplayClock
         request_ = request;
         gave_up_because_.store(static_cast<int>(FramePacingFallback::kNone), std::memory_order_relaxed);
         is_frame_in_flight_.store(false, std::memory_order_relaxed);
+        ask_again_seconds_   = 0.0;
+        asked_after_seconds_ = 0.0;
         // Without the high resolution the timer is the system clock's 15.625 ms again, which is the whole fault being
         // fixed, so a Windows that refuses the flag is told apart from one that takes it rather than paced badly.
         timer_      = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
@@ -551,8 +548,7 @@ class WinDisplayClock
     }
 
     /** The frame the window was just handed left for now, with work ahead of it on the thread: still in flight, so no
-        other is posted over it, and posted again shortly (kStoodBackFrameAsksAgainSeconds). Nothing on a stopped
-        clock. */
+        other is posted over it, and posted again shortly (FrameAsksAgainAfter). Nothing on a stopped clock. */
     void FrameStoodBack() noexcept
     {
         if (stood_back_ != nullptr)
@@ -605,7 +601,11 @@ class WinDisplayClock
             if (ask_again_seconds_ > 0.0 && now >= ask_again_seconds_)
             {
                 ask_again_seconds_ = 0.0;
-                PostMessageW(window_, kDisplayFrameMessage, kFrameAsksToRun, 0);
+                asked_seconds_     = now;
+                if (PostMessageW(window_, kDisplayFrameMessage, kFrameAsksToRun, 0) == FALSE)
+                {
+                    is_frame_in_flight_.store(false, std::memory_order_release); // no room: the next frame asks instead
+                }
             }
             if (due_seconds <= now)
             {
@@ -633,7 +633,9 @@ class WinDisplayClock
             }
             if (woke == WAIT_OBJECT_0 + 1)
             {
-                ask_again_seconds_ = QpcSeconds() + kStoodBackFrameAsksAgainSeconds;
+                const double answered = QpcSeconds();
+                asked_after_seconds_  = FrameAsksAgainAfter(asked_after_seconds_, answered - asked_seconds_);
+                ask_again_seconds_    = answered + asked_after_seconds_;
             }
         }
     }
@@ -724,22 +726,28 @@ class WinDisplayClock
             const double woke_on_the_grid = QpcSeconds() + lead_seconds; // the waking, on the clock's own timeline
             // One frame in flight at a time: where the window has not taken the last one, this one is given up
             // rather than queued behind it, and the clock's own catching up decides what happens next.
-            if (!is_frame_in_flight_.exchange(true, std::memory_order_acq_rel) &&
-                PostMessageW(window_, kDisplayFrameMessage, kFrameAsksToRun, 0) == FALSE)
+            if (!is_frame_in_flight_.exchange(true, std::memory_order_acq_rel))
             {
-                is_frame_in_flight_.store(false, std::memory_order_release);
+                asked_seconds_       = QpcSeconds();
+                asked_after_seconds_ = 0.0;
+                if (PostMessageW(window_, kDisplayFrameMessage, kFrameAsksToRun, 0) == FALSE)
+                {
+                    is_frame_in_flight_.store(false, std::memory_order_release);
+                }
             }
             clock.Advance(woke_on_the_grid);
         }
     }
 
-    HANDLE            timer_{nullptr};         ///< the high-resolution waitable timer each frame is waited on.
-    HANDLE            stop_{nullptr};          ///< set to end the thread, waited on beside the timer.
-    HANDLE            stood_back_{nullptr};    ///< set as the window stands a frame back, waited on beside the timer.
-    double            ask_again_seconds_{0.0}; ///< when a frame stood back is posted again; 0 for none. The thread's.
-    std::thread       thread_;                 ///< the thread that waits; not joinable while the clock is stopped.
-    HWND              window_{nullptr};        ///< the window each frame is posted to.
-    FrameRequest      request_{};              ///< the divisor and the frames to make up, the product's.
+    HANDLE            timer_{nullptr};           ///< the high-resolution waitable timer each frame is waited on.
+    HANDLE            stop_{nullptr};            ///< set to end the thread, waited on beside the timer.
+    HANDLE            stood_back_{nullptr};      ///< set as the window stands a frame back, waited on beside the timer.
+    double            ask_again_seconds_{0.0};   ///< when a frame stood back is posted again; 0 for none. The thread's.
+    double            asked_seconds_{0.0};       ///< when the frame in flight was last posted. The thread's.
+    double            asked_after_seconds_{0.0}; ///< the wait before it was last posted; 0 for its first. The thread's.
+    std::thread       thread_;                   ///< the thread that waits; not joinable while the clock is stopped.
+    HWND              window_{nullptr};          ///< the window each frame is posted to.
+    FrameRequest      request_{};                ///< the divisor and the frames to make up, the product's.
     std::atomic<bool> is_frame_in_flight_{false}; ///< a frame posted and not yet taken off the window's queue.
     std::atomic<int>  gave_up_because_{
         static_cast<int>(FramePacingFallback::kNone)}; ///< FramePacingFallback, as an int for std::atomic.
@@ -1734,6 +1742,7 @@ class WinChildWindow final : public ChildWindow, public WinSurface
     {
         KillTimer(hwnd_, kFrameTimer);
         clock_.Stop();
+        frame_first_asked_seconds_ = 0.0;
         if (!frame_)
         {
             return;
