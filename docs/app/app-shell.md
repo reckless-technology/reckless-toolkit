@@ -43,8 +43,12 @@ resources decode anything.
 `ParseAppOptions` reads `--smoke [frames]` and keeps every other argument in `unknown`, in order; the product takes its
 own flags from there, and `RunApp` reports what is left as ignored. `RunApp` opens the window, titled `<name>  v<version>`,
 round the root at the root's size - held first to what fits the display it opens on (`AppPlatform::LargestContent`), never
-under the minimum - where it stood last or centred; the person may resize it down to the minimum, and the root follows
-each resize, the child window following each change of the display's scale. It makes the child window through the maker
+under the minimum - where it stood last or centred. A size that fits opens whole, to the pixel, at every scale: the
+design size is taken to the display's pixels as the window sizes its content, rounded, and back to the most design
+pixels whose own pixels fit (`app/WindowPlace.h`'s `FittedDesignContent`), never past the work area and never the
+pixel short a truncation gave - 885 design pixels at 125 % are 1106, which is 885 again, not 884, so a size an app
+kept from its View menu reopens ticked. The person may resize it down to the minimum, and the root follows each resize,
+the child window following each change of the display's scale. It makes the child window through the maker
 it is given (`window::CreateChildWindow`, or a suite's own), hands it the files a desktop drags over the window, calls
 `on_open` with the window, then `on_frame` once a display frame with the seconds since the last (`view::FrameSteps`),
 runs the loop until the window is closed or the app is quit, calls `on_end` with where the window stood, and closes
@@ -67,8 +71,9 @@ every platform, so the root and the child window follow it as they follow a pers
 out at its design size and drawn at exactly that zoom. `fixed_zoom()` says the zoom in force, the one a menu ticks; the
 first time the root is sized to anything else - the person dragging the frame, a display too small for the size - it
 lets the zoom go and lays the content out at the window's size again. `AppWindow::LargestContent()` is the most the
-window's screen takes where it stands now, which such a menu holds its sizes to. A menu item may answer to more than
-one key: `MenuEntry::other_shortcuts` choose it as its `shortcut` does and show nowhere (Ctrl++ beside Ctrl+=).
+window's screen takes where it stands now - the most design pixels whose pixels fit, as the window sizes them - which
+such a menu holds its sizes to. A menu item may answer to more than one key: `MenuEntry::other_shortcuts` choose it as
+its `shortcut` does and show nowhere (Ctrl++ beside Ctrl+=).
 
 `WindowSizes` (`app/AppWindowSizes.h`) is that menu's logic written once: the sizes `kWindowSizes` (50, 75, 100, 125
 and 150 %), `Restore(percent)` before the window opens - the root held at the size the app kept and its bounds set to it

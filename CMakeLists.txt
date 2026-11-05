@@ -742,11 +742,12 @@ inline constexpr EmbeddedFile kEmbeddedFiles[] = {
     # The app's platform seam with nothing on a screen: the queue other threads post calls to the main thread through
     # (core/PostQueue.h), the menu bar written once (app/MenuBar.h) and drawn (app/MenuBarView.h), the app's shell, and
     # the suites' own platform (tests/FakeAppPlatform.h), which a product's app suite drives - a key to the view with
-    # the keyboard first. Named for the shell, since a product that builds the toolkit's suites beside its own may have
+    # the keyboard first - and a window's content in design pixels held to a work area in the display's pixels
+    # (app/WindowPlace.h). Named for the shell, since a product that builds the toolkit's suites beside its own may have
     # an app suite of its own: vst-plugins' reckless_app_test, its Standalone's.
     add_executable(reckless_app_shell_test tests/test_post_queue.cpp tests/test_fake_app_platform.cpp
                                            tests/test_app_shell.cpp tests/test_menu_bar.cpp tests/test_window_sizes.cpp
-                                           tests/test_full_screen.cpp)
+                                           tests/test_window_place.cpp tests/test_full_screen.cpp)
     target_link_libraries(reckless_app_shell_test PRIVATE reckless_app_shell reckless_toolkit_test_support
                                                           reckless_warnings GTest::gtest_main)
     add_test(NAME app COMMAND reckless_app_shell_test)

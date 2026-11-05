@@ -601,12 +601,12 @@ class WinWindow final : public AppWindow
     gfx::PointI LargestContent() const override
     {
         // The work area less the frame's own border, title bar and menu bar, in the monitor's pixels; in design units
-        // at the window's scale, rounded down so the content it gives fits.
+        // at the window's scale, the most whose pixels (as Outer sizes the content) fit.
         const gfx::RectI area   = WorkAreaOfWindow();
         const SIZE       border = OuterSize(style_, ex_style_, 0, 0, dpi_, has_menu_);
         const float      scale  = Scale();
-        return {std::max(1, static_cast<int>(std::floor(static_cast<float>(area.width() - border.cx) / scale))),
-                std::max(1, static_cast<int>(std::floor(static_cast<float>(area.height() - border.cy) / scale)))};
+        return {std::max(1, DesignWithinPixels(area.width() - static_cast<int>(border.cx), scale)),
+                std::max(1, DesignWithinPixels(area.height() - static_cast<int>(border.cy), scale))};
     }
 
     /** The window's menu bar replaced by `menu`, the one before destroyed, and the frame sized again round the
@@ -1158,16 +1158,15 @@ class WinPlatform final : public AppPlatform
         }
         const UINT        dpi   = DpiOfMonitor(monitor);
         const float       scale = static_cast<float>(dpi) / 96.0f;
-        const gfx::PointI content{static_cast<int>(std::lround(static_cast<float>(options.width) * scale)),
-                                  static_cast<int>(std::lround(static_cast<float>(options.height) * scale))};
+        const gfx::PointI content{PixelsOfDesign(options.width, scale), PixelsOfDesign(options.height, scale)};
         // A window that asks for the bar has its row whether the app has set the bar yet or sets it once the window
         // is open (SetMenuBar grows the frame by it then): the frame held to the screen with it either way.
         const SIZE outer = OuterSize(StyleOf(options), ExStyleOf(options), content.x, content.y, dpi, options.menu_bar);
-        const gfx::PointI fitted =
-            FittedContent(content, {static_cast<int>(outer.cx) - content.x, static_cast<int>(outer.cy) - content.y},
-                          RectOf(info.rcWork));
-        return {static_cast<int>(static_cast<float>(fitted.x) / scale),
-                static_cast<int>(static_cast<float>(fitted.y) / scale)};
+        // Back in design units to the most whose pixels fit - a size that fits whole, as the window sizes its content
+        // (Outer), never the pixel short a truncation gives at 125 % or 175 %.
+        return FittedDesignContent({options.width, options.height},
+                                   {static_cast<int>(outer.cx) - content.x, static_cast<int>(outer.cy) - content.y},
+                                   RectOf(info.rcWork), scale);
     }
 
     std::unique_ptr<AppWindow> OpenWindow(const WindowOptions &options) override

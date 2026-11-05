@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <span>
@@ -92,6 +93,59 @@ inline gfx::PointI FittedContent(gfx::PointI content, gfx::PointI decoration, gf
 {
     return {std::max(1, std::min(content.x, area.width() - decoration.x)),
             std::max(1, std::min(content.y, area.height() - decoration.y))};
+}
+
+/** `design` design pixels in the display's pixels at `scale`, to the nearest: what a window's content of that size
+    takes on a display, as the Windows and Linux windows size it.
+    @param design  a length in design pixels
+    @param scale   the display's pixels per design pixel
+    @return        the length in the display's pixels */
+inline int PixelsOfDesign(int design, float scale)
+{
+    return static_cast<int>(std::lround(static_cast<float>(design) * scale));
+}
+
+/** The most design pixels whose length in the display's pixels at `scale` (PixelsOfDesign) is no more than `pixels`:
+    the content's side that fits in that room, rounded and never past it - 1106 pixels at 1.25 is 885 design pixels,
+    which a window takes as 1106, where a truncated 884.8 would give a pixel short.
+    @param pixels  the room, in the display's pixels
+    @param scale   the display's pixels per design pixel; one where it is not more than nothing
+    @return        the length in design pixels; less than one where even one does not fit */
+inline int DesignWithinPixels(int pixels, float scale)
+{
+    if (!(scale > 0.0f))
+    {
+        scale = 1.0f;
+    }
+    // The nearest first, then stepped to the most that fits: for a scale of one or more the nearest is it or one past
+    // it, and below one a step or two up may be needed.
+    int design = static_cast<int>(std::lround(static_cast<float>(pixels) / scale));
+    while (design > 0 && PixelsOfDesign(design, scale) > pixels)
+    {
+        --design;
+    }
+    while (PixelsOfDesign(design + 1, scale) <= pixels)
+    {
+        ++design;
+    }
+    return design;
+}
+
+/** FittedContent for a content sized in design pixels on a work area in the display's pixels: the largest content,
+    in design pixels, no larger than `design` whose window fits inside `area` at `scale`. A size that fits comes back
+    whole, to the pixel; one that does not is the most whose pixels (PixelsOfDesign) fit. Each side is held to at
+    least one.
+    @param design      the content's size, in design pixels
+    @param decoration  the frame's own width and height round the content, in the display's pixels
+    @param area        the work area the window opens on, in the display's pixels
+    @param scale       the display's pixels per design pixel
+    @return            the content's size, in design pixels, no larger than `design` */
+inline gfx::PointI FittedDesignContent(gfx::PointI design, gfx::PointI decoration, gfx::RectI area, float scale)
+{
+    const gfx::PointI fitted =
+        FittedContent({PixelsOfDesign(design.x, scale), PixelsOfDesign(design.y, scale)}, decoration, area);
+    return {std::max(1, std::min(design.x, DesignWithinPixels(fitted.x, scale))),
+            std::max(1, std::min(design.y, DesignWithinPixels(fitted.y, scale)))};
 }
 
 /** The work area a window opens on: the one its frame, put where it stood, is most on (AreaFor); else, with no place
