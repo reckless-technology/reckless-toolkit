@@ -1104,7 +1104,7 @@ class MacChildWindow final : public ChildWindow, public MacSurface
     FramePacingState SetFramePacing(const FrameRequest &request) override
     {
         request_ = request;
-        pacing_  = ChosenPacing(request_, DisplayClockReadingOf(view_));
+        pacing_  = WithoutLead(ChosenPacing(request_, DisplayClockReadingOf(view_)));
         if (pacing_.pacing == FramePacing::kDisplayClock && !display_tick_)
         {
             // Installed once a product has asked and never taken back: a tick still on its way as the link stops
@@ -1143,6 +1143,19 @@ class MacChildWindow final : public ChildWindow, public MacSurface
     }
 
   private:
+    /** `state` with no lead in force: a Mac's display link runs the frame callback when it ticks, and nothing here
+        moves it. Whether a lead would help on a Mac is not known yet - it does only where the link ticks at the
+        vertical blank, with a whole refresh before the one its frame is shown at (`targetTimestamp`), and it gains
+        nothing where the link is already run ahead of the blank - so the lead a product asks for is read as 0 and
+        said to be 0 until that is measured (docs/window/frame-pacing.md, "Leading the vertical blank").
+        @param state  the pacing ChosenPacing decided
+        @return       the same, its lead 0 */
+    static FramePacingState WithoutLead(FramePacingState state) noexcept
+    {
+        state.lead_microseconds = 0;
+        return state;
+    }
+
     /** The frame callback's source arranged for the pacing in force: the display's own link where that is what was
         decided and a link can be made, and the timer the window has always used otherwise - which is what a window
         with no request of its own always reaches, as the invalidate and the NSTimer alone. Nothing runs while there
@@ -1170,8 +1183,8 @@ class MacChildWindow final : public ChildWindow, public MacSurface
             }
             // No link to be had on this Mac: the timer it has always used, and the reason said rather than a rate
             // invented for it.
-            pacing_ = {FramePacing::kPlatformTimer, 0, pacing_.display_hertz, 0.0,
-                       FramePacingFallback::kNoDisplayClock};
+            pacing_ = {FramePacing::kPlatformTimer,          0, pacing_.display_hertz, 0.0,
+                       FramePacingFallback::kNoDisplayClock, 0};
         }
         MacChildWindow *self = this;
         timer_               = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
@@ -1225,11 +1238,11 @@ class MacChildWindow final : public ChildWindow, public MacSurface
         const FramePacingState state = ChosenPacing(request_, reading);
         if (state.pacing != FramePacing::kDisplayClock)
         {
-            pacing_ = {FramePacing::kPlatformTimer, 0, state.display_hertz, 0.0, state.why};
+            pacing_ = {FramePacing::kPlatformTimer, 0, state.display_hertz, 0.0, state.why, 0};
             ArrangePacing();
             return;
         }
-        pacing_ = state;
+        pacing_ = WithoutLead(state);
         if (has_period_moved)
         {
             // The schedule starts again on what the display is doing now rather than dividing what it was doing.

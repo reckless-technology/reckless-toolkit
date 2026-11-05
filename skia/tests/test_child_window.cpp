@@ -765,9 +765,11 @@ TEST(ChildWindowFramePacing, IsOnThePlatformTimerUntilItIsAskedAndSaysWhichItGot
     EXPECT_EQ(unasked.why, FramePacingFallback::kNotAsked);
     EXPECT_EQ(unasked.display_hertz, 0.0) << "and has read nothing of its display";
 
-    const FramePacingState asked = child->SetFramePacing({FramePacing::kDisplayClock, 4, 1});
-    HoldsWhicheverPacingItReached(asked, 4, "Windows, asked for a frame every fourth refresh");
+    // A lead of 5 ms, which every display a window can be paced on leaves room for at a divisor of 4.
+    const FramePacingState asked = child->SetFramePacing({FramePacing::kDisplayClock, 4, 1, 5000});
+    HoldsWhicheverPacingItReached(asked, 4, "Windows, asked for a frame every fourth refresh, 5 ms ahead", 5000, true);
     EXPECT_EQ(child->FramePacingNow().pacing, asked.pacing) << "and says the same when asked again";
+    EXPECT_EQ(child->FramePacingNow().lead_microseconds, asked.lead_microseconds) << "with the same lead";
 
     const FramePacingState back = child->SetFramePacing({});
     EXPECT_EQ(back.pacing, FramePacing::kPlatformTimer) << "a default request puts it back on the platform's timer";
@@ -791,8 +793,8 @@ TEST(ChildWindowFramePacing, RunsTheFrameCallbackOnTheWindowsOwnThreadWhicheverI
         ASSERT_NE(child, nullptr);
         if (does_ask)
         {
-            HoldsWhicheverPacingItReached(child->SetFramePacing({FramePacing::kDisplayClock, 4, 1}), 4,
-                                          "Windows, running frames");
+            HoldsWhicheverPacingItReached(child->SetFramePacing({FramePacing::kDisplayClock, 4, 1, 2000}), 4,
+                                          "Windows, running frames 2 ms ahead", 2000, true);
         }
         else
         {
@@ -860,8 +862,8 @@ TEST(ChildWindowFramePacing, SaysPlainlyThatThereIsNoDisplayClockOnX11)
     ASSERT_NE(child, nullptr);
     EXPECT_EQ(child->FramePacingNow().why, FramePacingFallback::kNotAsked) << "until someone asks";
 
-    const FramePacingState asked = child->SetFramePacing({FramePacing::kDisplayClock, 4, 1});
-    HoldsWhicheverPacingItReached(asked, 4, "Linux, asked for a frame every fourth refresh");
+    const FramePacingState asked = child->SetFramePacing({FramePacing::kDisplayClock, 4, 1, 5000});
+    HoldsWhicheverPacingItReached(asked, 4, "Linux, asked for a frame every fourth refresh, 5 ms ahead", 5000);
     EXPECT_EQ(asked.why, FramePacingFallback::kNoDisplayClock) << "which is the honest answer on X11, not a rate";
     EXPECT_EQ(child->FramePacingNow().why, FramePacingFallback::kNoDisplayClock) << "and it says the same again";
 

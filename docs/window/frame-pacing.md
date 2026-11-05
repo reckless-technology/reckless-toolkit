@@ -158,9 +158,11 @@ What a product asks for is a `window::FrameRequest`:
 | `pacing` | `kPlatformTimer` (the default: unchanged) or `kDisplayClock` |
 | `refresh_divisor` | **N**: the refresh periods each frame drawn is shown for, 1 or more |
 | `most_frames_behind` | whole frames of lateness the clock will make up before it starts again |
+| `lead_microseconds` | how long before the vertical blank each frame is woken, so it is finished as it is composed: 0 (the default) wakes at the blank, as a window always has ([below](#leading-the-vertical-blank)) |
 
 What it is told is a `window::FramePacingState`: the pacing actually in force, the divisor, the display's rate, the
-frames a second that comes to, and `why` - a `window::FramePacingFallback` - where it fell back. `frames_a_second` is
+frames a second that comes to, `why` - a `window::FramePacingFallback` - where it fell back, and the lead in force
+(`lead_microseconds`), which is 0 wherever the platform cannot lead. `frames_a_second` is
 **0 on the platform timer**, because the platform timer's rate is not a number the window knows: it is the
 platform's, it is not the period asked for, and on Windows it is not even steady.
 
@@ -237,6 +239,65 @@ is already right: the app loop keeps its deadline in a steady clock and advances
 would buy on Linux is phase, not rate, and until that is worth its cost `SetFramePacing` there answers
 `kNoDisplayClock` rather than faking a phase lock.
 
+## Leading the vertical blank
+
+A frame paced on the display's clock is woken **at** a vertical blank. It polls its input, ticks and paints in a few
+milliseconds, and then the finished frame waits for the compositor, which takes it at the *next* blank: the input it
+sampled is most of a refresh older than it need be by the time it is composed. Sentinel measured that wait at 14.10 ms
+of a 16.67 ms refresh windowed, and 9.28 ms full screen at 2160 lines (Legion5i, 2026-11-04, at 60 Hz). A lead
+(`FrameRequest::lead_microseconds`) wakes each frame that long **before** the blank it is due at instead, so a product
+that knows what a frame costs it can ask to be woken just early enough to finish - and samples its input that much
+later.
+
+```cpp
+// This product's numbers: its paint's 99th percentile and a margin. Too short a lead costs a whole refresh.
+child.SetFramePacing({reckless::window::FramePacing::kDisplayClock, 1, 1, /*lead_microseconds*/ 5000});
+```
+
+- **The schedule stays on the blanks; only the waking moves.** The clock is kept on the vertical blanks themselves and
+  told the time as *now plus the lead* (`window::LedWakeSeconds`), so its absolute schedule, its catching up and its
+  giving up are exactly those of a clock with no lead. Moving each due time back by the lead instead would not work:
+  the next due time is pulled onto the blank *nearest* it, which for a lead over half a refresh period is the blank
+  before, and the schedule would run backwards.
+- **The first frame is never already late.** Starting the clock a frame period ahead of *now plus the lead* puts the
+  first waking at least half a refresh period ahead, whatever the lead.
+- **The lead is held to the frame period** (`window::LeadInForceMicroseconds`): none for a lead under 0, and at most
+  the frame period - the refresh period times the divisor - less a millisecond. A lead longer than one refresh is
+  fine where the divisor leaves room for it. The lead in force moves with the display under the window, as the rate
+  does, and `FramePacingNow` reports it.
+- **A frame that misses the blank it led is shown a whole refresh later**, which is worse than no lead at all. The
+  margin is the product's to choose: the window's own wake is not exact (below), and a frame's cost has a tail.
+
+**Windows** leads. **macOS does not yet**, and its state says 0: a Mac's display link runs the frame callback when it
+ticks, and whether a lead would gain anything there depends on *when* it ticks, which nothing in the code can show.
+Core Animation's link hands over `timestamp` (the blank just gone) and `targetTimestamp` (the one the frame will be
+shown at); CoreVideo's an `output` time for the frame. If the callback runs at `timestamp`, a whole refresh before
+`targetTimestamp`, the frame waits as Windows' did and a lead is worth the same - schedule the frame at
+`targetTimestamp - lead` on the main queue rather than in the callback. If the link is already run ahead of the blank
+by about a frame's cost, a lead gains nothing. **What to measure on a Mac**, on Apple Silicon and on Intel:
+`CACurrentMediaTime()` on entry to the callback against `timestamp` and `targetTimestamp`, and then a frame's paint
+against `targetTimestamp`. **Linux** has no display clock to lead.
+
+What the lead does, measured on Legion5i on 2026-11-04 (3840 x 2160 at 59.94 Hz, the compositor's period 16.683 ms;
+a Release build, one frame a refresh, a frame that fills the window with one colour) by a probe that stamps the frame
+callback against the compositor's own last vertical blank (`DwmGetCompositionTimingInfo(nullptr).qpcVBlank`), 590
+frames each:
+
+| Lead in force | wake to the blank it led, mean | the callback's start after its target: mean, sd, p99 | intervals over 1.5 refreshes | paints past the blank they led | DWM frames missed |
+|---|---|---|---|---|---|
+| 0 | 16.254 ms (0.43 ms after the blank) | - | 0 | 0 | 0 |
+| 2 ms | 1.622 ms | 0.378 ms, 1.091 ms, 1.051 ms | 0 | **3 of 589** | 0 |
+| 5 ms | 4.525 ms | 0.475 ms, 0.257 ms, 1.221 ms | 0 | 0 | 0 |
+| 10 ms | 9.513 ms | 0.487 ms, 0.296 ms, 1.644 ms | 0 | 0 | 0 |
+| 15 ms | 14.467 ms | 0.533 ms, 0.342 ms, 2.032 ms | 0 | 0 | 0 |
+| 15.683 ms (20 ms asked, held) | 15.225 ms | 0.458 ms, 0.235 ms, 1.100 ms | 0 | 0 | 0 |
+
+The callback starts about **half a millisecond after its target**, with a standard deviation of 0.2 to 0.35 ms: that
+is the hop from the clock's thread to the window's (a posted message) and the waitable timer's own lateness, and it
+is there at a lead of 0 too - a frame woken at the blank begins 0.43 ms after it. A product's lead absorbs it. A cheap
+frame missed nothing at any lead, but at 2 ms three paints in 589 finished after the blank they were woken for: a
+2 ms lead leaves too little for a half-millisecond wake with a millisecond's tail.
+
 ## The three things that are actually hard
 
 **The reported refresh rate can be another display's.** On the machine this was written on, `Win32_VideoController`
@@ -309,7 +370,9 @@ Windows Audio's arithmetic is ([../audio/native-backends.md](../audio/native-bac
 `tests/test_frame_pacing.cpp`, in the `view` suite, holds all of it on **every platform, in the builds with no GUI
 too**: the rate chosen from two readings and every reason there is none, every branch of the fallback decision, the
 subdivision on six panels, the grid an instant is pulled onto and which tick a frame belongs on, whether a period
-holds still, and the schedule with its catching up and its giving up. Two of its cases are simulations of the shapes
+holds still, the schedule with its catching up and its giving up, and the lead - held to the frame period, reported
+only on the display's clock, and a led loop simulated on seven panels and leads, every frame woken the lead before a
+blank and the divisor's refreshes after the last, with a stall caught up exactly as an unled loop catches it up. Two of its cases are simulations of the shapes
 the platforms drive it in - a waited schedule against a made-up 240.2576 Hz grid, and a counted display link at 120 Hz
 - and each holds the property that matters: **every frame exactly the divisor's refresh periods after the last, over
 hundreds of frames, with no drift.** A third shows why the count is kept in the ticks' timestamps: with one callback
