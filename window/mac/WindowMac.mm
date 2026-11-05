@@ -1079,6 +1079,8 @@ class MacChildWindow final : public ChildWindow, public MacSurface
     ~MacChildWindow() override
     {
         clock_.Stop();
+        [link_watch_ invalidate];
+        link_watch_ = nil;
         [timer_ invalidate];
         timer_ = nil;
     }
@@ -1163,6 +1165,9 @@ class MacChildWindow final : public ChildWindow, public MacSurface
     void ArrangePacing()
     {
         clock_.Stop();
+        [link_watch_ invalidate];
+        link_watch_     = nil;
+        is_link_silent_ = false;
         [timer_ invalidate];
         timer_ = nil;
         if (!frame_)
@@ -1179,6 +1184,7 @@ class MacChildWindow final : public ChildWindow, public MacSurface
                     PacedTick(tick_seconds, period_seconds);
                 }))
             {
+                WatchTheLink();
                 return;
             }
             // No link to be had on this Mac: the timer it has always used, and the reason said rather than a rate
@@ -1186,6 +1192,12 @@ class MacChildWindow final : public ChildWindow, public MacSurface
             pacing_ = {FramePacing::kPlatformTimer,          0, pacing_.display_hertz, 0.0,
                        FramePacingFallback::kNoDisplayClock, 0};
         }
+        StartPlatformTimer();
+    }
+
+    /** The timer the window has always used, running the frame callback at a sixtieth. */
+    void StartPlatformTimer()
+    {
         MacChildWindow *self = this;
         timer_               = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
                                                                repeats:YES
@@ -1198,6 +1210,36 @@ class MacChildWindow final : public ChildWindow, public MacSurface
         [[NSRunLoop currentRunLoop] addTimer:timer_ forMode:NSRunLoopCommonModes];
     }
 
+    /** The link watched for falling silent, from now on. macOS stops a link made from a view whose window is hidden or
+        on no screen, and with nothing else to run it the frame callback then stops too: a product would never learn
+        the window no longer shows, and could not stand its pacing down. */
+    void WatchTheLink()
+    {
+        MacChildWindow *self = this;
+        last_tick_seconds_   = CACurrentMediaTime();
+        link_watch_          = [NSTimer timerWithTimeInterval:kDisplayLinkSilentSeconds / 2.0
+                                                      repeats:YES
+                                                        block:^(NSTimer *) {
+                                                 self->LookAtTheLink();
+                                                        }];
+        [[NSRunLoop currentRunLoop] addTimer:link_watch_ forMode:NSRunLoopCommonModes];
+    }
+
+    /** A link gone silent answered: the window is on the timer it has always used, so frames keep arriving as they do
+        for a window never paced at all, and says why. The link is left as it is, and its next tick takes the window
+        straight back (PacedTick), so a product that only ever asks once still has its clock when the window shows. */
+    void LookAtTheLink()
+    {
+        if (is_link_silent_ || !IsDisplayLinkSilent(last_tick_seconds_, CACurrentMediaTime()))
+        {
+            return;
+        }
+        is_link_silent_ = true;
+        pacing_         = {
+            FramePacing::kPlatformTimer, 0, pacing_.display_hertz, 0.0, FramePacingFallback::kDisplayLinkSilent, 0};
+        StartPlatformTimer();
+    }
+
     /** One tick of the display link, on the window's thread: a refresh of the display the window is on. The frame
         callback is run on the tick the schedule's next frame belongs on and on no other, so each frame drawn is shown
         for exactly the divisor's refresh periods; where the display has stopped being one to divide, the window goes
@@ -1206,6 +1248,14 @@ class MacChildWindow final : public ChildWindow, public MacSurface
         @param period_seconds  the display's refresh period, in seconds; 0 where the link did not say */
     void PacedTick(double tick_seconds, double period_seconds)
     {
+        last_tick_seconds_ = CACurrentMediaTime();
+        if (is_link_silent_)
+        {
+            // Back on a screen: the timer that stood in for the link stops, and the state says the clock again below.
+            is_link_silent_ = false;
+            [timer_ invalidate];
+            timer_ = nil;
+        }
         // A link that named no period: the rate being divided, which is the display's own answer for it.
         const double period =
             period_seconds > 0.0 ? period_seconds : (pacing_.display_hertz > 0.0 ? 1.0 / pacing_.display_hertz : 0.0);
@@ -1263,8 +1313,11 @@ class MacChildWindow final : public ChildWindow, public MacSurface
         }
     }
 
-    NSTimer              *timer_{nil}; ///< The platform's frame timer; nil while there is no callback, or a link runs.
-    std::function<void()> frame_;      ///< The frame callback; empty for none.
+    NSTimer *timer_{nil};             ///< The platform's frame timer; nil while there is no callback, or a link ticks.
+    NSTimer *link_watch_{nil};        ///< Looks for the link falling silent; nil while no link runs.
+    double   last_tick_seconds_{0.0}; ///< When the link last ticked, or was started, on CACurrentMediaTime's clock.
+    bool     is_link_silent_{false};  ///< True while the link has stopped ticking and the timer stands in for it.
+    std::function<void()> frame_;     ///< The frame callback; empty for none.
     FrameRequest      request_{};   ///< What the product asked for; FrameRequest{} until it asks, which is the default.
     FramePacingState  pacing_{};    ///< What the window is pacing on, and why where it fell back.
     MacDisplayClock   clock_;       ///< The display link; stopped, and holding nothing, until a product asks.

@@ -735,6 +735,12 @@ TEST(ChildWindow, AScrollSaysWhetherTheSystemInvertedTheDevicesDirection)
 // whatever display clock the machine running the suite has. What each of these holds, and why it holds no rate, is
 // tests/FramePacingRule.h, which the macOS half uses too. Windows' and Linux's are here; macOS's are in
 // test_child_window_mac.mm, which is compiled as Objective-C++ and so can reach AppKit's run loop.
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <memory>
+#include <vector>
+
 #include "FramePacing.h"
 #include "FramePacingRule.h"
 #include "View.h"
@@ -743,6 +749,7 @@ TEST(ChildWindow, AScrollSaysWhetherTheSystemInvertedTheDevicesDirection)
 namespace
 {
 using reckless::test::HoldsWhicheverPacingItReached;
+using reckless::window::ChildWindow;
 using reckless::window::FramePacing;
 using reckless::window::FramePacingFallback;
 using reckless::window::FramePacingState;
@@ -837,6 +844,151 @@ TEST(ChildWindowFramePacing, RunsTheFrameCallbackOnTheWindowsOwnThreadWhicheverI
         child.reset();
         DestroyWindow(top);
     }
+}
+
+namespace
+{
+/** A panel whose paint costs what it is told to, and counts them. */
+class SlowPanel final : public reckless::view::View
+{
+  public:
+    void Paint(reckless::gfx::Canvas &) override
+    {
+        const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(paint_microseconds);
+        while (std::chrono::steady_clock::now() < until)
+        {
+        }
+        ++paints;
+    }
+
+    int paints{0};             ///< how many times it has been painted.
+    int paint_microseconds{0}; ///< what a paint costs.
+};
+
+int host_like_timers = 0; ///< the WM_TIMERs the host-like window has taken.
+int host_like_paints = 0; ///< the WM_PAINTs the host-like window has taken.
+
+/** A host's own window beside the panels, on their thread: a timer that invalidates it and a paint of its own.
+    @param window   the window
+    @param message  the message
+    @param wparam   the message's first parameter
+    @param lparam   the message's second parameter
+    @return         the message's result */
+LRESULT CALLBACK HostLikeWindowProcedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
+{
+    switch (message)
+    {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_TIMER:
+        ++host_like_timers;
+        InvalidateRect(window, nullptr, FALSE);
+        return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT paint{};
+        BeginPaint(window, &paint);
+        ++host_like_paints;
+        EndPaint(window, &paint);
+        return 0;
+    }
+    default:
+        return DefWindowProcW(window, message, wparam, lparam);
+    }
+}
+} // namespace
+
+TEST(ChildWindowFramePacing, AThreadWithMorePanelsThanARefreshHasRoomForStarvesNoneOfThemNorItsHost)
+{
+    // More paint than the thread can do: six panels at 6 ms a paint against frames a sixtieth of a second apart. A
+    // posted frame outranks every paint and every timer, so frames that simply ran would keep the windows nearest the
+    // top of the z-order invalid, and the rest of the panels and the host's own window would get nothing at all.
+    WNDCLASSW host_class{};
+    host_class.lpfnWndProc   = HostLikeWindowProcedure;
+    host_class.hInstance     = GetModuleHandleW(nullptr);
+    host_class.lpszClassName = L"RecklessPacingTestHostLike";
+    RegisterClassW(&host_class);
+    host_like_timers = 0;
+    host_like_paints = 0;
+    HWND host        = CreateWindowExW(WS_EX_NOACTIVATE, host_class.lpszClassName, L"", WS_POPUP, 0, 0, 80, 80, nullptr,
+                                       nullptr, host_class.hInstance, nullptr);
+    ASSERT_NE(host, nullptr);
+    ShowWindow(host, SW_SHOWNOACTIVATE);
+    SetTimer(host, 1, 20, nullptr);
+
+    constexpr int                             kPanels = 6;
+    std::vector<HWND>                         tops;
+    std::vector<std::unique_ptr<SlowPanel>>   panels;
+    std::vector<std::unique_ptr<ChildWindow>> children;
+    bool                                      is_every_panel_on_the_clock = true;
+    for (int i = 0; i < kPanels; ++i)
+    {
+        HWND top = CreateWindowExW(WS_EX_NOACTIVATE, L"STATIC", L"", WS_POPUP, 100 + i * 10, 100 + i * 10, 240, 160,
+                                   nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        ASSERT_NE(top, nullptr);
+        ShowWindow(top, SW_SHOWNOACTIVATE);
+        tops.push_back(top);
+        panels.push_back(std::make_unique<SlowPanel>());
+        SlowPanel &panel = *panels.back();
+        panel.SetBounds({240, 160});
+        panel.paint_microseconds = 6000;
+        children.push_back(reckless::window::CreateChildWindow(top, panel, 240, 160, 1.0f));
+        ASSERT_NE(children.back(), nullptr);
+        // Whatever the display, a frame near a sixtieth of a second: asked once for its rate, again for the divisor.
+        const FramePacingState first = children.back()->SetFramePacing({FramePacing::kDisplayClock, 1, 1});
+        const int              divisor =
+            first.display_hertz > 0.0 ? std::max(1, static_cast<int>(std::lround(first.display_hertz / 60.0))) : 1;
+        const FramePacingState state = children.back()->SetFramePacing({FramePacing::kDisplayClock, divisor, 1});
+        is_every_panel_on_the_clock  = is_every_panel_on_the_clock && state.pacing == FramePacing::kDisplayClock;
+        children.back()->SetFrameCallback([&panel] { panel.Repaint(); });
+    }
+    if (is_every_panel_on_the_clock)
+    {
+        const ULONGLONG until = GetTickCount64() + 2000;
+        MSG             message{};
+        while (GetTickCount64() < until)
+        {
+            MsgWaitForMultipleObjects(0, nullptr, FALSE, 50, QS_ALLINPUT);
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+            {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+    }
+    int fewest = panels.front()->paints;
+    int most   = panels.front()->paints;
+    std::printf("[ frame pacing ] Windows, %d panels on one thread, 6 ms a paint, two seconds:", kPanels);
+    for (const auto &panel : panels)
+    {
+        std::printf(" %d", panel->paints);
+        fewest = std::min(fewest, panel->paints);
+        most   = std::max(most, panel->paints);
+    }
+    std::printf("; the host-like window %d timers, %d paints\n", host_like_timers, host_like_paints);
+    std::fflush(stdout);
+    for (auto &child : children)
+    {
+        child->SetFrameCallback(nullptr);
+    }
+    children.clear();
+    for (HWND top : tops)
+    {
+        DestroyWindow(top);
+    }
+    KillTimer(host, 1);
+    DestroyWindow(host);
+    UnregisterClassW(host_class.lpszClassName, host_class.hInstance);
+    if (!is_every_panel_on_the_clock)
+    {
+        GTEST_SKIP() << "no display clock on this machine, so no frame to outrank anything";
+    }
+    if (most == 0)
+    {
+        GTEST_SKIP() << "nothing painted at all: a window station that shows nothing";
+    }
+    EXPECT_GE(fewest * 2, most) << "every panel has its turn, wherever it is in the z-order";
+    EXPECT_GE(host_like_timers, 5) << "and the host's timer still runs";
+    EXPECT_GE(host_like_paints, 5) << "and so does its paint";
 }
 #endif
 

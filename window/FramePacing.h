@@ -41,6 +41,7 @@ enum class FramePacingFallback
     kRefreshRateNotBelievable, ///< the rate read is not one a display can have, so nothing is divided by it
     kRefreshRateDisagrees,     ///< the compositor and the window's own display named different rates
     kRefreshRateUnsteady,      ///< the refresh period will not hold still: a variable-refresh panel, mid-change
+    kDisplayLinkSilent,        ///< the display link has stopped ticking: the window is on no screen, for now
 };
 
 /** `why` in words, for a product to report or log.
@@ -66,6 +67,8 @@ inline const char *TextOf(FramePacingFallback why) noexcept
         return "the compositor and the window's display name different refresh rates";
     case FramePacingFallback::kRefreshRateUnsteady:
         return "the display's refresh period will not hold still";
+    case FramePacingFallback::kDisplayLinkSilent:
+        return "the display link has stopped ticking, so the window is on no screen";
     }
     return "unknown";
 }
@@ -409,6 +412,45 @@ class RefreshSteadiness
     std::size_t next_{0};                          ///< where the next reading goes
     std::size_t count_{0};                         ///< how many of `periods_` hold a reading
 };
+
+/** How long a display link may say nothing before its window takes it to have stopped, in seconds. A display's slowest
+    believable refresh ticks five times over in this, so a link that is ticking at all is never mistaken; what it comes
+    to is how long a window just hidden goes with no frame at all. */
+inline constexpr double kDisplayLinkSilentSeconds = 0.25;
+
+/** Whether a display link has stopped ticking. macOS stops a link made from a view whose window is hidden or on no
+    screen, and a window paced on nothing but that link would then get no frame at all: nothing to run its owner's
+    frame callback, so nothing to tell the panel it no longer shows, or to stand the pacing down
+    (docs/window/frame-pacing.md, "A window that does not show").
+    @param last_tick_seconds  when the link last ticked, or when it started where it has not yet
+    @param now_seconds        the clock now, on the same clock
+    @return                   true where the link has said nothing for kDisplayLinkSilentSeconds */
+constexpr bool IsDisplayLinkSilent(double last_tick_seconds, double now_seconds) noexcept
+{
+    return now_seconds - last_tick_seconds >= kDisplayLinkSilentSeconds;
+}
+
+/** The longest a frame stands back for other work on its window's thread (DoesFrameStandBack), in seconds. A bound on
+    what a thread can be doing, not a rate: long enough that a thread saturated with panels goes round them all well
+    inside it, so a healthy thread never reaches it, and short enough that a queue whose paint or timer never comes - a
+    host pumping only some messages, a window whose paint never validates it - costs a frame this long rather than the
+    window's frames for good. */
+inline constexpr double kFrameStandsBackAtMostSeconds = 0.25;
+
+/** Whether a frame the display's clock has handed to a window waits for the work ahead of it on the window's thread,
+    rather than running now. A posted frame message outranks every WM_PAINT and every WM_TIMER on its thread, so a frame
+    that simply ran would invalidate its window again ahead of paints still owed, and on a thread with more panels than
+    a refresh has room for the windows nearest the top of the z-order would take every paint there is. So a frame goes
+    behind them, as the platform's own timer always has by being the last message a thread takes
+    (docs/window/frame-pacing.md, "Several windows on one thread").
+    @param is_work_ahead       whether a paint or an expired timer is waiting on the thread, of any window, as the
+                               window read it before any frame of this refresh had run
+    @param seconds_stood_back  how long this frame has already stood back
+    @return                    true where the frame is to wait and ask again */
+constexpr bool DoesFrameStandBack(bool is_work_ahead, double seconds_stood_back) noexcept
+{
+    return is_work_ahead && seconds_stood_back < kFrameStandsBackAtMostSeconds;
+}
 
 /**
     When a window's next frame is due, on whatever clock the platform measures in seconds. The schedule is kept

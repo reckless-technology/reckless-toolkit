@@ -97,7 +97,8 @@ TEST(FramePacingFallbackText, EveryReasonHasWordsOfItsOwn)
                                          FramePacingFallback::kRefreshRateUnknown,
                                          FramePacingFallback::kRefreshRateNotBelievable,
                                          FramePacingFallback::kRefreshRateDisagrees,
-                                         FramePacingFallback::kRefreshRateUnsteady};
+                                         FramePacingFallback::kRefreshRateUnsteady,
+                                         FramePacingFallback::kDisplayLinkSilent};
     std::vector<std::string>  seen;
     for (FramePacingFallback why : every)
     {
@@ -761,4 +762,143 @@ TEST(Lead, ALeadMovesOnlyTheWakingNotTheScheduleNorItsCatchingUp)
         }
     }
     EXPECT_GT(given_up, 0) << "the stall was long enough to be given up on, so the catching up was exercised";
+}
+
+TEST(DisplayLinkSilence, ALinkThatHasStoppedIsToldFromOneThatIsTicking)
+{
+    using reckless::window::IsDisplayLinkSilent;
+    using reckless::window::kDisplayLinkSilentSeconds;
+    EXPECT_FALSE(IsDisplayLinkSilent(10.0, 10.0));
+    EXPECT_FALSE(IsDisplayLinkSilent(10.0, 10.0 + 1.0 / 20.0)) << "the slowest refresh believed, a whole tick on";
+    EXPECT_FALSE(IsDisplayLinkSilent(10.0, 10.0 + kDisplayLinkSilentSeconds * 0.99));
+    EXPECT_TRUE(IsDisplayLinkSilent(10.0, 10.0 + kDisplayLinkSilentSeconds));
+    EXPECT_TRUE(IsDisplayLinkSilent(10.0, 1000.0));
+    EXPECT_GE(kDisplayLinkSilentSeconds, 4.0 / 20.0)
+        << "more than a few ticks of the slowest refresh a display can have";
+}
+
+TEST(FrameStandsBack, OnlyForWorkAheadAndNotForEver)
+{
+    using reckless::window::DoesFrameStandBack;
+    using reckless::window::kFrameStandsBackAtMostSeconds;
+    EXPECT_FALSE(DoesFrameStandBack(false, 0.0)) << "a thread with nothing waiting runs the frame at once";
+    EXPECT_FALSE(DoesFrameStandBack(false, 10.0));
+    EXPECT_TRUE(DoesFrameStandBack(true, 0.0));
+    EXPECT_TRUE(DoesFrameStandBack(true, kFrameStandsBackAtMostSeconds * 0.99));
+    EXPECT_FALSE(DoesFrameStandBack(true, kFrameStandsBackAtMostSeconds))
+        << "a queue whose paint or timer never comes costs a frame this long, not the window's frames for good";
+}
+
+namespace
+{
+/** What a thread's queue does with paced frames, in a model with no window: a posted message is taken before any paint,
+    an invalid window nearest the top of the z-order is painted first, and a timer waits for both. Each window asks to
+    run a frame at every tick; `does_stand_back` says whether the frame is held to DoesFrameStandBack.
+
+    The model is what docs/window/frame-pacing.md measures on a real thread, and the queue's three rules are the ones
+    `tools/frame-pacing-harness.cpp`'s paint-rank run shows there. */
+struct QueueRun
+{
+    std::vector<int> paints;         ///< each window's paints, the top of the z-order first.
+    int              host_timers{0}; ///< how many of the host-like window's timers ran.
+};
+
+QueueRun RunAQueue(int windows, double paint_seconds, double frame_seconds, double run_seconds, bool does_stand_back)
+{
+    QueueRun run;
+    run.paints.assign(static_cast<std::size_t>(windows), 0);
+    std::vector<char> is_invalid(static_cast<std::size_t>(windows), 0);
+    std::vector<char> is_frame_waiting(static_cast<std::size_t>(windows), 0);
+    const double      host_timer_seconds = 0.020;
+    double            next_host_timer    = host_timer_seconds;
+    bool              is_host_timer_due  = false;
+    double            next_tick          = 0.0;
+    double            now                = 0.0;
+    while (now < run_seconds)
+    {
+        while (now >= next_tick)
+        {
+            std::fill(is_frame_waiting.begin(), is_frame_waiting.end(), char{1});
+            next_tick += frame_seconds;
+        }
+        while (now >= next_host_timer)
+        {
+            is_host_timer_due = true;
+            next_host_timer += host_timer_seconds;
+        }
+        // The posted frames first: each read the queue before any of this refresh has run, so they run or stand back
+        // together.
+        const bool is_paint_waiting = std::any_of(is_invalid.begin(), is_invalid.end(), [](char v) { return v != 0; });
+        const bool does_frame_wait =
+            does_stand_back && reckless::window::DoesFrameStandBack(is_paint_waiting || is_host_timer_due, 0.0);
+        if (!does_frame_wait &&
+            std::any_of(is_frame_waiting.begin(), is_frame_waiting.end(), [](char v) { return v != 0; }))
+        {
+            for (std::size_t i = 0; i < is_invalid.size(); ++i)
+            {
+                if (is_frame_waiting[i] != 0)
+                {
+                    is_invalid[i]       = 1;
+                    is_frame_waiting[i] = 0;
+                }
+            }
+            continue;
+        }
+        // Then the paint nearest the top of the z-order.
+        const auto paint = std::find(is_invalid.begin(), is_invalid.end(), char{1});
+        if (paint != is_invalid.end())
+        {
+            *paint = 0;
+            ++run.paints[static_cast<std::size_t>(paint - is_invalid.begin())];
+            now += paint_seconds;
+            continue;
+        }
+        // Then a timer, and otherwise the thread sleeps until something is due.
+        if (is_host_timer_due)
+        {
+            is_host_timer_due = false;
+            ++run.host_timers;
+            continue;
+        }
+        now = std::min(next_tick, next_host_timer);
+    }
+    return run;
+}
+} // namespace
+
+TEST(FrameStandsBack, ASaturatedThreadStarvesNoWindowAndNoHostWhenItsFramesWaitTheirTurn)
+{
+    const double   frame_seconds = 1.0 / 60.0;
+    const double   paint_seconds = 0.0036; // about what a panel cost on the display this page measures
+    const QueueRun free_running  = RunAQueue(8, paint_seconds, frame_seconds, 10.0, false);
+    EXPECT_EQ(free_running.paints.back(), 0) << "frames ahead of the paints: the bottom of the z-order gets none";
+    EXPECT_EQ(free_running.host_timers, 0) << "and neither does a host's timer on the thread";
+
+    const QueueRun waiting    = RunAQueue(8, paint_seconds, frame_seconds, 10.0, true);
+    const auto [fewest, most] = std::minmax_element(waiting.paints.begin(), waiting.paints.end());
+    EXPECT_GT(*fewest, 0) << "every window is painted";
+    EXPECT_LE(*most - *fewest, 2) << "and they take it in turn";
+    EXPECT_GT(waiting.host_timers, 0) << "and the host's timer runs";
+    int total_free    = 0;
+    int total_waiting = 0;
+    for (int paints : free_running.paints)
+    {
+        total_free += paints;
+    }
+    for (int paints : waiting.paints)
+    {
+        total_waiting += paints;
+    }
+    EXPECT_GE(total_waiting * 100, total_free * 90) << "at about what the thread can paint either way";
+}
+
+TEST(FrameStandsBack, AThreadWithRoomRunsEveryFrameOnItsOwnTick)
+{
+    const double   frame_seconds = 1.0 / 60.0;
+    const QueueRun run           = RunAQueue(4, 0.0036, frame_seconds, 10.0, true);
+    for (int paints : run.paints)
+    {
+        EXPECT_NEAR(paints, 600, 2) << "four panels fit a refresh, and every one has every frame";
+    }
+    EXPECT_GT(run.host_timers, 0);
 }
