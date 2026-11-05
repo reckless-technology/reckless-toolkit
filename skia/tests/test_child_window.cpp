@@ -738,6 +738,7 @@ TEST(ChildWindow, AScrollSaysWhetherTheSystemInvertedTheDevicesDirection)
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -859,10 +860,15 @@ class SlowPanel final : public reckless::view::View
         {
         }
         ++paints;
+        if (on_painted)
+        {
+            on_painted();
+        }
     }
 
-    int paints{0};             ///< how many times it has been painted.
-    int paint_microseconds{0}; ///< what a paint costs.
+    int                   paints{0};             ///< how many times it has been painted.
+    int                   paint_microseconds{0}; ///< what a paint costs.
+    std::function<void()> on_painted;            ///< told of each paint; may be empty.
 };
 
 int host_like_timers = 0; ///< the WM_TIMERs the host-like window has taken.
@@ -986,9 +992,89 @@ TEST(ChildWindowFramePacing, AThreadWithMorePanelsThanARefreshHasRoomForStarvesN
     {
         GTEST_SKIP() << "nothing painted at all: a window station that shows nothing";
     }
+    EXPECT_GE(fewest, 5) << "every panel goes on being painted";
     EXPECT_GE(fewest * 2, most) << "every panel has its turn, wherever it is in the z-order";
     EXPECT_GE(host_like_timers, 5) << "and the host's timer still runs";
     EXPECT_GE(host_like_paints, 5) << "and so does its paint";
+}
+
+TEST(ChildWindowFramePacing, PanelsThatFitARefreshPaintInOneOrderEveryRefresh)
+{
+    // The frames of one refresh read the queue before any of them invalidates a window, so they all run and the windows
+    // paint in the one order the queue paints them in. Had each frame run as it asked, the first to wake would run and
+    // paint alone, the others standing back for its paint, and a window's picture would land first in one refresh and
+    // last in the next, whichever of the clocks' threads woke first.
+    constexpr int                             kPanels = 4;
+    std::vector<HWND>                         tops;
+    std::vector<std::unique_ptr<SlowPanel>>   panels;
+    std::vector<std::unique_ptr<ChildWindow>> children;
+    std::vector<int>                          painted;
+    bool                                      is_every_panel_on_the_clock = true;
+    for (int i = 0; i < kPanels; ++i)
+    {
+        HWND top = CreateWindowExW(WS_EX_NOACTIVATE, L"STATIC", L"", WS_POPUP, 100 + i * 10, 100 + i * 10, 240, 160,
+                                   nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        ASSERT_NE(top, nullptr);
+        ShowWindow(top, SW_SHOWNOACTIVATE);
+        tops.push_back(top);
+        panels.push_back(std::make_unique<SlowPanel>());
+        SlowPanel &panel = *panels.back();
+        panel.SetBounds({240, 160});
+        panel.paint_microseconds = 1000;
+        panel.on_painted         = [&painted, i] { painted.push_back(i); };
+        children.push_back(reckless::window::CreateChildWindow(top, panel, 240, 160, 1.0f));
+        ASSERT_NE(children.back(), nullptr);
+        const FramePacingState first = children.back()->SetFramePacing({FramePacing::kDisplayClock, 1, 1});
+        const int              divisor =
+            first.display_hertz > 0.0 ? std::max(1, static_cast<int>(std::lround(first.display_hertz / 60.0))) : 1;
+        const FramePacingState state = children.back()->SetFramePacing({FramePacing::kDisplayClock, divisor, 1});
+        is_every_panel_on_the_clock  = is_every_panel_on_the_clock && state.pacing == FramePacing::kDisplayClock;
+        children.back()->SetFrameCallback([&panel] { panel.Repaint(); });
+    }
+    if (is_every_panel_on_the_clock)
+    {
+        const ULONGLONG until = GetTickCount64() + 2000;
+        MSG             message{};
+        while (GetTickCount64() < until)
+        {
+            MsgWaitForMultipleObjects(0, nullptr, FALSE, 50, QS_ALLINPUT);
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+            {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+    }
+    // One order a refresh, whichever it is: each paint a whole round after the same panel's.
+    int compared = 0;
+    int the_same = 0;
+    for (std::size_t i = 0; i + kPanels < painted.size(); ++i)
+    {
+        ++compared;
+        the_same += painted[i] == painted[i + kPanels] ? 1 : 0;
+    }
+    std::printf("[ frame pacing ] Windows, %d panels on one thread with room: %d of %d paints a round after the same "
+                "panel's\n",
+                kPanels, the_same, compared);
+    std::fflush(stdout);
+    for (auto &child : children)
+    {
+        child->SetFrameCallback(nullptr);
+    }
+    children.clear();
+    for (HWND top : tops)
+    {
+        DestroyWindow(top);
+    }
+    if (!is_every_panel_on_the_clock)
+    {
+        GTEST_SKIP() << "no display clock on this machine, so no frames to order";
+    }
+    if (compared == 0)
+    {
+        GTEST_SKIP() << "nothing painted at all: a window station that shows nothing";
+    }
+    EXPECT_GE(the_same * 10, compared * 7) << "the panels paint in one order, so a window's picture holds its place";
 }
 #endif
 
