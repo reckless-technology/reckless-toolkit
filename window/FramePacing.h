@@ -452,6 +452,33 @@ constexpr bool DoesFrameStandBack(bool is_work_ahead, double seconds_stood_back)
     return is_work_ahead && seconds_stood_back < kFrameStandsBackAtMostSeconds;
 }
 
+/** The shortest a frame that stood back waits before asking again, in seconds: short, because a thread that has just
+    finished its last paint stays idle until some frame asks. Measured on a Tape panel's paint at this and at a tenth of
+    a millisecond's multiples (docs/window/frame-pacing.md, "Several windows on one thread"). */
+inline constexpr double kFrameAsksAgainAfterAtLeastSeconds = 0.0001;
+
+/** The longest a frame that stood back waits before asking again, in seconds. */
+inline constexpr double kFrameAsksAgainAfterAtMostSeconds = 0.002;
+
+/** How long a frame that has just stood back waits before asking again. Its asking again is a posted message, which
+    outranks the very paint it stood back for, so a thread with many windows all asking could go on answering them and
+    never reach the paint: with no wait at all, six panels went from 47 pictures a second each to 9. A thread that is
+    getting on with its work answers a frame only between paints; one that answers within a moment of being asked is not
+    getting past its questions, and is left alone for twice as long. Each window finds this out for itself, so it holds
+    however many windows are on the thread, and in however many modules.
+    @param waited_seconds       how long the frame waited before it last asked; 0 where it has not stood back before
+    @param answered_in_seconds  how long the window took to answer it, from the asking to its standing back
+    @return                     how long to wait before asking again, in seconds */
+constexpr double FrameAsksAgainAfter(double waited_seconds, double answered_in_seconds) noexcept
+{
+    const double doubled = 2.0 * waited_seconds;
+    if (waited_seconds <= 0.0 || answered_in_seconds >= doubled)
+    {
+        return kFrameAsksAgainAfterAtLeastSeconds;
+    }
+    return doubled < kFrameAsksAgainAfterAtMostSeconds ? doubled : kFrameAsksAgainAfterAtMostSeconds;
+}
+
 /**
     When a window's next frame is due, on whatever clock the platform measures in seconds. The schedule is kept
     absolutely - each frame is due one frame period after the last was due, never one period after it was delivered -

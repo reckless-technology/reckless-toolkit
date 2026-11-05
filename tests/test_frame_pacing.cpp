@@ -777,6 +777,31 @@ TEST(DisplayLinkSilence, ALinkThatHasStoppedIsToldFromOneThatIsTicking)
         << "more than a few ticks of the slowest refresh a display can have";
 }
 
+TEST(FrameStandsBack, AsksAgainSoonUnlessItIsAskingFasterThanTheThreadCanGetOn)
+{
+    using reckless::window::FrameAsksAgainAfter;
+    using reckless::window::kFrameAsksAgainAfterAtLeastSeconds;
+    using reckless::window::kFrameAsksAgainAfterAtMostSeconds;
+    EXPECT_EQ(FrameAsksAgainAfter(0.0, 0.0), kFrameAsksAgainAfterAtLeastSeconds)
+        << "a first stand back waits the least";
+    EXPECT_EQ(FrameAsksAgainAfter(0.0, 0.0035), kFrameAsksAgainAfterAtLeastSeconds);
+    EXPECT_EQ(FrameAsksAgainAfter(kFrameAsksAgainAfterAtLeastSeconds, 0.0035), kFrameAsksAgainAfterAtLeastSeconds)
+        << "answered only after a paint: the thread is getting on, and the wait stays short";
+    // Answered at once, over and over: a thread answering questions and reaching no paint, however many windows ask.
+    double waited = 0.0;
+    double most   = 0.0;
+    for (int asked = 0; asked < 40; ++asked)
+    {
+        waited = FrameAsksAgainAfter(waited, 0.00002);
+        most   = waited > most ? waited : most;
+    }
+    EXPECT_EQ(most, kFrameAsksAgainAfterAtMostSeconds) << "the wait grows to its bound";
+    EXPECT_EQ(waited, kFrameAsksAgainAfterAtMostSeconds)
+        << "and holds there while the thread is still answering at once";
+    EXPECT_EQ(FrameAsksAgainAfter(waited, 0.0035 + 2.0 * waited), kFrameAsksAgainAfterAtLeastSeconds)
+        << "and the first answer that took long enough to be a paint brings it back down";
+}
+
 TEST(FrameStandsBack, OnlyForWorkAheadAndNotForEver)
 {
     using reckless::window::DoesFrameStandBack;
