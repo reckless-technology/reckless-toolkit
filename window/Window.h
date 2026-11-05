@@ -102,7 +102,9 @@ class ChildWindow
         Where the window is paced on the display's clock, the frame callback still runs on the window's own thread -
         the waiting is a thread of the window's own, which hands each frame to the window's loop - so nothing a
         callback touches moves to another thread, and a callback that outruns the display loses frames rather than
-        letting them pile up.
+        letting them pile up. It also waits its turn behind the paints and timers already waiting on the window's
+       thread, so a thread with more windows than a refresh has room for shares itself among them
+        (docs/window/frame-pacing.md, "Several windows on one thread").
 
         The divisor is re-derived whenever the display changes under the window: a mode change, and the window being
         moved to a monitor with another rate. Where the new display has no rate to divide the window falls back and
