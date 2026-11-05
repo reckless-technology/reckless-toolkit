@@ -1,6 +1,7 @@
 // What each platform's controllers say, read as the back ends read it, with none of any platform's headers - so held
 // on every platform: HID's collections, roles, logical ranges, signs and hat switches (input/HidUsages.h, the Windows
 // and macOS back ends'), a Windows HID path's XInput mark and instance (input/win/HidPaths.h), an XInput pad's state
+// and what the XInput thread queues and how the queue is told to the devices
 // (input/win/XInputPads.h), and evdev's capabilities, layout and events (input/linux/EvdevLayout.h). The kernel's own
 // struct input_event is held by tests/test_input_devices.cpp on Linux, where its header is.
 #include <gtest/gtest.h>
@@ -237,6 +238,119 @@ TEST(XInputPads, AStateIsToldButtonsInWindowsOrderAxesAndTheCross)
     }
     EXPECT_EQ(every & (xinput::kDpadUp | xinput::kDpadDown | xinput::kDpadLeft | xinput::kDpadRight), 0)
         << "the cross is the hat's, not buttons";
+}
+
+TEST(XInputThread, AReadIsNewsWhereAControllerCameOrWentOrItsPacketMoved)
+{
+    xinput::WatchedSlot slot;
+    EXPECT_FALSE(xinput::IsSlotNews(slot, false, 0)) << "an empty slot found empty again";
+    EXPECT_TRUE(xinput::IsSlotNews(slot, true, 7)) << "a controller arrived";
+    EXPECT_TRUE(slot.is_connected);
+    EXPECT_EQ(slot.packet, 7u);
+    EXPECT_FALSE(xinput::IsSlotNews(slot, true, 7)) << "nothing changed: the packet has not moved";
+    EXPECT_TRUE(xinput::IsSlotNews(slot, true, 8)) << "the state changed";
+    EXPECT_TRUE(xinput::IsSlotNews(slot, true, 2)) << "a packet that moved back is a change too";
+    EXPECT_TRUE(xinput::IsSlotNews(slot, false, 0)) << "the controller went";
+    EXPECT_FALSE(slot.is_connected);
+    EXPECT_FALSE(xinput::IsSlotNews(slot, false, 0));
+    EXPECT_TRUE(xinput::IsSlotNews(slot, true, 2)) << "one that comes back is news whatever its packet";
+}
+
+TEST(XInputThread, ATapBetweenTwoPollsIsADownAndAnUpEachWithTheTimeItWasRead)
+{
+    reckless::input::GamepadRoster roster(kThresholds);
+    xinput::SlotDevices            devices{};
+    std::vector<GamepadEdge>       edges;
+
+    // What the thread read between two polls: a pad found at rest, A pressed 2 ms later and let go 3 ms after that.
+    xinput::PadState pressed;
+    pressed.buttons = xinput::kA;
+    const std::vector<xinput::SlotReading> readings{{1, true, xinput::PadState{}, 1'000'000},
+                                                    {1, true, pressed, 3'000'000},
+                                                    {1, true, xinput::PadState{}, 6'000'000}};
+    xinput::ApplySlotReadings(readings, devices, roster, edges);
+
+    ASSERT_NE(devices[1], 0u) << "the pad in slot 1 is a device";
+    EXPECT_EQ(devices[0], 0u);
+    ASSERT_EQ(roster.count(), 1u);
+    EXPECT_EQ(roster.Devices()[0].stable_id, "xinput/1");
+    ASSERT_EQ(edges.size(), 2u) << "a pad found at rest holds nothing; the tap is a down and an up";
+    const GamepadControl a{GamepadControlKind::kButton, 0};
+    EXPECT_EQ(edges[0].control, a);
+    EXPECT_TRUE(edges[0].is_down);
+    EXPECT_EQ(edges[0].time_nanoseconds, 3'000'000);
+    EXPECT_EQ(edges[1].control, a);
+    EXPECT_FALSE(edges[1].is_down);
+    EXPECT_EQ(edges[1].time_nanoseconds, 6'000'000) << "three milliseconds after its down, though no poll was between";
+    for (const GamepadEdge &edge : edges)
+    {
+        EXPECT_EQ(edge.device_id, devices[1]);
+    }
+}
+
+TEST(XInputThread, AControllerGoneLetsGoOfWhatItHeldAtTheTimeItWasFoundGone)
+{
+    reckless::input::GamepadRoster roster(kThresholds);
+    xinput::SlotDevices            devices{};
+    std::vector<GamepadEdge>       edges;
+    xinput::PadState               held;
+    held.buttons      = xinput::kB | xinput::kDpadDown;
+    held.left_trigger = 255;
+    xinput::ApplySlotReadings({{0, true, held, 10}, {0, false, xinput::PadState{}, 20}}, devices, roster, edges);
+    ASSERT_EQ(edges.size(), 6u) << "three downs, then the three let go as it went";
+    for (std::size_t edge = 0; edge < 3; ++edge)
+    {
+        EXPECT_TRUE(edges[edge].is_down);
+        EXPECT_EQ(edges[edge].time_nanoseconds, 10);
+    }
+    for (std::size_t edge = 3; edge < 6; ++edge)
+    {
+        EXPECT_FALSE(edges[edge].is_down);
+        EXPECT_EQ(edges[edge].time_nanoseconds, 20);
+    }
+    EXPECT_EQ(devices[0], 0u);
+    EXPECT_EQ(roster.count(), 0u);
+
+    const std::uint32_t gone = edges[0].device_id;
+    edges.clear();
+    xinput::ApplySlotReadings({{0, true, xinput::PadState{}, 30},
+                               {0, false, xinput::PadState{}, 40},
+                               {0, false, xinput::PadState{}, 50},
+                               {7, true, held, 60},
+                               {-1, true, held, 70}},
+                              devices, roster, edges);
+    EXPECT_TRUE(edges.empty()) << "at rest, gone, gone again, and two slots XInput has not got: nothing to tell";
+    xinput::ApplySlotReadings({{0, true, xinput::PadState{}, 80}}, devices, roster, edges);
+    EXPECT_NE(devices[0], gone) << "one that comes back is a new device";
+}
+
+TEST(XInputThread, AQueueNoOneTakesIsBoundedAndKeepsEachSlotsNewestState)
+{
+    std::vector<xinput::SlotReading> queue;
+    xinput::QueueSlotReading(queue, {2, true, xinput::PadState{}, 1});
+    for (std::size_t reading = 1; reading < xinput::kMostQueuedSlotReadings; ++reading)
+    {
+        xinput::PadState state;
+        state.left_x = static_cast<std::int16_t>(reading);
+        xinput::QueueSlotReading(queue,
+                                 {static_cast<int>(reading % 2), true, state, static_cast<std::int64_t>(reading)});
+    }
+    ASSERT_EQ(queue.size(), xinput::kMostQueuedSlotReadings);
+
+    xinput::PadState newest;
+    newest.left_x = -5;
+    xinput::QueueSlotReading(queue, {1, true, newest, 99'999});
+    EXPECT_EQ(queue.size(), xinput::kMostQueuedSlotReadings) << "full: a state is written over its slot's last";
+    EXPECT_EQ(queue.back().state.left_x, -5) << "slot 1's last queued reading was the newest of all";
+    EXPECT_EQ(queue.back().time_nanoseconds, 99'999);
+
+    xinput::QueueSlotReading(queue, {0, false, xinput::PadState{}, 100'000});
+    EXPECT_EQ(queue.size(), xinput::kMostQueuedSlotReadings + 1) << "a controller going is always queued";
+    xinput::QueueSlotReading(queue, {0, true, newest, 100'001});
+    EXPECT_EQ(queue.size(), xinput::kMostQueuedSlotReadings + 2)
+        << "and so is its coming back, which is not to be written over its going";
+    xinput::QueueSlotReading(queue, {3, true, newest, 100'002});
+    EXPECT_EQ(queue.size(), xinput::kMostQueuedSlotReadings + 3) << "a slot with nothing queued is queued";
 }
 
 TEST(EvdevLayout, AControllerHasAControllersButtonsOrXAndYAndNothingOfAPointer)
