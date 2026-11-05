@@ -610,7 +610,9 @@ class WinWindow final : public AppWindow
     }
 
     /** The window's menu bar replaced by `menu`, the one before destroyed, and the frame sized again round the
-        content, which keeps its size.
+        content, which keeps its size - the first bar a window opened with none is given included, whose row the frame
+        grows by rather than the content giving it up. A maximised window's frame is the work area's and stays: the
+        row comes out of the content there, and its new size is told as a resize.
         @param menu  the new bar, which the window owns from now on; null for none */
     void SetMenuBar(HMENU menu)
     {
@@ -633,15 +635,21 @@ class WinWindow final : public AppWindow
             has_menu_  = menu != nullptr;
             return;
         }
-        HMENU old = GetMenu(hwnd_);
+        HMENU      old            = GetMenu(hwnd_);
+        const bool is_row_changed = has_menu_ != (menu != nullptr);
+        has_menu_                 = menu != nullptr;
+        // A bar put on or taken off resizes the client area by its row (SetMenu sends WM_SIZE), which is not the
+        // content's new size: the frame is sized round the content again instead.
+        const bool keeps_content = is_row_changed && !IsZoomed(hwnd_);
+        is_changing_bar_         = keeps_content;
         ::SetMenu(hwnd_, menu);
+        is_changing_bar_ = false;
         if (old != nullptr)
         {
             DestroyMenu(old);
         }
-        if (has_menu_ != (menu != nullptr))
+        if (keeps_content)
         {
-            has_menu_ = menu != nullptr;
             SetOwnSize(0, 0, Outer(), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
         }
         DrawMenuBar(hwnd_);
@@ -775,7 +783,8 @@ class WinWindow final : public AppWindow
             }
             break;
         case WM_SIZE:
-            if (resized_ && static_cast<int>(wparam) != SIZE_MINIMIZED)
+            // Not the bar's row coming or going (SetMenuBar), which the frame is sized round the content for after.
+            if (resized_ && static_cast<int>(wparam) != SIZE_MINIMIZED && !is_changing_bar_)
             {
                 // The client area the window took, in design units at its scale: the content's new size.
                 const float scale = Scale();
@@ -906,6 +915,7 @@ class WinWindow final : public AppWindow
         windowed_style_       = static_cast<DWORD>(GetWindowLongPtrW(hwnd_, GWL_STYLE));
         windowed_ex_style_    = static_cast<DWORD>(GetWindowLongPtrW(hwnd_, GWL_EXSTYLE));
         windowed_design_size_ = {design_width_, design_height_};
+        windowed_has_menu_    = has_menu_;
         is_full_screen_       = true; // before it moves: WM_MOVE keeps where it stood
         held_menu_            = GetMenu(hwnd_);
         if (held_menu_ != nullptr)
@@ -923,7 +933,8 @@ class WinWindow final : public AppWindow
     }
 
     /** The window as it was before full screen: its styles, its menu bar and its placement put back, the frame worked
-        out again round them. */
+        out again round them - and round the content's design size, where a bar came or went while it was full screen,
+        so the content keeps its size as SetMenuBar keeps it. */
     void LeaveFullScreenNow()
     {
         is_full_screen_ = false;
@@ -938,7 +949,15 @@ class WinWindow final : public AppWindow
         // tells the size it takes.
         design_width_  = windowed_design_size_.x;
         design_height_ = windowed_design_size_.y;
-        setting_size_  = true;
+        if (has_menu_ != windowed_has_menu_)
+        {
+            // The frame it stood in was sized for a bar it has no longer, or for none: the frame round the content
+            // now, at the same top left, which a maximised window's placement keeps for when it is restored.
+            const SIZE outer                   = Outer();
+            placement_.rcNormalPosition.right  = placement_.rcNormalPosition.left + outer.cx;
+            placement_.rcNormalPosition.bottom = placement_.rcNormalPosition.top + outer.cy;
+        }
+        setting_size_ = true;
         SetWindowPlacement(hwnd_, &placement_);
         SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
@@ -1058,6 +1077,8 @@ class WinWindow final : public AppWindow
     DWORD           windowed_style_{0};      ///< the style it had before full screen.
     DWORD           windowed_ex_style_{0};   ///< the extended style it had before full screen.
     gfx::PointI     windowed_design_size_{0, 0}; ///< the content's design size before full screen.
+    bool            windowed_has_menu_{false};   ///< the window carried a menu bar before full screen.
+    bool            is_changing_bar_{false};     ///< inside SetMenuBar's SetMenu: its WM_SIZE is the bar's row.
     HMENU           held_menu_{nullptr};         ///< the menu bar taken off for full screen, owned; null for none.
 };
 
@@ -1128,8 +1149,9 @@ class WinPlatform final : public AppPlatform
         const float       scale = static_cast<float>(dpi) / 96.0f;
         const gfx::PointI content{static_cast<int>(std::lround(static_cast<float>(options.width) * scale)),
                                   static_cast<int>(std::lround(static_cast<float>(options.height) * scale))};
-        const SIZE        outer = OuterSize(StyleOf(options), ExStyleOf(options), content.x, content.y, dpi,
-                                            options.menu_bar && !menu_->bar().menus.empty());
+        // A window that asks for the bar has its row whether the app has set the bar yet or sets it once the window
+        // is open (SetMenuBar grows the frame by it then): the frame held to the screen with it either way.
+        const SIZE outer = OuterSize(StyleOf(options), ExStyleOf(options), content.x, content.y, dpi, options.menu_bar);
         const gfx::PointI fitted =
             FittedContent(content, {static_cast<int>(outer.cx) - content.x, static_cast<int>(outer.cy) - content.y},
                           RectOf(info.rcWork));
