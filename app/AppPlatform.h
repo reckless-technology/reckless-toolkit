@@ -192,8 +192,9 @@ struct WindowOptions
     std::function<void(int width, int height)> resized;
 
     /** The window carries the app's menu bar (SetMenuBar) where the platform puts one on a window: on Windows the
-        window's own bar, across its top above the content, which keeps its design size; nothing on macOS, whose bar
-        is the screen's, nor on Linux, where the app places a drawn bar in its content (MakeMenuBarView). */
+        window's own bar, across its top above the content, which keeps its design size - set before the window opens
+        or after, the frame grows by the bar's row and LargestContent counts it; nothing on macOS, whose bar is the
+        screen's, nor on Linux, where the app places a drawn bar in its content (MakeMenuBarView). */
     bool menu_bar{false};
 
     /** The window may go full screen (AppWindow::SetFullScreen), and on macOS its green button takes it to a
