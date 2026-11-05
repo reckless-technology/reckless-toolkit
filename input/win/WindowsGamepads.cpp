@@ -213,7 +213,11 @@ class HidPad
                 return GetLastError() == ERROR_IO_INCOMPLETE;
             }
             is_reading_ = false;
+            // HID gives no time of its own: the report is stamped as it is seen here, which is honest and no better
+            // than the poll.
+            const std::size_t first = edges.size();
             Apply(static_cast<ULONG>(bytes), device, edges);
+            StampEdges(edges, first, GamepadClockNanoseconds());
         }
         return true;
     }
@@ -503,6 +507,7 @@ class WindowsGamepads final : public Gamepads
         }
         LookForHid(pending_);
         PollXInput(pending_, true);
+        StampEdges(pending_, 0, GamepadClockNanoseconds());
         last_look_ = GetTickCount64();
     }
 
@@ -522,6 +527,7 @@ class WindowsGamepads final : public Gamepads
         @param edges  where the edges are appended */
     void Poll(std::vector<GamepadEdge> &edges) override
     {
+        const std::size_t first = edges.size();
         edges.insert(edges.end(), pending_.begin(), pending_.end());
         pending_.clear();
         for (std::size_t pad = 0; pad < pads_.size();)
@@ -547,6 +553,9 @@ class WindowsGamepads final : public Gamepads
         {
             last_look_ = now;
         }
+        // Every edge not stamped as it was made - XInput's states, and the ups of a device gone - was seen in this
+        // poll.
+        StampEdges(edges, first, GamepadClockNanoseconds());
     }
 
     /** The controllers open (Gamepads::Devices).

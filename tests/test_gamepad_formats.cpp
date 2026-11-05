@@ -83,7 +83,7 @@ evdev::EvdevCapabilities XpadCapabilities()
     @return       the event */
 constexpr evdev::EvdevEvent Event(std::uint16_t type, std::uint16_t code, std::int32_t value)
 {
-    return evdev::EvdevEvent{type, code, value};
+    return evdev::EvdevEvent{type, code, value, 0};
 }
 } // namespace
 

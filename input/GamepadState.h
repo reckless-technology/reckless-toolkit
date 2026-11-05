@@ -143,6 +143,53 @@ constexpr bool IsAxisControlDown(bool is_down, std::int32_t deflection,
     return is_down ? deflection >= thresholds.release_thousandths : deflection >= thresholds.press_thousandths;
 }
 
+/** Every edge from `first` on that has no time yet given `time_nanoseconds`: what a back end does once it has told a
+    device a reading - the edges the reading made are the ones past where `edges` ended before it - so that the
+    reading's time reaches every edge it made, and an edge that already carries a time keeps it.
+    @param edges             the edges
+    @param first             the index of the first edge the reading made: `edges`' size before it
+    @param time_nanoseconds  when the reading was taken (GamepadEdge::time_nanoseconds); 0 changes nothing */
+inline void StampEdges(std::vector<GamepadEdge> &edges, std::size_t first, std::int64_t time_nanoseconds) noexcept
+{
+    for (std::size_t edge = first; edge < edges.size(); ++edge)
+    {
+        if (edges[edge].time_nanoseconds == 0)
+        {
+            edges[edge].time_nanoseconds = time_nanoseconds;
+        }
+    }
+}
+
+/** A count of a platform clock's ticks in nanoseconds, exactly and without overflow for any count a machine reaches:
+    `ticks` times `numerator` over `denominator`, as mach_timebase_info gives a Mac's - 1/1 on an Intel Mac, 125/3 on
+    Apple silicon, whose clock ticks 24 million times a second.
+    @param ticks        the count
+    @param numerator    the timebase's numerator
+    @param denominator  the timebase's denominator; 0 is taken as 1
+    @return             the nanoseconds */
+constexpr std::int64_t NanosecondsOfTicks(std::uint64_t ticks, std::uint32_t numerator,
+                                          std::uint32_t denominator) noexcept
+{
+    const std::uint64_t over = denominator == 0 ? 1u : denominator;
+    // The whole denominators first and the remainder after, so a product of a large count and the numerator - a
+    // year's ticks times 125 - is never formed.
+    return static_cast<std::int64_t>((ticks / over) * numerator + (ticks % over) * numerator / over);
+}
+
+/** A time stamped on a clock of a platform's own, carried onto the steady clock (GamepadEdge::time_nanoseconds) by how
+    long ago it was on its own clock: what a back end does where its platform stamps on a clock the steady clock is
+    not, or is not known to be. Reading both clocks now and keeping only the distance makes no assumption that they
+    share an epoch, or that they agree about time spent asleep.
+    @param stamp_nanoseconds      the time stamp, on the platform's clock
+    @param stamp_now_nanoseconds  the platform's clock now
+    @param steady_now_nanoseconds the steady clock now (GamepadClockNanoseconds), read beside it
+    @return                       the time stamp, on the steady clock */
+constexpr std::int64_t OnTheGamepadClock(std::int64_t stamp_nanoseconds, std::int64_t stamp_now_nanoseconds,
+                                         std::int64_t steady_now_nanoseconds) noexcept
+{
+    return steady_now_nanoseconds - (stamp_now_nanoseconds - stamp_nanoseconds);
+}
+
 /** The id a device is given as it appears, from one count for the whole binary, so no two devices - in one Gamepads
     or in two - are ever given the same id, and 0 is never given. Safe from any thread.
     @return  the next id, from 1 */
@@ -234,7 +281,7 @@ class GamepadControlsHeld
         ups.reserve(held_.size());
         for (const GamepadControl control : held_)
         {
-            ups.push_back(GamepadEdge{device_id, control, false});
+            ups.push_back(GamepadEdge{device_id, control, false, 0});
         }
         held_.clear();
         return ups;
@@ -422,7 +469,7 @@ class GamepadDevice
         const bool is_news = is_down ? held_.NoteDown(control) : held_.NoteUp(control);
         if (is_news)
         {
-            edges.push_back(GamepadEdge{device_id_, control, is_down});
+            edges.push_back(GamepadEdge{device_id_, control, is_down, 0});
         }
     }
 
