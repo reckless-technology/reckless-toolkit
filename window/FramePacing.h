@@ -487,6 +487,47 @@ constexpr double FrameAsksAgainAfter(double waited_seconds, double answered_in_s
     return doubled < kFrameAsksAgainAfterAtMostSeconds ? doubled : kFrameAsksAgainAfterAtMostSeconds;
 }
 
+/** How many readings in a row a compositor's rate may disagree with the mode of the window's display before it is
+    believed (CompositorWander). More than the 8 in a row measured on a 240 Hz panel with one window drawing thirty
+    pictures a second, and few enough that a window dragged to a monitor of another rate finds out within a second. */
+inline constexpr std::size_t kCompositorMayWanderForReadings = 24;
+
+/**
+    Whether a compositor's reading of its own rate is to be believed yet, where it disagrees with the mode of the
+    window's display. A compositor reads its rate off what it has lately composed, so on a fast panel with little to
+    compose the reading wanders far from the panel's rate while the panel has not changed at all: 181 to 257 Hz on a
+    240 Hz panel with one window drawing thirty pictures a second (docs/window/frame-pacing.md). One such reading is no
+    reason to leave the display's clock, and it is no period to put a frame on either, so until a disagreement has gone
+    on for kCompositorMayWanderForReadings the display's mode is taken in its place. A window on another monitor really
+    does disagree, every time, so it is still found out.
+*/
+class CompositorWander
+{
+  public:
+    /** A reading noted, and whether it is to be set aside for the display's mode.
+        @param compositor_hertz  the rate the compositor reports now, in hertz
+        @param display_hertz     the rate of the mode of the window's display, in hertz
+        @return                  true where the reading disagrees with a mode that can be believed, and has not yet
+                                 for long enough to be believed itself */
+    bool Note(double compositor_hertz, double display_hertz) noexcept
+    {
+        const bool does_disagree =
+            IsBelievableRefreshRate(display_hertz) && IsBelievableRefreshRate(compositor_hertz) &&
+            std::fabs(compositor_hertz - display_hertz) / display_hertz > kRefreshRatesAgreeWithin;
+        readings_ = does_disagree ? readings_ + 1 : 0;
+        return does_disagree && readings_ <= kCompositorMayWanderForReadings;
+    }
+
+    /** Every reading forgotten: what a window does when its display changes. */
+    void Forget() noexcept
+    {
+        readings_ = 0;
+    }
+
+  private:
+    std::size_t readings_{0}; ///< how many readings in a row have disagreed.
+};
+
 /**
     When a window's next frame is due, on whatever clock the platform measures in seconds. The schedule is kept
     absolutely - each frame is due one frame period after the last was due, never one period after it was delivered -
