@@ -84,7 +84,7 @@ About window.
 | Platform | The bar | The shortcuts |
 |---|---|---|
 | macOS | the screen's menu bar, after the app menu; each shortcut the item's key equivalent | the window takes a key that is one of the bar's shortcuts before the bar does (its `performKeyEquivalent`, which AppKit asks first) and hands it to the views as a key down; one no view takes reaches the window's `keyDown`, which chooses the entry; every other key, Command-Q among them, is AppKit's |
-| Windows | an HMENU on each window opened with `WindowOptions::menu_bar`, the content keeping its design size under it - the frame grows by the bar's row, the first bar set after the window opened (or while it was full screen) included, and only a maximised window gives the row out of its content, told as a resize; the shortcut's text after a tab | the top-level window's key messages: Ctrl or Alt with a key at its key down, a key that types at its character; a child window hands on the keys its views do not take once `ChildWindow::HandOnKeysTo` is called |
+| Windows | an HMENU on each window opened with `WindowOptions::menu_bar`, the content keeping its design size under it - the frame grows by the bar's row, the first bar set after the window opened (or while it was full screen) included, and only a maximised window gives the row out of its content, told as a resize; the shortcut's text after a tab | the top-level window's key messages: Ctrl or Alt with a key at its key down, a key that types at its character; a child window hands on the keys its views do not take once `ChildWindow::HandOnKeysTo` is called, and the menu a key with Alt asks for (`WM_SYSCOMMAND`'s `SC_KEYMENU`) with them |
 | Linux | a drawn bar, `MenuBarView` ([MenuBarView.h](../../app/MenuBarView.h)), which `AppPlatform::MakeMenuBarView` makes and the app places across the top of its window; its menus the views' own popups | the top-level window's key presses, which a child window sends it when no view took the key |
 
 `AppPlatform::HasNativeMenuBar` says whether the platform shows the bar itself. On every platform the view with the
@@ -113,8 +113,14 @@ was.
 the CPU and hands its pixels to GDI (`SetDIBitsToDevice`): there is no swap chain to make exclusive, and a borderless
 window over the monitor is what a browser's F11 is. The monitor's DPI is the window's - the window is on it - and a
 change of DPI or of the display's resolution while full screen (`WM_DPICHANGED`, `WM_DISPLAYCHANGE`) covers the monitor
-again. A key with Alt that a shortcut takes (Alt+Enter) has its menu mnemonic swallowed (`WM_SYSCOMMAND`'s
-`SC_KEYMENU`), which Windows would otherwise look for in the bar and beep at finding none.
+again. Alt+Enter never reaches the bar, whether a shortcut takes it or not, nor does any other key with Alt that a
+shortcut takes: its character's menu (`WM_SYSCOMMAND`'s `SC_KEYMENU`, which a child window with the keyboard hands on to
+the window) is swallowed, where Windows would look for it among the bar's titles, or the system menu's with no bar, and
+beep at finding none (`WM_MENUCHAR`, answered `MNC_IGNORE`). Where a child window hands on no keys - a window with no
+bar, whose app never calls `ChildWindow::HandOnKeysTo` - Windows looks through the system menu from the child itself,
+and the window answers its `WM_MENUCHAR` for a carriage return `MNC_CLOSE`, which closes the menu without a sound. Every
+other key with Alt is the bar's as before: Alt+F opens File by its first letter, since the bar's titles carry no
+mnemonic of their own.
 
 **Why the Mac's own, not a borderless window.** It is what every Mac app's full screen is - a space of its own the
 person swipes between, the menu bar and the Dock out of the way until the pointer reaches for them, the green button

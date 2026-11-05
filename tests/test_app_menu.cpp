@@ -4,8 +4,10 @@
 // entries, a bar set anew replacing the window's, and a child window in it handing on to it the keys its views do not
 // take: a text view's Ctrl+C its own copy, Ctrl+N the bar's. The first bar a window opened with none is given - set
 // once it is open, or while it is full screen - growing the frame round the content rather than taking its row out of
-// it, and a maximised window's frame staying. On Linux, on a display: a drawn bar from the platform, and a key press
-// sent to the window choosing its entry from Run's loop. The macOS half is test_app_menu_mac.mm.
+// it, and a maximised window's frame staying; Alt+Enter, taken by a shortcut or by none, never looked for in the bar
+// (WM_MENUCHAR, which beeps), nor beeping in a window with no bar, while Alt with a title's first letter still opens
+// its menu. On Linux, on a display: a drawn bar from the platform, and a key press sent to the window choosing its
+// entry from Run's loop. The macOS half is test_app_menu_mac.mm.
 #include <gtest/gtest.h>
 
 #include <cmath>
@@ -269,6 +271,147 @@ TEST(AppMenuBar, ABarThatFirstComesWhileFullScreenIsTheFramesOnTheWayBack)
     ASSERT_TRUE(window->LeaveFullScreen());
     EXPECT_NE(GetMenu(hwnd), nullptr) << "put on as it comes back";
     EXPECT_EQ(ClientOf(hwnd), design) << "the frame it comes back to grown by the row it had none of";
+}
+
+namespace
+{
+/** What reached a window's menu handling: WM_MENUCHAR (a key with Alt the menu found nothing for, whose default
+    answer, MNC_IGNORE, beeps) and the platform's answer to it, and WM_ENTERMENULOOP (a menu opened, or looked
+    through), heard by a procedure of the suite's put in front of the platform's. */
+struct MenuWatch
+{
+    static inline WNDPROC platforms{nullptr}; ///< the platform's procedure, which every message goes on to
+    static inline int     menu_chars{0};      ///< WM_MENUCHAR heard
+    static inline int     menu_loops{0};      ///< WM_ENTERMENULOOP heard
+    static inline int     beeps{0};           ///< WM_MENUCHAR the platform answered MNC_IGNORE
+
+    /** Count, and hand on to the platform's.
+        @param hwnd     the window
+        @param message  the message
+        @param wparam   its first parameter
+        @param lparam   its second parameter
+        @return         the platform's answer */
+    static LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
+    {
+        menu_chars += message == WM_MENUCHAR ? 1 : 0;
+        menu_loops += message == WM_ENTERMENULOOP ? 1 : 0;
+        const LRESULT answer = CallWindowProcW(platforms, hwnd, message, wparam, lparam);
+        beeps += message == WM_MENUCHAR && HIWORD(answer) == MNC_IGNORE ? 1 : 0;
+        return answer;
+    }
+};
+
+/** A key with Alt, pressed in `hwnd` as Windows delivers it: its key down, then the WM_SYSCHAR TranslateMessage
+    makes of it (bit 29, Alt held), with Alt held in the thread's keyboard state; a menu the key opens is closed a
+    fifth of a second later (EndMenu), from the menu's own loop.
+    @param hwnd       the window with the keyboard
+    @param vk         the virtual key
+    @param character  the character it types */
+void PressWithAlt(HWND hwnd, UINT vk, wchar_t character)
+{
+    const LPARAM flags = 1 | ScanOf(vk) | (LPARAM{1} << 29);
+    SetTimer(GetAncestor(hwnd, GA_ROOT), 77, 200, [](HWND top, UINT, UINT_PTR id, DWORD) {
+        KillTimer(top, id);
+        EndMenu();
+    });
+    Hold(VK_MENU, true);
+    SendMessageW(hwnd, WM_SYSKEYDOWN, vk, flags);
+    SendMessageW(hwnd, WM_SYSCHAR, character, flags);
+    Hold(VK_MENU, false);
+    KillTimer(GetAncestor(hwnd, GA_ROOT), 77);
+}
+} // namespace
+
+TEST(AppMenuBar, AltEnterIsSilentWhetherAShortcutTakesItOrNotAndAMenusLetterStillOpensIt)
+{
+    int        new_games    = 0;
+    int        flips        = 0;
+    int        copies       = 0;
+    int        full_screens = 0;
+    const auto platform     = reckless::app::AppPlatform::Create("RecklessMenuTest", {});
+    platform->SetMenuBar(CountingBar(new_games, flips, copies), nullptr);
+    reckless::app::WindowOptions options;
+    options.title     = "Menu";
+    options.width     = 300;
+    options.height    = 200;
+    options.menu_bar  = true;
+    const auto window = platform->OpenWindow(options);
+    ASSERT_NE(window, nullptr);
+    const auto           hwnd = static_cast<HWND>(window->Handle());
+    reckless::view::View root;
+    root.SetBounds({300, 200});
+    auto child = reckless::window::CreateChildWindow(hwnd, root, 300, 200, window->Scale());
+    ASSERT_NE(child, nullptr);
+    child->HandOnKeysTo(hwnd);
+    HWND child_hwnd = GetWindow(hwnd, GW_CHILD);
+    ASSERT_NE(child_hwnd, nullptr);
+    MenuWatch::platforms = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(MenuWatch::Procedure)));
+
+    // No shortcut has it: Windows would look for a carriage return among the bar's titles and beep at finding none.
+    for (HWND keyboard : {child_hwnd, hwnd})
+    {
+        MenuWatch::menu_chars = 0;
+        MenuWatch::menu_loops = 0;
+        PressWithAlt(keyboard, VK_RETURN, L'\r');
+        EXPECT_EQ(MenuWatch::menu_chars, 0) << "no WM_MENUCHAR, which beeps";
+        EXPECT_EQ(MenuWatch::menu_loops, 0) << "no menu looked through";
+    }
+
+    // A shortcut has it, as the full-screen item's does on Windows (FullScreenOtherShortcuts): chosen, and silent.
+    MenuBar   bar = CountingBar(new_games, flips, copies);
+    MenuEntry full =
+        MenuEntry::Item("Full screen", 5, Shortcut::Plain(reckless::app::ShortcutKey::kF11), [&] { ++full_screens; });
+    full.other_shortcuts = {Shortcut::Plain(reckless::app::ShortcutKey::kReturn, false, true)};
+    bar.menus.back().submenu.push_back(full);
+    platform->SetMenuBar(bar, nullptr);
+    MenuWatch::menu_chars = 0;
+    MenuWatch::menu_loops = 0;
+    PressWithAlt(child_hwnd, VK_RETURN, L'\r');
+    EXPECT_EQ(full_screens, 1) << "Alt+Enter chose its entry, from the child window with the keyboard";
+    EXPECT_EQ(MenuWatch::menu_chars, 0) << "no WM_MENUCHAR, which beeps";
+    EXPECT_EQ(MenuWatch::menu_loops, 0) << "no menu looked through";
+
+    // A key with Alt no shortcut has is still the bar's: Alt+F opens File by its first letter, as Windows takes a
+    // title with no mnemonic of its own (the toolkit doubles every ampersand).
+    MenuWatch::menu_chars = 0;
+    MenuWatch::menu_loops = 0;
+    PressWithAlt(child_hwnd, 'F', L'f');
+    EXPECT_EQ(MenuWatch::menu_loops, 1) << "the File menu opened";
+    EXPECT_EQ(MenuWatch::menu_chars, 0) << "found by its letter";
+    EXPECT_EQ(new_games, 0) << "and nothing in it chosen";
+    SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(MenuWatch::platforms));
+    child.reset();
+}
+
+TEST(AppMenuBar, AltEnterIsSilentInAWindowWithNoBarWhoseChildHandsOnNoKeys)
+{
+    // A window opened with no bar, its child window handing on nothing (RunApp asks for that only for an app with a
+    // bar, as IR Capture has none): Windows looks through the system menu for the carriage return from the child
+    // itself, and asks the window what to do at finding none.
+    const auto                   platform = reckless::app::AppPlatform::Create("RecklessMenuTest", {});
+    reckless::app::WindowOptions options;
+    options.title     = "Menu";
+    options.width     = 300;
+    options.height    = 200;
+    const auto window = platform->OpenWindow(options);
+    ASSERT_NE(window, nullptr);
+    const auto           hwnd = static_cast<HWND>(window->Handle());
+    reckless::view::View root;
+    root.SetBounds({300, 200});
+    auto child = reckless::window::CreateChildWindow(hwnd, root, 300, 200, window->Scale());
+    ASSERT_NE(child, nullptr);
+    HWND child_hwnd = GetWindow(hwnd, GW_CHILD);
+    ASSERT_NE(child_hwnd, nullptr);
+    MenuWatch::platforms = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(MenuWatch::Procedure)));
+    MenuWatch::menu_chars = 0;
+    MenuWatch::beeps      = 0;
+    PressWithAlt(child_hwnd, VK_RETURN, L'\r');
+    EXPECT_EQ(MenuWatch::menu_chars, 1) << "asked, as Windows asks a window with no bar";
+    EXPECT_EQ(MenuWatch::beeps, 0) << "and answered MNC_CLOSE, which closes the menu without a beep";
+    SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(MenuWatch::platforms));
+    child.reset();
 }
 #endif
 
