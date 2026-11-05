@@ -11,6 +11,7 @@
 // app, taking the focus, as the window suites do.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -155,6 +156,61 @@ TEST(AppPlatform, AnAppsOwnSizeIsToldAsAResizeAndHeldToWhatTheScreenTakes)
     window->SetContentSizeOnScreen(largest.x, largest.y);
     EXPECT_EQ(told.back(), (std::pair<int, int>{largest.x, largest.y}));
     EXPECT_EQ(window->LargestContent(), largest) << "on the same screen";
+}
+
+TEST(AppPlatform, AKeptSizeThatFitsTheScreenOpensWholeToThePixel)
+{
+    // An app reopening at a size it kept holds the size to what the screen takes (LargestContent(options), as RunApp
+    // does) and opens at that: a size that fits must come back whole at the display's scale, or the window opens a
+    // pixel short and the app's View menu ticks no size. At 120 dpi 885 design pixels are 1106, which a truncation
+    // took back to 884. Every scale is the display's own here, so this proves the most on a display at 125 % or 175 %.
+    const std::unique_ptr<reckless::app::AppPlatform> platform = PlatformOrNull();
+    REQUIRE_PLATFORM(platform);
+    reckless::app::WindowOptions options;
+    options.title = "Reckless Platform Test";
+    for (int width = 300; width < 340; ++width)
+    {
+        options.width                       = width;
+        options.height                      = width - 100;
+        const reckless::gfx::PointI largest = platform->LargestContent(options);
+        if (largest.x == 0 && largest.y == 0)
+        {
+            GTEST_SKIP() << "no work area known on this platform";
+        }
+        EXPECT_EQ(largest, (reckless::gfx::PointI{options.width, options.height}))
+            << "a small window fits every screen";
+    }
+    // Sudoku's 75 %, opened as RunApp opens it, on a screen with room to spare for it: the room is what the screen
+    // takes of a window far larger than any screen.
+    options.width                    = 4000;
+    options.height                   = 4000;
+    const reckless::gfx::PointI room = platform->LargestContent(options);
+    if (room.x <= 885 || room.y <= 615)
+    {
+        GTEST_SKIP() << "a screen too small for 885 x 615 design pixels: " << room.x << " x " << room.y;
+    }
+    options.width                       = 885;
+    options.height                      = 615;
+    const reckless::gfx::PointI largest = platform->LargestContent(options);
+    EXPECT_EQ(largest, (reckless::gfx::PointI{885, 615})) << "the kept size fits, so it comes back whole";
+    std::vector<std::pair<int, int>> told;
+    options.resized = [&told](int width, int height) { told.emplace_back(width, height); };
+    options.width   = std::min(options.width, largest.x);
+    options.height  = std::min(options.height, largest.y);
+    const std::unique_ptr<reckless::app::AppWindow> window = platform->OpenWindow(options);
+    ASSERT_NE(window, nullptr);
+#if defined(_WIN32)
+    // The client area the window opened with, in the monitor's pixels: the kept size at the window's scale.
+    RECT client{};
+    GetClientRect(static_cast<HWND>(window->Handle()), &client);
+    const float scale = window->Scale();
+    EXPECT_EQ(client.right - client.left, static_cast<LONG>(std::lround(885.0f * scale))) << "at " << scale;
+    EXPECT_EQ(client.bottom - client.top, static_cast<LONG>(std::lround(615.0f * scale))) << "at " << scale;
+#endif
+    for (const auto &size : told)
+    {
+        EXPECT_EQ(size, (std::pair<int, int>{885, 615})) << "any size told is the one kept";
+    }
 }
 
 TEST(AppPlatform, PostsFromManyThreadsRunOnTheMainThreadInEachThreadsOrderAndNoneAfterRunReturns)

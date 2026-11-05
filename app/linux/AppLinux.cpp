@@ -619,18 +619,15 @@ class LinuxPlatform final : public AppPlatform
     {
         // The window manager says a frame's extents (_NET_FRAME_EXTENTS) only once a window is mapped: a typical title
         // bar and border are allowed for, in design pixels at the desktop's scale.
-        constexpr int     kAssumedFrameWidth  = 8;
-        constexpr int     kAssumedFrameHeight = 40;
-        const float       scale               = window::DisplayScaleOf(nullptr);
-        const gfx::RectI  area                = WorkArea(display_);
-        const gfx::PointI content{static_cast<int>(std::lround(static_cast<float>(options.width) * scale)),
-                                  static_cast<int>(std::lround(static_cast<float>(options.height) * scale))};
-        const gfx::PointI fitted = FittedContent(content,
-                                                 {static_cast<int>(std::lround(kAssumedFrameWidth * scale)),
-                                                  static_cast<int>(std::lround(kAssumedFrameHeight * scale))},
-                                                 area);
-        return {static_cast<int>(static_cast<float>(fitted.x) / scale),
-                static_cast<int>(static_cast<float>(fitted.y) / scale)};
+        constexpr int    kAssumedFrameWidth  = 8;
+        constexpr int    kAssumedFrameHeight = 40;
+        const float      scale               = window::DisplayScaleOf(nullptr);
+        const gfx::RectI area                = WorkArea(display_);
+        // Back in design units to the most whose pixels fit: a size that fits whole, as the window sizes its pixels,
+        // never the pixel short a truncation gives at a fractional scale.
+        return FittedDesignContent(
+            {options.width, options.height},
+            {PixelsOfDesign(kAssumedFrameWidth, scale), PixelsOfDesign(kAssumedFrameHeight, scale)}, area, scale);
     }
 
     std::unique_ptr<AppWindow> OpenWindow(const WindowOptions &options) override
@@ -1214,15 +1211,13 @@ void LinuxWindow::SetContentSizeOnScreen(int width, int height)
 
 gfx::PointI LinuxWindow::LargestContent() const
 {
-    // The desktop's work area less the window manager's frame round the window, in design units, rounded down: the
-    // frame it had before full screen while it is full screen, which has none.
+    // The desktop's work area less the window manager's frame round the window, in design units, the most whose pixels
+    // (as the window sizes them) fit: the frame it had before full screen while it is full screen, which has none.
     const gfx::RectI   area = WorkArea(display_);
     const FrameExtents extents =
         is_full_screen_ || is_full_screen_told_ ? windowed_extents_ : ExtentsOf(display_, window_, scale_);
-    return {std::max(1, static_cast<int>(
-                            std::floor(static_cast<float>(area.width() - extents.left - extents.right) / scale_))),
-            std::max(1, static_cast<int>(
-                            std::floor(static_cast<float>(area.height() - extents.top - extents.bottom) / scale_)))};
+    return {std::max(1, DesignWithinPixels(area.width() - extents.left - extents.right, scale_)),
+            std::max(1, DesignWithinPixels(area.height() - extents.top - extents.bottom, scale_))};
 }
 
 void LinuxWindow::SetTitle(const std::string &title)

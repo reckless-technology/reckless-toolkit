@@ -236,7 +236,8 @@ class AppPlatform
     /** The largest content, in design units, a window opened with `options` may have and still stand wholly on the
         work area it would open on - where it stood (`options.position`), else the main display's - its title bar and
         borders included. An app sizing its window from settings saved on a larger display holds the size to it before
-        opening, so the window never reopens past the screen. {0, 0} where the platform cannot say.
+        opening, so the window never reopens past the screen; a size that fits comes back whole, to the pixel, at
+        every scale (WindowPlace.h's FittedDesignContent). {0, 0} where the platform cannot say.
         @param options  what the window would be opened with: its size, its place, whether it is a dialog, whether it
                         is resizable
         @return         the content's largest width and height, in design units; {0, 0} for no limit known */
