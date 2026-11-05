@@ -38,7 +38,8 @@ for (const auto &edge : edges)
 |---|---|
 | `GamepadControl` | one digital control of a device: a `GamepadControlKind` - a button, an axis's negative or positive half, a hat's up, down, left or right - and its index among the device's controls of that kind, from 0 |
 | `GamepadControlName` | a control's name for a person, counting from 1 as a device's labels do: "Button 4", "Axis 2 +", "Axis 1 −", "Hat 1 left" |
-| `GamepadEdge` | one edge: the device, the control, and whether it went down or was let go |
+| `GamepadEdge` | one edge: the device, the control, whether it went down or was let go, and when (`time_nanoseconds`, on `std::chrono::steady_clock` - [below](#when-an-edge-happened)) |
+| `GamepadClockNanoseconds` | the steady clock now, as an edge's time counts it |
 | `GamepadInfo` | one device: its id, its name, its stable id, and how many buttons, axes and hats it has |
 | `GamepadAxisThresholds` | where an axis's controls go down and are let go, in thousandths of its travel - the program's, with no default here |
 | `Gamepads` | the controllers: `Poll` tells every edge since the last call, and finds devices plugged in and pulled out; `Devices` lists them |
@@ -83,6 +84,25 @@ Nothing is fetched and no third party's code is linked: each back end is on its 
 - **No tuning number is the toolkit's.** The thresholds are the program's (`GamepadAxisThresholds`, no default), as
   every tuning number in the toolkit is a product's. The one number the layer keeps is how often it looks for devices
   where its platform will not say when they change - once a second - which is not a feel but a fallback.
+
+### When an edge happened
+
+Every edge carries `time_nanoseconds`: nanoseconds since `std::chrono::steady_clock`'s epoch, so a program compares
+it with its own `steady_clock::now()` - the time from a press reaching the toolkit to the tick that reads it is
+`now - edge.time_nanoseconds`. It is the time the platform says the change happened, where the platform says, and
+otherwise the time the toolkit first saw it. **One device's edges' times never go backwards.** 0 is a time not known,
+which no back end here gives.
+
+| Platform | Where the time comes from |
+|---|---|
+| Linux | the kernel's own stamp on each event, the node's clock set to `CLOCK_MONOTONIC` as it is opened (`EVIOCSCLOCKID`) - which is the steady clock in both libstdc++ and libc++. A node that refuses keeps the kernel's default wall clock, and its events are stamped as they are read instead |
+| macOS | each value's own stamp (`IOHIDValueGetTimeStamp`), mach absolute time in the machine's ticks, turned into nanoseconds with `mach_timebase_info` and carried onto the steady clock by how long ago it was (`OnTheGamepadClock`): libc++'s steady clock on a Mac reads `CLOCK_MONOTONIC_RAW`, which counts time asleep and mach absolute time does not, so the two are not assumed to be one clock |
+| Windows, XInput | the moment the state was read: as `Poll` reads it |
+| Windows, HID | the moment `Poll` drained the report: HID gives no time of its own, so this is honest and no better than the poll |
+| every platform | a device's controls held as it appears: when it was found; a device's ups as it goes: when it was found gone; the device read again after the kernel dropped events: the time of the report that ended the drop |
+
+A back end stamps what a reading made after telling the device it (`StampEdges`), so `GamepadDevice` itself knows no
+clock and the suites hold the times without one.
 
 ### An axis is two controls
 
@@ -179,7 +199,9 @@ the raw keys' is ([window/RawKey.h](../../window/RawKey.h)):
 
 - [input/GamepadState.h](../../input/GamepadState.h) - the controls a device has said are down, an axis's two halves
   through its thresholds, the judgement of where an axis rests, a hat's four directions, one device's readings
-  turned into edges (`GamepadDevice`), the devices a back end has open (`GamepadRoster`), and the stable id.
+  turned into edges (`GamepadDevice`), the devices a back end has open (`GamepadRoster`), the stable id, and an
+  edge's time: a reading's time given to the edges it made (`StampEdges`), a platform's ticks in nanoseconds
+  (`NanosecondsOfTicks`) and a stamp on a platform's own clock carried onto the steady clock (`OnTheGamepadClock`).
 - [input/HidUsages.h](../../input/HidUsages.h) - the HID arithmetic the Windows and macOS back ends share: which
   collections are controllers, which values are axes and which hats, a range a descriptor got wrong, a field's sign,
   and where a hat switch points.
@@ -194,13 +216,16 @@ The suites hold all of that on **every platform**, in the `input` CTest: `tests/
 including a long deterministic walk of random readings held to alternation), `tests/test_gamepad_formats.cpp` (each
 platform's arithmetic, evdev's from synthetic events) and `tests/test_evdev_gamepads.cpp` (the Linux back end on a port
 of the suite's own: devices found as it is made and as they are plugged in, nodes passed over until they change, a
-device pulled out while it holds controls, the kernel's dropped events, and the look once a second).
+device pulled out while it holds controls, the kernel's dropped events, the look once a second, and every edge's
+time - an event's own, the time read where it has none, and the device read again after a drop).
 
 `tests/test_input_devices.cpp`, the `input_devices` CTest, runs the back end this build carries on the machine's own
 controllers, whatever they are: made, polled and let go of, its devices well formed and its edges alternating. On
 Linux it also makes a controller of its own with uinput and reads it from its plugging in to its pulling out, where
-`/dev/uinput` is writable and the node the kernel makes for it is readable; where either is not so - most desks, and
-CI's runners - that case skips and says why.
+`/dev/uinput` is writable and the node the kernel makes for it is readable - and holds that each edge's time is the
+kernel's own, between the event's sending and the poll that read it, on the steady clock; where either is not so -
+most desks, and CI's runners - that case skips and says why. (Run as root on WSL2's 6.6 kernel on 2026-11-04, it
+passed.)
 
 What only a person with the hardware can hold is the Windows and macOS back ends on real controllers, and the
 platform calls of each: they are compiled by CI on their platforms, and their decisions are the shared headers', but

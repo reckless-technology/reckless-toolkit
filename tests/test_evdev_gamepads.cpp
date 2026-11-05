@@ -180,13 +180,14 @@ FakeNode Keyboard()
 }
 
 /** An event.
-    @param type   its type
-    @param code   its code
-    @param value  its value
-    @return       the event */
-evdev::EvdevEvent Event(std::uint16_t type, std::uint16_t code, std::int32_t value)
+    @param type              its type
+    @param code              its code
+    @param value             its value
+    @param time_nanoseconds  when the kernel stamped it, on the steady clock; 0 for a port that could not say
+    @return                  the event */
+evdev::EvdevEvent Event(std::uint16_t type, std::uint16_t code, std::int32_t value, std::int64_t time_nanoseconds = 0)
 {
-    return evdev::EvdevEvent{type, code, value};
+    return evdev::EvdevEvent{type, code, value, time_nanoseconds};
 }
 
 /** One button control.
@@ -424,4 +425,82 @@ TEST(EvdevGamepads, LettingItGoClosesEveryNodeAndTellsNothing)
         EXPECT_EQ(system.open.size(), 2u);
     }
     EXPECT_TRUE(system.open.empty());
+}
+
+TEST(EvdevGamepads, EveryEdgeCarriesItsEventsTimeAndTheTimeReadWhereItHasNone)
+{
+    FakeSystem system;
+    system.nodes["/dev/input/event4"] = Joystick("Stick", 2);
+    system.nodes["/dev/input/event4"].snapshot.keys.set(evdev::kButtonJoystick + 1);
+    const std::int64_t made_from = reckless::input::GamepadClockNanoseconds();
+    auto               gamepads  = Make(system);
+    const std::int64_t made_by   = reckless::input::GamepadClockNanoseconds();
+
+    std::vector<GamepadEdge> edges;
+    gamepads->Poll(edges);
+    ASSERT_EQ(edges.size(), 1u);
+    EXPECT_GE(edges[0].time_nanoseconds, made_from) << "a control held as the device appears: the time it was seen";
+    EXPECT_LE(edges[0].time_nanoseconds, made_by);
+
+    // A tap between two polls - down and up in two of the kernel's frames - each edge its own frame's time.
+    const std::int64_t base                   = made_by + 1'000'000;
+    system.nodes["/dev/input/event4"].waiting = {
+        Event(evdev::kKey, evdev::kButtonJoystick, 1, base),
+        Event(evdev::kSynchronise, evdev::kSynchroniseReport, 0, base),
+        Event(evdev::kKey, evdev::kButtonJoystick, 0, base + 3'000'000),
+        Event(evdev::kAbsolute, evdev::kAbsoluteX, 255, base + 3'000'000),
+        Event(evdev::kSynchronise, evdev::kSynchroniseReport, 0, base + 3'000'000)};
+    edges.clear();
+    gamepads->Poll(edges);
+    ASSERT_EQ(edges.size(), 3u);
+    EXPECT_TRUE(edges[0].is_down);
+    EXPECT_EQ(edges[0].time_nanoseconds, base);
+    EXPECT_FALSE(edges[1].is_down);
+    EXPECT_EQ(edges[1].time_nanoseconds, base + 3'000'000) << "the up three milliseconds after its down";
+    EXPECT_EQ(edges[2].time_nanoseconds, base + 3'000'000);
+
+    // A port that gave no time: the edge is stamped as it was read.
+    system.nodes["/dev/input/event4"].waiting = {Event(evdev::kAbsolute, evdev::kAbsoluteX, 128),
+                                                 Event(evdev::kSynchronise, evdev::kSynchroniseReport, 0)};
+    const std::int64_t read_from              = reckless::input::GamepadClockNanoseconds();
+    edges.clear();
+    gamepads->Poll(edges);
+    const std::int64_t read_by = reckless::input::GamepadClockNanoseconds();
+    ASSERT_EQ(edges.size(), 1u);
+    EXPECT_GE(edges[0].time_nanoseconds, read_from);
+    EXPECT_LE(edges[0].time_nanoseconds, read_by);
+
+    // Pulled out holding the button: the ups as it was found gone.
+    system.nodes["/dev/input/event4"].is_gone = true;
+    edges.clear();
+    const std::int64_t gone_from = reckless::input::GamepadClockNanoseconds();
+    gamepads->Poll(edges);
+    ASSERT_EQ(edges.size(), 1u) << "button 1, held since it appeared";
+    EXPECT_FALSE(edges[0].is_down);
+    EXPECT_GE(edges[0].time_nanoseconds, gone_from);
+}
+
+TEST(EvdevGamepads, TheStateReadAgainAfterDroppedEventsHasTheTimeOfTheReportThatEndedTheDrop)
+{
+    FakeSystem system;
+    system.nodes["/dev/input/event4"] = Joystick("Stick", 2);
+    auto                     gamepads = Make(system);
+    std::vector<GamepadEdge> edges;
+    gamepads->Poll(edges);
+    ASSERT_TRUE(edges.empty());
+
+    const std::int64_t base = reckless::input::GamepadClockNanoseconds() + 1'000'000;
+    system.nodes["/dev/input/event4"].snapshot.keys.set(evdev::kButtonJoystick);
+    system.nodes["/dev/input/event4"].waiting = {
+        Event(evdev::kSynchronise, evdev::kSynchroniseDropped, 0, base),
+        Event(evdev::kKey, evdev::kButtonJoystick, 1, base + 1'000), // in the dropped frame: passed over
+        Event(evdev::kSynchronise, evdev::kSynchroniseReport, 0, base + 2'000),
+        Event(evdev::kKey, evdev::kButtonJoystick + 1, 1, base + 5'000),
+        Event(evdev::kSynchronise, evdev::kSynchroniseReport, 0, base + 5'000)};
+    gamepads->Poll(edges);
+    ASSERT_EQ(edges.size(), 2u);
+    EXPECT_EQ(edges[0].control, Button(0)) << "from the device read again";
+    EXPECT_EQ(edges[0].time_nanoseconds, base + 2'000) << "at the report that ended the drop";
+    EXPECT_EQ(edges[1].control, Button(1));
+    EXPECT_EQ(edges[1].time_nanoseconds, base + 5'000) << "and the next event's edge is not stamped before it";
 }

@@ -240,10 +240,15 @@ TEST(EvdevSystemPort, AKernelEventIsItsTypeCodeAndValue)
     event.type                                    = EV_ABS;
     event.code                                    = ABS_HAT0Y;
     event.value                                   = -1;
-    const reckless::input::evdev::EvdevEvent ours = reckless::input::evdev::EvdevEventOf(event);
+    event.input_event_sec                         = 12;
+    event.input_event_usec                        = 345'678;
+    const reckless::input::evdev::EvdevEvent ours = reckless::input::evdev::EvdevEventOf(event, true);
     EXPECT_EQ(ours.type, reckless::input::evdev::kAbsolute);
     EXPECT_EQ(ours.code, 0x11);
     EXPECT_EQ(ours.value, -1);
+    EXPECT_EQ(ours.time_nanoseconds, 12'345'678'000) << "a node on the monotonic clock: its time, in nanoseconds";
+    EXPECT_EQ(reckless::input::evdev::EvdevEventOf(event, false).time_nanoseconds, 0)
+        << "a node on the wall clock: no time kept, the back end stamps it as read";
 }
 
 TEST(EvdevSystemPort, AVirtualControllerIsFoundReadAndLetGoOf)
@@ -287,10 +292,23 @@ TEST(EvdevSystemPort, AVirtualControllerIsFoundReadAndLetGoOf)
     EXPECT_EQ(info.axis_count, 2);
     EXPECT_EQ(info.hat_count, 1);
 
+    const std::int64_t sent_from = reckless::input::GamepadClockNanoseconds();
     controller.Send(EV_KEY, BTN_THUMB, 1);
     controller.Send(EV_ABS, ABS_X, 0);
     controller.Send(EV_ABS, ABS_HAT0Y, 1);
     ASSERT_TRUE(PollUntil(*gamepads, edges, [&edges]() { return edges.size() >= 3; }));
+    const std::int64_t read_by = reckless::input::GamepadClockNanoseconds();
+    // The kernel's own stamps, on the clock the port set the node to, which is the steady clock: each between the
+    // send and the poll that read it, and in order.
+    for (std::size_t edge = 0; edge < edges.size(); ++edge)
+    {
+        EXPECT_GE(edges[edge].time_nanoseconds, sent_from) << "edge " << edge;
+        EXPECT_LE(edges[edge].time_nanoseconds, read_by) << "edge " << edge;
+        if (edge > 0)
+        {
+            EXPECT_GE(edges[edge].time_nanoseconds, edges[edge - 1].time_nanoseconds) << "edge " << edge;
+        }
+    }
     ASSERT_EQ(edges.size(), 3u);
     EXPECT_EQ(edges[0].control, (GamepadControl{GamepadControlKind::kButton, 1}));
     EXPECT_EQ(edges[1].control, (GamepadControl{GamepadControlKind::kAxisNegative, 0}));

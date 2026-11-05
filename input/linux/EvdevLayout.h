@@ -47,12 +47,17 @@ inline constexpr std::size_t   kPropertyDirect  = 0x01; ///< INPUT_PROP_DIRECT: 
 inline constexpr std::size_t   kPropertyAccelerometer = 0x06; ///< INPUT_PROP_ACCELEROMETER: a motion sensor's axes
 inline constexpr int           kHatCount              = 4;    ///< how many hats the kernel has codes for
 
-/** One event as the kernel gives it (struct input_event, without its time stamp). */
+/** One event as the kernel gives it (struct input_event), its time stamp on the steady clock. */
 struct EvdevEvent
 {
     std::uint16_t type{0};  ///< EV_SYN, EV_KEY, EV_ABS or another
     std::uint16_t code{0};  ///< which key, button or axis
     std::int32_t  value{0}; ///< a key's 0 (up), 1 (down) or 2 (auto-repeat); an axis's reading
+
+    /** When the kernel stamped it, in nanoseconds on std::chrono::steady_clock (GamepadEdge::time_nanoseconds); 0
+        where the port could not put its node's events on that clock, and the back end then stamps the time it read
+        the event instead. */
+    std::int64_t time_nanoseconds{0};
 };
 
 /** An absolute axis's range and reading as the kernel gives them (struct input_absinfo, in part). */

@@ -19,6 +19,7 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/hid/IOHIDLib.h>
+#include <mach/mach_time.h>
 
 #include "GamepadState.h"
 #include "HidUsages.h"
@@ -121,11 +122,35 @@ struct Happening
         kValue,   ///< an element's value
     };
 
-    Kind               kind{Kind::kValue}; ///< what it was
-    IOHIDDeviceRef     device{nullptr};    ///< the device
-    IOHIDElementCookie cookie{};           ///< the element, for a value
-    CFIndex            value{0};           ///< the value
+    Kind               kind{Kind::kValue};  ///< what it was
+    IOHIDDeviceRef     device{nullptr};     ///< the device
+    IOHIDElementCookie cookie{};            ///< the element, for a value
+    CFIndex            value{0};            ///< the value
+    std::int64_t       time_nanoseconds{0}; ///< when, on the steady clock: a value's own stamp, else when it was told
 };
+
+/** An IOHIDValue's time stamp - mach absolute time, in the machine's own ticks - on the steady clock. Not assumed to be
+    the steady clock's own: libc++'s steady_clock on a Mac reads CLOCK_MONOTONIC_RAW, which is mach_continuous_time
+    and counts the time the Mac has slept, where mach_absolute_time does not, so on a Mac that has slept since it
+    started the two are apart by every sleep. The stamp is carried across by how long ago it was (OnTheGamepadClock).
+    @param host_time  the time stamp (IOHIDValueGetTimeStamp)
+    @return           the same instant on the steady clock (GamepadEdge::time_nanoseconds) */
+std::int64_t SteadyNanosecondsOfHostTime(std::uint64_t host_time)
+{
+    static const mach_timebase_info_data_t timebase = [] {
+        mach_timebase_info_data_t read{};
+        if (mach_timebase_info(&read) != KERN_SUCCESS || read.denom == 0)
+        {
+            read.numer = 1;
+            read.denom = 1;
+        }
+        return read;
+    }();
+    const std::uint64_t host_now   = mach_absolute_time();
+    const std::int64_t  steady_now = GamepadClockNanoseconds();
+    return OnTheGamepadClock(NanosecondsOfTicks(host_time, timebase.numer, timebase.denom),
+                             NanosecondsOfTicks(host_now, timebase.numer, timebase.denom), steady_now);
+}
 
 /** The controllers macOS has. */
 class IoKitGamepads final : public Gamepads
@@ -189,6 +214,7 @@ class IoKitGamepads final : public Gamepads
         happenings.swap(queue_);
         for (const Happening &happening : happenings)
         {
+            const std::size_t first = edges.size();
             switch (happening.kind)
             {
             case Happening::Kind::kMatched:
@@ -201,6 +227,7 @@ class IoKitGamepads final : public Gamepads
                 Apply(happening, edges);
                 break;
             }
+            StampEdges(edges, first, happening.time_nanoseconds);
         }
         // Kept for the next poll's swap, so a frame's queue allocates nothing once it has grown.
         happenings.clear();
@@ -229,7 +256,7 @@ class IoKitGamepads final : public Gamepads
         static_cast<void>(sender);
         CFRetain(device);
         static_cast<IoKitGamepads *>(context)->queue_.push_back(
-            Happening{Happening::Kind::kMatched, device, IOHIDElementCookie{}, 0});
+            Happening{Happening::Kind::kMatched, device, IOHIDElementCookie{}, 0, GamepadClockNanoseconds()});
     }
 
     /** A device removed: queued.
@@ -242,7 +269,7 @@ class IoKitGamepads final : public Gamepads
         static_cast<void>(result);
         static_cast<void>(sender);
         static_cast<IoKitGamepads *>(context)->queue_.push_back(
-            Happening{Happening::Kind::kRemoved, device, IOHIDElementCookie{}, 0});
+            Happening{Happening::Kind::kRemoved, device, IOHIDElementCookie{}, 0, GamepadClockNanoseconds()});
     }
 
     /** An input value: queued with its device and element.
@@ -257,7 +284,7 @@ class IoKitGamepads final : public Gamepads
         const IOHIDElementRef element = IOHIDValueGetElement(value);
         static_cast<IoKitGamepads *>(context)->queue_.push_back(
             Happening{Happening::Kind::kValue, IOHIDElementGetDevice(element), IOHIDElementGetCookie(element),
-                      IOHIDValueGetIntegerValue(value)});
+                      IOHIDValueGetIntegerValue(value), SteadyNanosecondsOfHostTime(IOHIDValueGetTimeStamp(value))});
     }
 
     /** A matched device's elements read, the device added to the roster and each element's value as it appears

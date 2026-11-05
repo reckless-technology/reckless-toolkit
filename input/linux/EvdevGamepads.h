@@ -181,7 +181,9 @@ class EvdevGamepads final : public Gamepads
         EvdevNodeStamp stamp; ///< its stamp then
     };
 
-    /** Every event waiting on a node applied.
+    /** Every event waiting on a node applied, each edge given its event's time - or, for an event the port gave no
+        time, the time it was read. The device read again after the kernel dropped events is given the time of the
+        report that ended the drop, so that a later event's edge is never stamped earlier than it.
         @param node   the node
         @param edges  where the edges are appended
         @return       false when the device has gone */
@@ -192,9 +194,12 @@ class EvdevGamepads final : public Gamepads
         {
             return false;
         }
-        GamepadDevice &device = *roster_.Find(node.device_id);
+        const std::int64_t read_at = GamepadClockNanoseconds();
+        GamepadDevice     &device  = *roster_.Find(node.device_id);
         for (const EvdevEvent &event : events_)
         {
+            const std::size_t  first = edges.size();
+            const std::int64_t time  = event.time_nanoseconds != 0 ? event.time_nanoseconds : read_at;
             if (event.type == kSynchronise && event.code == kSynchroniseDropped)
             {
                 node.is_dropping = true;
@@ -215,6 +220,7 @@ class EvdevGamepads final : public Gamepads
             {
                 node.layout.Apply(event, device, edges);
             }
+            StampEdges(edges, first, time);
         }
         return true;
     }
@@ -224,7 +230,9 @@ class EvdevGamepads final : public Gamepads
         @param edges  where the device's ups are appended */
     void Close(std::size_t node, std::vector<GamepadEdge> &edges)
     {
+        const std::size_t first = edges.size();
         roster_.Remove(open_[node].device_id, edges);
+        StampEdges(edges, first, GamepadClockNanoseconds());
         port_->Close(open_[node].handle);
         open_.erase(open_.begin() + static_cast<std::ptrdiff_t>(node));
     }
@@ -298,7 +306,9 @@ class EvdevGamepads final : public Gamepads
         {
             snapshot = EvdevLayout::ReadingsOf(capabilities);
         }
+        const std::size_t first = edges.size();
         layout.ApplySnapshot(snapshot, device, edges);
+        StampEdges(edges, first, GamepadClockNanoseconds()); // what it holds as it appears: seen now
         open_.push_back(OpenNode{path, handle, device.device_id(), std::move(layout), false});
     }
 

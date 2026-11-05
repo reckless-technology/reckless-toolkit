@@ -13,6 +13,7 @@
 // header only, in reckless_common_input. What turns a platform's readings into edges, and holds the promises above,
 // is input/GamepadState.h, which no platform's headers reach either.
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -83,17 +84,33 @@ inline std::string GamepadControlName(GamepadControl control)
 }
 
 /**
-    One edge of one control: the control going down or being let go, and the device it belongs to. The edges of one
-    control of one device alternate - every down is followed by exactly one up, and no up arrives for a control whose
-    down did not - and a device that goes away lets go of everything it held, so a set of held controls built from
-    these edges cannot go wrong.
+    One edge of one control: the control going down or being let go, the device it belongs to, and when it happened.
+    The edges of one control of one device alternate - every down is followed by exactly one up, and no up arrives for
+    a control whose down did not - and a device that goes away lets go of everything it held, so a set of held
+    controls built from these edges cannot go wrong.
+
+    `time_nanoseconds` is on std::chrono::steady_clock, so a program compares it with its own steady_clock::now(): the
+    time the platform says the change happened where the platform says (Linux's event times, macOS's value time
+    stamps, Windows' XInput read on a thread of its own a thousand times a second), and otherwise the time the toolkit
+    first saw it - a Windows HID report as Poll drained it, a device's controls as it appeared, a device's ups as it
+    went. One device's edges' times never go backwards. 0 is a time not known, which no back end here gives but a
+    program's own Gamepads may.
 */
 struct GamepadEdge
 {
-    std::uint32_t  device_id{0};   ///< the device, as GamepadInfo::device_id names it
-    GamepadControl control{};      ///< the control
-    bool           is_down{false}; ///< true for the control going down, false for it being let go
+    std::uint32_t  device_id{0};        ///< the device, as GamepadInfo::device_id names it
+    GamepadControl control{};           ///< the control
+    bool           is_down{false};      ///< true for the control going down, false for it being let go
+    std::int64_t   time_nanoseconds{0}; ///< when, on std::chrono::steady_clock's epoch, in nanoseconds; 0 not known
 };
+
+/** The steady clock now, as GamepadEdge::time_nanoseconds counts it.
+    @return  nanoseconds since std::chrono::steady_clock's epoch */
+inline std::int64_t GamepadClockNanoseconds() noexcept
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
 
 /** A device a Gamepads reads: what a program shows a person to choose from, and what it keeps to find the device
     again. */
@@ -160,9 +177,10 @@ class Gamepads
     /** Lets go of every device: closes what it opened. No edge is told after this. */
     virtual ~Gamepads() = default;
 
-    /** Every edge since the last call, appended to `edges` in the order they happened on each device, and every
-        device plugged in or pulled out since then found: a new device's controls that are already down are told as
-        downs, and a device gone lets go of every control it held, oldest first. Called once a frame; never blocks.
+    /** Every edge since the last call, appended to `edges` in the order they happened on each device, each with its
+        time, and every device plugged in or pulled out since then found: a new device's controls that are already
+        down are told as downs, and a device gone lets go of every control it held, oldest first. Called once a
+        frame; never blocks.
         @param edges  where the edges are appended; what it held is kept */
     virtual void Poll(std::vector<GamepadEdge> &edges) = 0;
 

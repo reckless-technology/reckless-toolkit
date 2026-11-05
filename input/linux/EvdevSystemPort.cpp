@@ -4,6 +4,7 @@
 // moment later, which changes the node's access list and so its inode - is noticed at the next poll.
 #include "EvdevSystemPort.h"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -19,6 +20,7 @@
 #include <sys/inotify.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "EvdevGamepads.h"
@@ -228,6 +230,14 @@ class SystemEvdevPort final : public EvdevPort
         capabilities.name          = NameOf(handle, EVIOCGNAME(buffer.size()), buffer);
         capabilities.unique_id     = NameOf(handle, EVIOCGUNIQ(buffer.size()), buffer);
         capabilities.physical_path = NameOf(handle, EVIOCGPHYS(buffer.size()), buffer);
+        // The node's events stamped on the monotonic clock, which the steady clock is, rather than the wall clock the
+        // kernel stamps by default: a node that refuses (EVIOCSCLOCKID came with Linux 3.4) is read all the same, its
+        // events stamped as they are read.
+        int monotonic = CLOCK_MONOTONIC;
+        if (ioctl(handle, EVIOCSCLOCKID, &monotonic) < 0)
+        {
+            wall_clock_handles_.push_back(handle);
+        }
         return handle;
     }
 
@@ -255,6 +265,8 @@ class SystemEvdevPort final : public EvdevPort
     EvdevReadResult Read(int handle, std::vector<EvdevEvent> &events) override
     {
         std::array<input_event, 64> buffer{};
+        const bool                  is_time_monotonic =
+            std::find(wall_clock_handles_.begin(), wall_clock_handles_.end(), handle) == wall_clock_handles_.end();
         for (;;)
         {
             const ssize_t bytes = read(handle, buffer.data(), sizeof(buffer));
@@ -269,7 +281,7 @@ class SystemEvdevPort final : public EvdevPort
             const std::size_t count = static_cast<std::size_t>(bytes) / sizeof(input_event);
             for (std::size_t event = 0; event < count; ++event)
             {
-                events.push_back(EvdevEventOf(buffer[event]));
+                events.push_back(EvdevEventOf(buffer[event], is_time_monotonic));
             }
             if (count < buffer.size())
             {
@@ -282,11 +294,13 @@ class SystemEvdevPort final : public EvdevPort
         @param handle  the node */
     void Close(int handle) override
     {
+        std::erase(wall_clock_handles_, handle);
         close(handle);
     }
 
   private:
-    int watch_; ///< inotify's descriptor watching /dev/input; -1 where there is no watch
+    int              watch_;              ///< inotify's descriptor watching /dev/input; -1 where there is no watch
+    std::vector<int> wall_clock_handles_; ///< the open nodes whose clock could not be set: their times are not kept
 };
 } // namespace
 

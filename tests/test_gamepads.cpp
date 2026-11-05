@@ -441,8 +441,80 @@ TEST(GamepadRoster, IdsAreNeverGivenTwiceAndAGoneDeviceLetsGo)
 TEST(NoGamepads, HasNothingToTell)
 {
     reckless::input::NoGamepads none;
-    std::vector<GamepadEdge>    edges{GamepadEdge{1, Control(GamepadControlKind::kButton, 0), true}};
+    std::vector<GamepadEdge>    edges{GamepadEdge{1, Control(GamepadControlKind::kButton, 0), true, 0}};
     none.Poll(edges);
     EXPECT_EQ(edges.size(), 1u) << "what the caller had is kept";
     EXPECT_TRUE(none.Devices().empty());
+}
+
+TEST(GamepadEdgeTime, AnEdgeIsMadeWithNoTimeAndAReadingsTimeReachesEveryEdgeItMade)
+{
+    GamepadRoster            roster(kThresholds);
+    GamepadDevice           &device = roster.Add(Layout(3));
+    std::vector<GamepadEdge> edges;
+    device.SetButton(0, true, edges);
+    ASSERT_EQ(edges.size(), 1u);
+    EXPECT_EQ(edges[0].time_nanoseconds, 0) << "a device knows no clock: its back end stamps what it made";
+    reckless::input::StampEdges(edges, 0, 1'000);
+
+    // One reading that made two edges, and an edge from before it that already has its time.
+    const std::size_t first = edges.size();
+    device.SetButton(1, true, edges);
+    device.SetButton(2, true, edges);
+    reckless::input::StampEdges(edges, first, 2'500);
+    ASSERT_EQ(edges.size(), 3u);
+    EXPECT_EQ(edges[0].time_nanoseconds, 1'000) << "an edge stamped already keeps its time";
+    EXPECT_EQ(edges[1].time_nanoseconds, 2'500);
+    EXPECT_EQ(edges[2].time_nanoseconds, 2'500);
+
+    reckless::input::StampEdges(edges, edges.size(), 9'999);
+    reckless::input::StampEdges(edges, 0, 0);
+    EXPECT_EQ(edges[2].time_nanoseconds, 2'500) << "nothing past the end, and a time of 0 changes nothing";
+
+    // A device that goes lets go of everything, each up with no time until its back end gives it one.
+    const std::size_t ups = edges.size();
+    roster.Remove(device.device_id(), edges);
+    for (std::size_t edge = ups; edge < edges.size(); ++edge)
+    {
+        EXPECT_EQ(edges[edge].time_nanoseconds, 0);
+    }
+}
+
+TEST(GamepadEdgeTime, TheClockIsTheSteadyClock)
+{
+    const std::int64_t before =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    const std::int64_t now = reckless::input::GamepadClockNanoseconds();
+    const std::int64_t after =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    EXPECT_GE(now, before);
+    EXPECT_LE(now, after) << "a program compares an edge's time with its own steady_clock::now()";
+    EXPECT_NE(now, 0) << "and 0 is kept for a time not known";
+}
+
+TEST(GamepadEdgeTime, APlatformsTicksAreNanosecondsExactlyOnEitherMacsTimebase)
+{
+    using reckless::input::NanosecondsOfTicks;
+    static_assert(NanosecondsOfTicks(1'000'000'000, 1, 1) == 1'000'000'000, "an Intel Mac ticks in nanoseconds");
+    static_assert(NanosecondsOfTicks(24'000'000, 125, 3) == 1'000'000'000, "Apple silicon ticks 24 million a second");
+    static_assert(NanosecondsOfTicks(1, 125, 3) == 41, "a tick's remainder rounded down, not lost");
+    static_assert(NanosecondsOfTicks(5, 7, 0) == 35, "a denominator of 0 is taken as 1");
+    // Two hundred years of Apple silicon's ticks, whose product with 125 would not fit in 64 bits, is still exact.
+    constexpr std::uint64_t kCenturiesOfTicks = 24'000'000ull * 60 * 60 * 24 * 365 * 200;
+    static_assert(NanosecondsOfTicks(kCenturiesOfTicks, 125, 3) ==
+                      static_cast<std::int64_t>(1'000'000'000ull * 60 * 60 * 24 * 365 * 200),
+                  "two hundred years of ticks, without overflow");
+}
+
+TEST(GamepadEdgeTime, AStampOnAPlatformsOwnClockIsCarriedOntoTheSteadyClockByHowLongAgoItWas)
+{
+    using reckless::input::OnTheGamepadClock;
+    // The platform's clock reads 5 s and the steady clock 900 s at the same moment: a stamp 3 ms ago on the one is
+    // 3 ms ago on the other, whatever either clock's epoch - a Mac's mach_absolute_time and its steady clock are apart
+    // by every sleep since it started.
+    static_assert(OnTheGamepadClock(4'997'000'000, 5'000'000'000, 900'000'000'000) == 899'997'000'000);
+    static_assert(OnTheGamepadClock(5'000'000'000, 5'000'000'000, 900'000'000'000) == 900'000'000'000, "now is now");
+    static_assert(OnTheGamepadClock(10, 1'000, 1'000) == 10, "two clocks that are one clock are left alone");
 }
