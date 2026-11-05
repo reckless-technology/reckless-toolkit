@@ -209,11 +209,12 @@ TEST(ChildWindowPacing, AWindowThatPacesNothingItselfAnswersThePlatformTimerAndS
         << "a default request is what every window did before any of this existed";
     EXPECT_EQ(default_request.why, FramePacingFallback::kNotAsked);
 
-    const reckless::window::FramePacingState asked = child.SetFramePacing({FramePacing::kDisplayClock, 4, 1});
+    const reckless::window::FramePacingState asked = child.SetFramePacing({FramePacing::kDisplayClock, 4, 1, 5000});
     EXPECT_EQ(asked.pacing, FramePacing::kPlatformTimer);
     EXPECT_EQ(asked.why, FramePacingFallback::kNoDisplayClock) << "this window has no clock, and says so";
     EXPECT_EQ(asked.refresh_divisor, 0);
     EXPECT_EQ(asked.frames_a_second, 0.0);
+    EXPECT_EQ(asked.lead_microseconds, 0) << "and keeps no lead: it has no blank to lead";
 }
 
 TEST(RunApp, TheChildWindowIsHandedToTheProductWhichMayAskItForTheRawKeys)

@@ -443,6 +443,11 @@ double DisplayRefreshHertzOf(HWND window) noexcept
     served as well as an app on its own loop. **At most one frame is in flight**: a window whose thread is busy - a
     modal loop, a dialog, a drag - is never handed a backlog to run in a burst.
 
+    A product's lead (FrameRequest::lead_microseconds) wakes each frame that long before the vertical blank it is due
+    at rather than at it, so a frame that takes a few milliseconds is finished as the compositor takes it instead of
+    waiting most of a refresh for it - which is that much less input latency. The schedule stays on the blanks; only
+    the waking moves (LedWakeSeconds).
+
     DwmFlush is not used, well though it measures: each call blocks the thread it is on for a whole refresh period,
     which would be right in a thread of one's own and is wrong anywhere near a window's, and its period is three times
     as loose as the timer's.
@@ -465,7 +470,7 @@ class WinDisplayClock
         each posted to the window. False where the high-resolution waitable timer or the stop event could not be made
         - a Windows before 10 1803, or one out of handles - and the window then keeps the platform's timer.
         @param window   the window each frame is posted to; outlives the clock
-        @param request  the divisor and the frames to make up, both the product's
+        @param request  the divisor, the frames to make up and the lead, all the product's
         @return         true where the clock's thread is running */
     bool Start(HWND window, const FrameRequest &request)
     {
@@ -474,7 +479,6 @@ class WinDisplayClock
         request_ = request;
         gave_up_because_.store(static_cast<int>(FramePacingFallback::kNone), std::memory_order_relaxed);
         is_frame_in_flight_.store(false, std::memory_order_relaxed);
-        display_hertz_.store(0.0, std::memory_order_relaxed);
         // Without the high resolution the timer is the system clock's 15.625 ms again, which is the whole fault being
         // fixed, so a Windows that refuses the flag is told apart from one that takes it rather than paced badly.
         timer_ = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
@@ -489,8 +493,9 @@ class WinDisplayClock
         return true;
     }
 
-    /** Stopped: the thread woken and joined, its timer and event closed. Nothing is posted to the window afterwards,
-        and calling it on a clock that is not running does nothing. */
+    /** Stopped: the thread woken and joined, its timer and event closed, and what it last read forgotten - so a
+        stopped clock reports no rate and no lead, and the window answers with what it decided instead. Nothing is
+        posted to the window afterwards, and calling it on a clock that is not running does nothing. */
     void Stop()
     {
         if (stop_ != nullptr)
@@ -511,6 +516,8 @@ class WinDisplayClock
             CloseHandle(stop_);
             stop_ = nullptr;
         }
+        display_hertz_.store(0.0, std::memory_order_release);
+        lead_microseconds_.store(0, std::memory_order_release);
     }
 
     /** The frame the window has just taken off its queue, so the next may be posted: what the window calls as it
@@ -534,6 +541,14 @@ class WinDisplayClock
     double display_hertz_now() const noexcept
     {
         return display_hertz_.load(std::memory_order_acquire);
+    }
+
+    /** The lead the clock is keeping now, in microseconds, as its thread last held the product's to the frame period
+        (LeadInForceMicroseconds) - which moves with the display the window is on, as the rate does.
+        @return  the lead, in microseconds; 0 before the first reading */
+    std::int32_t lead_microseconds_now() const noexcept
+    {
+        return lead_microseconds_.load(std::memory_order_acquire);
     }
 
   private:
@@ -638,23 +653,30 @@ class WinDisplayClock
                 return;
             }
             display_hertz_.store(state.display_hertz, std::memory_order_release);
+            lead_microseconds_.store(state.lead_microseconds, std::memory_order_release);
+            // The clock is kept on the vertical blanks themselves and told the time as now plus the lead
+            // (LedWakeSeconds), so its schedule and its catching up are a clock's with no lead and only the waking
+            // moves. Moving the due time itself back by the lead would not do: the next frame's due time would then
+            // be pulled onto the blank nearest it, which for a lead over half a refresh period is the one before.
+            const double lead_seconds = static_cast<double>(state.lead_microseconds) * 1.0e-6;
 
             if (has_period_moved)
             {
                 // The first reading, or a period that has moved: the schedule starts again on what the display is
                 // doing now rather than dividing what it was doing.
                 period_divided = timing.period_seconds;
-                clock.Start(QpcSeconds(), period_divided * request_.refresh_divisor, request_.most_frames_behind);
+                clock.Start(QpcSeconds() + lead_seconds, period_divided * request_.refresh_divisor,
+                            request_.most_frames_behind);
             }
             // The due time pulled onto the grid the compositor's last vertical blank and its period describe, which
             // is where a whole number of refresh periods lands by construction.
             clock.MoveNextFrameTo(
                 OnTheRefreshGrid(clock.next_frame_seconds(), timing.vblank_seconds, timing.period_seconds));
-            if (WaitUntil(clock.next_frame_seconds()) == Woke::kStopped)
+            if (WaitUntil(LedWakeSeconds(clock.next_frame_seconds(), lead_seconds)) == Woke::kStopped)
             {
                 return;
             }
-            const double woke = QpcSeconds();
+            const double woke_on_the_grid = QpcSeconds() + lead_seconds; // the waking, on the clock's own timeline
             // One frame in flight at a time: where the window has not taken the last one, this one is given up
             // rather than queued behind it, and the clock's own catching up decides what happens next.
             if (!is_frame_in_flight_.exchange(true, std::memory_order_acq_rel) &&
@@ -662,7 +684,7 @@ class WinDisplayClock
             {
                 is_frame_in_flight_.store(false, std::memory_order_release);
             }
-            clock.Advance(woke);
+            clock.Advance(woke_on_the_grid);
         }
     }
 
@@ -674,7 +696,8 @@ class WinDisplayClock
     std::atomic<bool> is_frame_in_flight_{false}; ///< a frame posted and not yet taken off the window's queue.
     std::atomic<int>  gave_up_because_{
         static_cast<int>(FramePacingFallback::kNone)}; ///< FramePacingFallback, as an int for std::atomic.
-    std::atomic<double> display_hertz_{0.0};           ///< the rate being divided, as the thread last read it.
+    std::atomic<double>       display_hertz_{0.0};     ///< the rate being divided, as the thread last read it.
+    std::atomic<std::int32_t> lead_microseconds_{0};   ///< the lead in force, as the thread last held it.
 };
 
 /** The window procedure of the module's class: hands each message to the WinSurface the window holds in
@@ -1608,8 +1631,9 @@ class WinChildWindow final : public ChildWindow, public WinSurface
         {
             if (const double hertz = clock_.display_hertz_now(); hertz > 0.0)
             {
-                state.display_hertz   = hertz;
-                state.frames_a_second = hertz / state.refresh_divisor;
+                state.display_hertz     = hertz;
+                state.frames_a_second   = hertz / state.refresh_divisor;
+                state.lead_microseconds = clock_.lead_microseconds_now();
             }
         }
         return state;
@@ -1675,8 +1699,8 @@ class WinChildWindow final : public ChildWindow, public WinSurface
             }
             // No high-resolution waitable timer to be had: the platform's own timer, and the reason said rather than
             // pacing on the system clock's 15.625 ms under another name.
-            pacing_ = {FramePacing::kPlatformTimer, 0, pacing_.display_hertz, 0.0,
-                       FramePacingFallback::kNoDisplayClock};
+            pacing_ = {FramePacing::kPlatformTimer,          0, pacing_.display_hertz, 0.0,
+                       FramePacingFallback::kNoDisplayClock, 0};
         }
         SetTimer(hwnd_, kFrameTimer, kFrameMilliseconds, nullptr);
     }
@@ -1696,7 +1720,7 @@ class WinChildWindow final : public ChildWindow, public WinSurface
             }
             return;
         }
-        pacing_ = {FramePacing::kPlatformTimer, 0, pacing_.display_hertz, 0.0, clock_.gave_up_because()};
+        pacing_ = {FramePacing::kPlatformTimer, 0, pacing_.display_hertz, 0.0, clock_.gave_up_because(), 0};
         ArrangePacing();
     }
 

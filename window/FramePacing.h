@@ -17,6 +17,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 
 namespace reckless::window
 {
@@ -94,6 +95,16 @@ struct FrameRequest
         ever running two frames together, and more for a product that would rather catch up. Read only where `pacing`
         asks for the display's clock. */
     int most_frames_behind{1};
+
+    /** How long before the vertical blank a frame is shown at the frame callback is to run, in microseconds: the
+        product's estimate of what a frame costs it, with a margin, so the frame is finished just as the compositor
+        takes it rather than a whole refresh early - which is a refresh of input latency (docs/window/frame-pacing.md,
+        "Leading the vertical blank"). 0, the default, runs the callback at the blank, as a window always has. Held
+        between 0 and the frame period less a millisecond (LeadInForceMicroseconds), and read only where `pacing` asks
+        for the display's clock and the platform can lead it - Windows; FramePacingState::lead_microseconds says what
+        is in force. A frame that misses the blank it led is shown a whole refresh later, so the margin is the
+        product's to choose with care. */
+    std::int32_t lead_microseconds{0};
 };
 
 /** What a window ended up pacing on, for a product to report, log or adapt to (ChildWindow::SetFramePacing,
@@ -119,7 +130,53 @@ struct FramePacingState
 
     /** Why the window is on the platform's timer; kNone where it is on the display's clock. */
     FramePacingFallback why{FramePacingFallback::kNotAsked};
+
+    /** The lead in force, in microseconds: how long before each vertical blank the frame callback runs, as
+        LeadInForceMicroseconds held the one asked for. 0 on the platform timer, which knows no blank, and on a
+        platform whose display clock cannot lead - macOS and Linux (docs/window/frame-pacing.md says why). */
+    std::int32_t lead_microseconds{0};
 };
+
+/** The least of a frame period a lead leaves between the callback's start and the vertical blank it leads, in
+    microseconds: a lead may take the frame period less this and no more, so a lead never asks for a frame to be
+    started at or before the blank of the frame before it. A bound on what a lead can mean, not a tuning number. */
+inline constexpr std::int32_t kLeadLeavesAtLeastMicroseconds = 1000;
+
+/** The lead a window keeps of the one a product asked for: none for a lead under 0, and at most the frame period less
+    kLeadLeavesAtLeastMicroseconds, in whole microseconds - so a lead longer than the frame period, which would ask for
+    a frame to start before the one ahead of it is shown, is the longest lead the period allows rather than refused.
+    @param asked_microseconds  the lead the product asked for (FrameRequest::lead_microseconds)
+    @param frame_seconds       the frame period: the refresh period times the divisor
+    @return                    the lead in force, in microseconds, from 0 */
+constexpr std::int32_t LeadInForceMicroseconds(std::int32_t asked_microseconds, double frame_seconds) noexcept
+{
+    if (asked_microseconds <= 0 || !(frame_seconds > 0.0))
+    {
+        return 0;
+    }
+    // Whole microseconds, rounded down. A believed rate's period is a few tens of milliseconds at most; one of more
+    // than half an hour is no display's, and is held there so the cast cannot overflow.
+    const double       frame_microseconds = frame_seconds < 2000.0 ? frame_seconds * 1.0e6 : 2.0e9;
+    const std::int32_t longest = static_cast<std::int32_t>(frame_microseconds) - kLeadLeavesAtLeastMicroseconds;
+    if (longest <= 0)
+    {
+        return 0;
+    }
+    return asked_microseconds < longest ? asked_microseconds : longest;
+}
+
+/** When a frame due at the vertical blank `due_seconds` is woken for: `lead_seconds` before it. A platform that waits
+    keeps its FrameClock on the blanks themselves and tells it the time as `now + lead` (FrameClock::Start and
+    FrameClock::Advance), so the clock's schedule, its catching up and its giving up are those of a clock with no lead
+    at all and only the waking moves - and because the clock starts a whole frame period ahead of `now + lead`, the
+    first frame woken for is never already past: at least half a refresh period ahead, whatever the lead.
+    @param due_seconds   the vertical blank the frame is due at, on the grid (OnTheRefreshGrid)
+    @param lead_seconds  the lead in force, in seconds
+    @return              the instant to wake at, on the same clock */
+constexpr double LedWakeSeconds(double due_seconds, double lead_seconds) noexcept
+{
+    return due_seconds - lead_seconds;
+}
 
 /** The lowest refresh rate, in hertz, a reading is believed at. Below this nothing a display does is being described,
     so the reading is refused rather than divided by - it is a bound on what a panel can be, not a rate anything here
@@ -215,7 +272,8 @@ inline RefreshRateChoice ChosenRefreshRate(const DisplayClockReading &reading) n
 
 /** The pacing a window ends up on: the whole of the fallback decision, in the order it is made, from the product's
     request and what the platform could say. The platform does the reading and the waiting; this says whether there is
-    anything to wait on.
+    anything to wait on, and the lead it would keep (LeadInForceMicroseconds) - which a platform whose clock cannot
+    lead sets back to 0.
     @param request  what the product asked for
     @param reading  what the platform said about its display clock
     @return         the state the window reports, whose `why` says which step refused */
@@ -223,27 +281,31 @@ inline FramePacingState ChosenPacing(const FrameRequest &request, const DisplayC
 {
     if (request.pacing == FramePacing::kPlatformTimer)
     {
-        return {FramePacing::kPlatformTimer, 0, 0.0, 0.0, FramePacingFallback::kNotAsked};
+        return {FramePacing::kPlatformTimer, 0, 0.0, 0.0, FramePacingFallback::kNotAsked, 0};
     }
     if (request.refresh_divisor < 1 || request.most_frames_behind < 0)
     {
-        return {FramePacing::kPlatformTimer, 0, 0.0, 0.0, FramePacingFallback::kRequestOutOfRange};
+        return {FramePacing::kPlatformTimer, 0, 0.0, 0.0, FramePacingFallback::kRequestOutOfRange, 0};
     }
     if (!reading.has_clock)
     {
-        return {FramePacing::kPlatformTimer, 0, 0.0, 0.0, FramePacingFallback::kNoDisplayClock};
+        return {FramePacing::kPlatformTimer, 0, 0.0, 0.0, FramePacingFallback::kNoDisplayClock, 0};
     }
     const RefreshRateChoice rate = ChosenRefreshRate(reading);
     if (rate.why != FramePacingFallback::kNone)
     {
-        return {FramePacing::kPlatformTimer, 0, 0.0, 0.0, rate.why};
+        return {FramePacing::kPlatformTimer, 0, 0.0, 0.0, rate.why, 0};
     }
     if (!reading.does_rate_hold_still)
     {
-        return {FramePacing::kPlatformTimer, 0, rate.hertz, 0.0, FramePacingFallback::kRefreshRateUnsteady};
+        return {FramePacing::kPlatformTimer, 0, rate.hertz, 0.0, FramePacingFallback::kRefreshRateUnsteady, 0};
     }
-    return {FramePacing::kDisplayClock, request.refresh_divisor, rate.hertz, rate.hertz / request.refresh_divisor,
-            FramePacingFallback::kNone};
+    return {FramePacing::kDisplayClock,
+            request.refresh_divisor,
+            rate.hertz,
+            rate.hertz / request.refresh_divisor,
+            FramePacingFallback::kNone,
+            LeadInForceMicroseconds(request.lead_microseconds, request.refresh_divisor / rate.hertz)};
 }
 
 /** `instant_seconds` moved to the nearest instant of the grid that `anchor_seconds` and `period_seconds` describe -

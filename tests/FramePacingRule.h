@@ -12,6 +12,7 @@
 // that was. The arithmetic and the whole fallback decision are held with no display at all, on every platform, by
 // tests/test_frame_pacing.cpp.
 
+#include <cstdint>
 #include <cstdio>
 
 #include "FramePacing.h"
@@ -21,14 +22,19 @@
 namespace reckless::test
 {
 /** What a window's pacing state must say, whichever branch its platform reached, printed so that the run says which.
-    @param state    what the window answered
-    @param divisor  the refresh divisor that was asked for
-    @param where    the platform and the moment, for the print */
-inline void HoldsWhicheverPacingItReached(const window::FramePacingState &state, int divisor, const char *where)
+    @param state              what the window answered
+    @param divisor            the refresh divisor that was asked for
+    @param where              the platform and the moment, for the print
+    @param lead_microseconds  the lead that was asked for (FrameRequest::lead_microseconds)
+    @param can_lead           whether this platform's display clock leads the blank at all: Windows' does, macOS's
+                              does not yet, and its state must then say 0 */
+inline void HoldsWhicheverPacingItReached(const window::FramePacingState &state, int divisor, const char *where,
+                                          std::int32_t lead_microseconds = 0, bool can_lead = false)
 {
-    std::printf("[ frame pacing ] %s: %s - %s; display %.4f Hz, %.4f frames a second, divisor %d\n", where,
+    std::printf("[ frame pacing ] %s: %s - %s; display %.4f Hz, %.4f frames a second, divisor %d, lead %d us\n", where,
                 state.pacing == window::FramePacing::kDisplayClock ? "the display's clock" : "the platform's timer",
-                window::TextOf(state.why), state.display_hertz, state.frames_a_second, state.refresh_divisor);
+                window::TextOf(state.why), state.display_hertz, state.frames_a_second, state.refresh_divisor,
+                static_cast<int>(state.lead_microseconds));
     std::fflush(stdout);
     if (state.pacing == window::FramePacing::kDisplayClock)
     {
@@ -38,6 +44,9 @@ inline void HoldsWhicheverPacingItReached(const window::FramePacingState &state,
             << "a window pacing on a display has read a rate it could believe";
         EXPECT_NEAR(state.frames_a_second, state.display_hertz / divisor, 1.0e-9)
             << "the rate is the display's over the divisor and nothing else";
+        EXPECT_EQ(state.lead_microseconds,
+                  can_lead ? window::LeadInForceMicroseconds(lead_microseconds, divisor / state.display_hertz) : 0)
+            << "the lead in force is the one asked for, held to the frame period, where the platform can lead";
     }
     else
     {
@@ -45,6 +54,7 @@ inline void HoldsWhicheverPacingItReached(const window::FramePacingState &state,
         EXPECT_NE(state.why, window::FramePacingFallback::kNotAsked) << "and this one was asked";
         EXPECT_EQ(state.refresh_divisor, 0) << "the platform's timer divides nothing";
         EXPECT_EQ(state.frames_a_second, 0.0) << "and claims no rate: its own is not one the window knows";
+        EXPECT_EQ(state.lead_microseconds, 0) << "nor any lead: it knows no blank to lead";
     }
 }
 } // namespace reckless::test

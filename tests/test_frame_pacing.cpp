@@ -1,6 +1,7 @@
 // How a window paces its frame callback (window/FramePacing.h), on every platform: the refresh rate chosen from what
 // a platform could read and the whole of the fallback decision, the subdivision arithmetic, the grid a due time is
-// pulled onto, whether a refresh period holds still enough to be divided, and the schedule with its catching up.
+// pulled onto, whether a refresh period holds still enough to be divided, the schedule with its catching up, and the
+// lead that wakes a frame before the vertical blank it is due at.
 // None of it needs a display, a compositor or a thread, so every assertion here is held on Linux, macOS and Windows
 // alike, in the builds with no GUI too - and the two shapes a platform drives it in are simulated here against a
 // made-up display, which is where the property that matters is actually held: that every frame is shown for exactly
@@ -8,8 +9,10 @@
 // (skia/tests/test_child_window.cpp), which needs a real display clock and only has one on some platforms.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -28,7 +31,10 @@ using reckless::window::FramePacingState;
 using reckless::window::FrameRequest;
 using reckless::window::IsBelievableRefreshRate;
 using reckless::window::IsFrameDueOnTick;
+using reckless::window::kLeadLeavesAtLeastMicroseconds;
 using reckless::window::kRefreshPeriodsJudged;
+using reckless::window::LeadInForceMicroseconds;
+using reckless::window::LedWakeSeconds;
 using reckless::window::OnTheRefreshGrid;
 using reckless::window::RefreshSteadiness;
 using reckless::window::TextOf;
@@ -50,10 +56,11 @@ DisplayClockReading GoodReading(double compositor_hertz, double display_hertz)
 /** A request for the display's clock.
     @param divisor            the refresh periods each frame is shown for
     @param most_frames_behind the whole frames of lateness made up
+    @param lead_microseconds  how long before the blank each frame is woken
     @return                   the request */
-FrameRequest Asking(int divisor, int most_frames_behind = 1)
+FrameRequest Asking(int divisor, int most_frames_behind = 1, std::int32_t lead_microseconds = 0)
 {
-    return {FramePacing::kDisplayClock, divisor, most_frames_behind};
+    return {FramePacing::kDisplayClock, divisor, most_frames_behind, lead_microseconds};
 }
 } // namespace
 
@@ -67,6 +74,7 @@ TEST(FrameRequestDefaults, ADefaultRequestAsksForWhatAWindowAlwaysDid)
     EXPECT_EQ(request.pacing, FramePacing::kPlatformTimer) << "the platform's own timer, unchanged";
     EXPECT_EQ(request.refresh_divisor, 1);
     EXPECT_EQ(request.most_frames_behind, 1);
+    EXPECT_EQ(request.lead_microseconds, 0) << "and wakes at the blank, as a window always has";
 }
 
 TEST(FramePacingStateDefaults, ADefaultStateIsAWindowNoOneHasAsked)
@@ -77,6 +85,7 @@ TEST(FramePacingStateDefaults, ADefaultStateIsAWindowNoOneHasAsked)
     EXPECT_EQ(state.display_hertz, 0.0) << "and reads no display";
     EXPECT_EQ(state.frames_a_second, 0.0) << "the platform timer's rate is not a number the window knows";
     EXPECT_EQ(state.why, FramePacingFallback::kNotAsked);
+    EXPECT_EQ(state.lead_microseconds, 0) << "and leads nothing";
 }
 
 TEST(FramePacingFallbackText, EveryReasonHasWordsOfItsOwn)
@@ -171,7 +180,7 @@ TEST(ChosenPacingFallback, AWindowNoOneHasAskedIsOnThePlatformTimerWhateverItsDi
 
 TEST(ChosenPacingFallback, ARequestOutOfRangeIsRefusedBeforeAnythingIsRead)
 {
-    for (const FrameRequest &request : {Asking(0), Asking(-1), FrameRequest{FramePacing::kDisplayClock, 1, -1}})
+    for (const FrameRequest &request : {Asking(0), Asking(-1), FrameRequest{FramePacing::kDisplayClock, 1, -1, 0}})
     {
         const FramePacingState state = ChosenPacing(request, GoodReading(240.0, 240.0));
         EXPECT_EQ(state.pacing, FramePacing::kPlatformTimer);
@@ -583,4 +592,173 @@ TEST(Uniformity, CountingCallbacksWouldDriftOffThePanelWhereTheTimestampsDoNot)
     // Counting callbacks drifts by one refresh for every callback that did not arrive, which over this run is many.
     const int counted_drift = by_counting.back() - divisor * static_cast<int>(by_counting.size());
     EXPECT_GT(counted_drift, 20) << "a count of callbacks is " << counted_drift << " refreshes behind the panel";
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+// Leading the vertical blank: the frame woken before the blank it is due at, so it is finished as it is composed.
+// ------------------------------------------------------------------------------------------------------------------
+
+TEST(Lead, TheLeadAskedForIsKeptWhereTheFramePeriodLeavesRoomForIt)
+{
+    const double sixty = 1.0 / 60.0; // 16666.67 microseconds
+    EXPECT_EQ(LeadInForceMicroseconds(5000, sixty), 5000);
+    EXPECT_EQ(LeadInForceMicroseconds(1, sixty), 1);
+    EXPECT_EQ(LeadInForceMicroseconds(15666, sixty), 15666) << "the frame period less a millisecond is the longest";
+    // A lead longer than one refresh period is a lead like any other where the divisor makes the frame longer.
+    EXPECT_EQ(LeadInForceMicroseconds(10000, 4.0 / 240.0), 10000) << "two and a half refreshes ahead, at 240 Hz / 4";
+}
+
+TEST(Lead, ALeadThePeriodCannotHoldIsHeldToTheLongestItCan)
+{
+    const double sixty = 1.0 / 60.0;
+    EXPECT_EQ(LeadInForceMicroseconds(15667, sixty), 15666);
+    EXPECT_EQ(LeadInForceMicroseconds(20000, sixty), 15666) << "a lead longer than the frame period itself";
+    EXPECT_EQ(LeadInForceMicroseconds(2'000'000'000, sixty), 15666);
+    EXPECT_EQ(LeadInForceMicroseconds(5000, 1.0 / 240.0), 3166) << "at 240 Hz a 5 ms lead is more than one frame";
+    EXPECT_EQ(16666 - LeadInForceMicroseconds(99999, sixty), kLeadLeavesAtLeastMicroseconds)
+        << "a millisecond of the frame is always left";
+}
+
+TEST(Lead, NoLeadIsKeptForALeadUnderZeroOrAPeriodWithNoRoom)
+{
+    EXPECT_EQ(LeadInForceMicroseconds(0, 1.0 / 60.0), 0);
+    EXPECT_EQ(LeadInForceMicroseconds(-5000, 1.0 / 60.0), 0) << "a lead under 0 is none, not a lag";
+    EXPECT_EQ(LeadInForceMicroseconds(500, 1.0 / 1000.0), 0) << "a 1 ms frame has no room left in it to lead";
+    EXPECT_EQ(LeadInForceMicroseconds(500, 0.0), 0) << "and a period that is not one leads nothing";
+    EXPECT_EQ(LeadInForceMicroseconds(500, -1.0), 0);
+}
+
+TEST(Lead, TheStateSaysTheLeadInForceAndOnlyOnTheDisplaysClock)
+{
+    EXPECT_EQ(ChosenPacing(Asking(1, 1, 5000), GoodReading(60.0, 60.0)).lead_microseconds, 5000);
+    EXPECT_EQ(ChosenPacing(Asking(1, 1, 20000), GoodReading(60.0, 60.0)).lead_microseconds, 15666)
+        << "held to the frame period, and the held lead is what is reported";
+    EXPECT_EQ(ChosenPacing(Asking(4, 1, 10000), GoodReading(240.0, 240.0)).lead_microseconds, 10000);
+    EXPECT_EQ(ChosenPacing(Asking(1, 1, -1), GoodReading(60.0, 60.0)).why, FramePacingFallback::kNone)
+        << "a lead under 0 is held to none rather than refusing the request";
+
+    FrameRequest timer           = Asking(1, 1, 5000);
+    timer.pacing                 = FramePacing::kPlatformTimer;
+    DisplayClockReading varying  = GoodReading(60.0, 60.0);
+    varying.does_rate_hold_still = false;
+    EXPECT_EQ(ChosenPacing(timer, GoodReading(60.0, 60.0)).lead_microseconds, 0) << "the platform timer leads nothing";
+    EXPECT_EQ(ChosenPacing(Asking(1, 1, 5000), DisplayClockReading{}).lead_microseconds, 0);
+    EXPECT_EQ(ChosenPacing(Asking(1, 1, 5000), varying).lead_microseconds, 0);
+    EXPECT_EQ(ChosenPacing(Asking(0, 1, 5000), GoodReading(60.0, 60.0)).lead_microseconds, 0);
+}
+
+TEST(Lead, AFrameIsWokenTheLeadBeforeTheBlankItIsDueAt)
+{
+    static_assert(LedWakeSeconds(10.0, 0.0) == 10.0, "no lead wakes at the blank");
+    EXPECT_DOUBLE_EQ(LedWakeSeconds(10.0, 0.005), 9.995);
+}
+
+namespace
+{
+/** One frame of a led loop: the blank it was due at and when it was woken. */
+struct LedFrame
+{
+    double due_seconds;  ///< the vertical blank the frame was due at
+    double woke_seconds; ///< when the wait for it ended
+};
+
+/** The loop window/win/WindowWin.cpp's display clock runs, against a made-up display: the compositor's latest blank
+    read, the due time pulled onto its grid, the wait for the due time less the lead - which ends at once for a time
+    already past - and the clock told the time as the waking plus the lead.
+    @param period        the refresh period
+    @param first_blank   the display's first blank, which the loop starts just after
+    @param divisor       the refresh periods each frame is shown for
+    @param lead_seconds  the lead in force
+    @param late_by       how late each wait ends after its wake time, frame by frame; its size is the frames run
+    @return              every frame's due blank and waking */
+std::vector<LedFrame> RunALedLoop(double period, double first_blank, int divisor, double lead_seconds,
+                                  const std::vector<double> &late_by)
+{
+    double     now = first_blank + 0.37 * period; // started part way through a refresh, as a product's window is
+    FrameClock clock;
+    clock.Start(now + lead_seconds, period * divisor, 1);
+    std::vector<LedFrame> frames;
+    for (const double late : late_by)
+    {
+        const double anchor = BlankAt(first_blank, period, static_cast<int>(std::floor((now - first_blank) / period)));
+        clock.MoveNextFrameTo(OnTheRefreshGrid(clock.next_frame_seconds(), anchor, period));
+        const double wake = LedWakeSeconds(clock.next_frame_seconds(), lead_seconds);
+        now               = std::max(wake, now) + late;
+        frames.push_back({clock.next_frame_seconds(), now});
+        clock.Advance(now + lead_seconds);
+    }
+    return frames;
+}
+} // namespace
+
+TEST(Lead, WaitedWithALeadEveryFrameIsStillTheDivisorsRefreshPeriodsAndWokenTheLeadAhead)
+{
+    struct Case
+    {
+        double hertz;
+        int    divisor;
+        double lead_seconds;
+    };
+
+    // A lead of nothing, a few milliseconds, more than half a refresh - where pulling a led due time onto the grid
+    // would land it on the blank before - the longest the period allows, and leads longer than a refresh period
+    // where the divisor leaves room for one.
+    const Case every[] = {{60.0, 1, 0.0},    {60.0, 1, 0.005},  {60.0, 1, 0.012},  {60.0, 1, 0.015666},
+                          {240.0, 4, 0.010}, {59.94, 2, 0.020}, {144.0, 1, 0.0045}};
+    for (const Case &one : every)
+    {
+        const double        period = 1.0 / one.hertz;
+        std::vector<double> late_by(240);
+        double              jitter = 0.0;
+        for (double &late : late_by)
+        {
+            jitter = std::fmod(jitter + 0.000173, 0.0003); // a real wait ends a little after its time, never exactly
+            late   = jitter;
+        }
+        const double                first_blank = 1234.5;
+        const std::vector<LedFrame> frames = RunALedLoop(period, first_blank, one.divisor, one.lead_seconds, late_by);
+        ASSERT_EQ(frames.size(), late_by.size());
+        const double started = first_blank + 0.37 * period;
+        EXPECT_GT(frames.front().woke_seconds - late_by.front(), started)
+            << one.hertz << " Hz, lead " << one.lead_seconds << ": the first frame is never woken for in the past";
+        for (std::size_t i = 0; i < frames.size(); ++i)
+        {
+            const double on_grid = (frames[i].due_seconds - first_blank) / period;
+            EXPECT_NEAR(on_grid, std::round(on_grid), 1.0e-6) << "frame " << i << " is due on a blank";
+            EXPECT_NEAR(frames[i].due_seconds - (frames[i].woke_seconds - late_by[i]), one.lead_seconds, 1.0e-9)
+                << "frame " << i << " is woken the lead before its blank, at " << one.hertz << " Hz";
+            if (i > 0)
+            {
+                EXPECT_NEAR((frames[i].due_seconds - frames[i - 1].due_seconds) / period, one.divisor, 1.0e-6)
+                    << "frame " << i << " at " << one.hertz << " Hz, lead " << one.lead_seconds;
+            }
+        }
+    }
+}
+
+TEST(Lead, ALeadMovesOnlyTheWakingNotTheScheduleNorItsCatchingUp)
+{
+    // The same lateness, measured from each frame's waking, with and without a lead - a stall of three and a half
+    // frames among it, which the clock gives up on - must leave the two loops' frames exactly the same blanks apart.
+    // Which blank is the first may differ: a lead longer than half a refresh starts the schedule one blank later, so
+    // that its first waking is a frame period ahead rather than already past.
+    const double        period = 1.0 / 60.0;
+    std::vector<double> late_by(120, 0.0002);
+    late_by[40]                       = 3.5 * period;
+    late_by[41]                       = 1.2 * period;
+    const std::vector<LedFrame> unled = RunALedLoop(period, 50.0, 1, 0.0, late_by);
+    const std::vector<LedFrame> led   = RunALedLoop(period, 50.0, 1, 0.011, late_by);
+    ASSERT_EQ(unled.size(), led.size());
+    long given_up = 0;
+    for (std::size_t i = 0; i < unled.size(); ++i)
+    {
+        EXPECT_NEAR(led[i].due_seconds - led.front().due_seconds, unled[i].due_seconds - unled.front().due_seconds,
+                    1.0e-9)
+            << "frame " << i;
+        if (i > 0)
+        {
+            given_up += std::lround((unled[i].due_seconds - unled[i - 1].due_seconds) / period) - 1;
+        }
+    }
+    EXPECT_GT(given_up, 0) << "the stall was long enough to be given up on, so the catching up was exercised";
 }

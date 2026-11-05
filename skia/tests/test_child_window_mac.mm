@@ -169,8 +169,9 @@ TEST(ChildWindowFramePacing, IsOnThePlatformTimerUntilItIsAskedAndSaysWhichItGot
     EXPECT_EQ(unasked.pacing, FramePacing::kPlatformTimer) << "a window no one has asked is paced as it always was";
     EXPECT_EQ(unasked.why, FramePacingFallback::kNotAsked);
 
-    const FramePacingState asked = child->SetFramePacing({FramePacing::kDisplayClock, 2, 1});
-    HoldsWhicheverPacingItReached(asked, 2, "macOS, asked for a frame every second refresh");
+    // A lead asked for, which a Mac's display link does not yet keep: the state says 0 (docs/window/frame-pacing.md).
+    const FramePacingState asked = child->SetFramePacing({FramePacing::kDisplayClock, 2, 1, 5000});
+    HoldsWhicheverPacingItReached(asked, 2, "macOS, asked for a frame every second refresh, 5 ms ahead", 5000);
 
     const FramePacingState back = child->SetFramePacing({});
     EXPECT_EQ(back.pacing, FramePacing::kPlatformTimer) << "a default request puts it back on the platform's timer";
@@ -196,7 +197,7 @@ TEST(ChildWindowFramePacing, TicksOnTheDisplayLinkOfTheOneCiPlatformWithAWindowS
         ASSERT_NE(child, nullptr);
         if (does_ask)
         {
-            HoldsWhicheverPacingItReached(child->SetFramePacing({FramePacing::kDisplayClock, 1, 1}), 1,
+            HoldsWhicheverPacingItReached(child->SetFramePacing({FramePacing::kDisplayClock, 1, 1, 0}), 1,
                                           "macOS, running frames");
         }
         else
