@@ -197,8 +197,10 @@ platform's, it is not the period asked for, and on Windows it is not even steady
   get it is owed the reason, and `window::TextOf` puts it in words.
 - **No tuning number is the toolkit's.** The divisor and the patience are the product's. What is the toolkit's is a
   bound on what a *display* can be - a rate between 20 and 1000 hertz is believed and anything outside it is refused
-  - and how far two readings of one display may be apart and still be the same display's. Neither is a rate anything
-  here wants.
+  - how far two readings of one display may be apart and still be the same display's, and how far and how long a
+  compositor's readings of one panel go; and a bound on what a *thread* can be doing, a quarter of a second for a frame to
+  stand back and a wait to ask again that serves the queue and nothing else. None of them is a rate anything here wants, or
+  a thing a product could choose better.
 
 ## Each platform
 
@@ -438,18 +440,35 @@ varies by waiting: a single jump washes out of the readings being judged within 
 never settles, so the window gives up only when the readings have refused to settle for as many frames as are judged
 together.
 
-**A compositor reads its rate off what it has lately composed, so its reading wanders where there is little to compose.**
-On Legion5i's panel at 240 Hz (2026-11-05), with one window drawing 30 pictures a second and nothing else moving, it read
-181 to 257 Hz, 35.6 % of its readings further than a twentieth from the panel's rate, the longest run of them 8 frames, and a
-window taking one of those at its word left the clock: 36.83 frames a second, on the timer as often as the clock, with 4,
-7 and 8 refresh periods between them. A caller of `DwmFlush` keeps the compositor busy enough that none of this shows, so a
-measurement that flushes will not see it. So on Windows, wherever the display's mode has a believable rate, a reading is
-not taken at its word (`window::CompositorWander`): one that disagrees with the mode is set aside for the mode until it has
-gone on for `window::kCompositorMayWanderForReadings`, and whether the period holds still is not judged at all, since the
-mode is a rate to divide whatever the reading does. The same window then holds 30.00 frames a second on the clock, a
-standard deviation of 0.82 to 1.02 ms. A window really on another monitor, or a panel that really has left its mode for
-long enough, disagrees and falls back as it did, within those readings rather than at once. What is left of the steadiness
-test above is for a display whose mode names no rate, and for a Mac, whose link hands over a period of its own.
+**A compositor's reading of its rate is not a measure of the panel.** On Legion5i's panel at 240 Hz (2026-11-05), with one
+window drawing 30 pictures a second and nothing else moving, the compositor read anywhere from 181 to 257 Hz, 35.6 % of its
+readings further than a twentieth from the panel's rate, the longest run of them 8 frames, and a window taking one of those at
+its word left the clock: 36.83 frames a second, on the timer as often as the clock. The panel had not moved. Beside those
+readings, each on a thread of its own, the kernel's vertical blank (`D3DKMTWaitForVerticalBlankEvent`) kept 239.67 a second,
+`IDXGIOutput::WaitForVBlank` 238.62, the scan line wrapped 238.99 times a second and spent 9.18 % of its time in the vertical
+blank, what the mode's 1760 lines to 1600 come to (9.09 %). With no window moving the reading held 240.0, and at 60 pictures
+a second it read 212 to 242. Why it behaves so is the compositor's own affair and is not documented: only that it moves
+with what is being composed and the panel does not. The system's display paths say 240.003 Hz with no dynamic rate, and
+its mode list offers 240, 120, 60, 48 and 30. A caller of `DwmFlush` keeps the reading close to the panel, so a measurement
+that flushes will not see any of this.
+
+So on Windows, where the display's mode has a believable rate, a single reading is not believed against it
+(`window::CompositorReadings`). One that disagrees by over a twentieth is set aside for the mode, and until the readings
+are one rate read over again, within a whole hertz of the mode (which Windows gives in whole hertz), the window's period is
+the mode's and its schedule is kept by itself, not pulled onto a grid worked out from them. It stays on the clock: the same
+window then holds 30.00 frames a second, a standard deviation of 0.40 to 0.57 ms over four minutes, 99 % of its intervals 8 refreshes. Two things are still believed:
+
+- **Readings that go on disagreeing for `window::kCompositorDisagreesForGoodAfterReadings` and hold still among themselves
+  are another display's**, and the window falls back with `kRefreshRateDisagrees` as it always did, within those readings
+  where it used to be at once: a third to a half of a second from a frame every fourth refresh to a 60 Hz display, two frames at the old divisor and 24 on the new, and between 0.8 and 3.2 seconds at 30 frames a second, the readings holding still only some of the time, its frames even at the new display's rate meanwhile. A window asked again while that is still so refuses at once rather than starting a
+  clock to find out again. Measured with a move made up in the window's own code, since there was one monitor here.
+- **The last `window::kRefreshPeriodsJudged` readings further apart than `window::kCompositorReadingsVaryAbove`, 1.5 times,
+  are a panel whose rate varies**, and it goes back to the timer with `kRefreshRateUnsteady` as above. **What is not known is
+  how a real variable-refresh panel reads while it is varying**: this has been held only against made-up readings whole
+  multiples apart, since the one panel here did not vary in any run. A varying panel whose readings stay within 1.5 times
+  of each other and do not settle would stay on the clock at its mode's rate, frames arriving evenly and landing wherever the
+  panel then scans, which is a known risk. The steadiness test above stands as it was for a display whose mode names no rate,
+  and for a Mac, whose link hands over a period of its own.
 
 **`DwmFlush` blocks the thread with no message pump.** It measures almost perfectly - 4.176 ms mean, 0.327 ms
 standard deviation against a 4.1622 ms period, phase-locked by construction - and each call blocks the calling
@@ -507,7 +526,7 @@ the platforms drive it in - a waited schedule against a made-up 240.2576 Hz grid
 hundreds of frames, with no drift.** A third shows why the count is kept in the ticks' timestamps: with one callback
 in seven dropped, the timestamps stay on the panel while a count of callbacks ends more than twenty refreshes behind.
 
-The same suite holds a frame's waiting its turn, with no window: `FrameStandsBack` holds the bound on the wait, how soon a
+The same suite holds what a compositor's readings are taken to mean (`CompositorReadings`), on the shape of the readings measured, another monitor's and made-up varying ones, and a frame's waiting its turn, with no window: `FrameStandsBack` holds the bound on the wait, how soon a
 frame asks again, and a model of the queue's three rules, in which frames that run as they ask leave the bottom of the
 z-order and a host's timer with nothing and frames that wait their turn leave every window its share at about the same
 total; `DisplayLinkSilence` holds what counts as a link that has stopped.
