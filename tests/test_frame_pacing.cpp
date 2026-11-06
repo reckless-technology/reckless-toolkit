@@ -802,25 +802,113 @@ TEST(FrameStandsBack, AsksAgainSoonUnlessItIsAskingFasterThanTheThreadCanGetOn)
         << "and the first answer that took long enough to be a paint brings it back down";
 }
 
-TEST(CompositorWander, AReadingThatDisagreesIsSetAsideUntilItHasGoneOnLongEnoughToBelieve)
+TEST(CompositorReadings, AReadingThatWandersIsSetAsideForTheModeOfThePanelUnderIt)
 {
-    using reckless::window::CompositorWander;
-    using reckless::window::kCompositorMayWanderForReadings;
-    CompositorWander wander;
-    EXPECT_FALSE(wander.Note(240.0, 240.0)) << "a reading that agrees is taken as it is";
-    EXPECT_FALSE(wander.Note(235.0, 240.0)) << "and so is one within a twentieth";
-    EXPECT_TRUE(wander.Note(181.0, 240.0)) << "a reading far off, the panel having not changed, is set aside";
-    EXPECT_FALSE(wander.Note(240.0, 240.0)) << "and one that agrees again starts the count again";
-    for (std::size_t reading = 0; reading < kCompositorMayWanderForReadings; ++reading)
+    // Readings of the kind taken on a 240 Hz panel whose kernel vertical blank held at 240 a second, one window at 30
+    // frames a second.
+    using reckless::window::CompositorReadings;
+    const double       measured[] = {240.0, 233.1, 221.4, 208.7, 197.3, 216.2, 238.9, 244.8, 212.5, 199.6,
+                                     205.1, 228.4, 240.0, 251.3, 240.0, 226.3, 181.0, 203.4, 219.9, 239.1};
+    CompositorReadings readings;
+    int                set_aside = 0;
+    for (double hertz : measured)
     {
-        EXPECT_TRUE(wander.Note(60.0, 240.0)) << "reading " << reading;
+        set_aside += readings.Note(hertz, 240.0) ? 1 : 0;
+        EXPECT_FALSE(readings.does_disagree_for_good()) << "they do not hold still among themselves";
+        EXPECT_FALSE(readings.does_vary()) << "and are not whole multiples apart";
     }
-    EXPECT_FALSE(wander.Note(60.0, 240.0)) << "one that goes on disagreeing is a monitor of another rate, and believed";
-    EXPECT_FALSE(wander.Note(60.0, 240.0)) << "and goes on being believed";
-    wander.Forget();
-    EXPECT_TRUE(wander.Note(60.0, 240.0)) << "another display judged from nothing";
+    EXPECT_GT(set_aside, 0) << "the ones further than a twentieth off were set aside";
+    EXPECT_FALSE(readings.Note(240.0, 240.0)) << "and one that agrees is taken as it is";
+}
 
-    CompositorWander no_mode;
+TEST(CompositorReadings, ASteadyReadingIsWorthMoreThanTheModeAndAWanderingOneIsNot)
+{
+    using reckless::window::CompositorReadings;
+    using reckless::window::kRefreshPeriodsJudged;
+    CompositorReadings steady;
+    EXPECT_FALSE(steady.does_read_steadily(59.0)) << "nothing judged yet";
+    for (std::size_t reading = 0; reading < kRefreshPeriodsJudged; ++reading)
+    {
+        steady.Note(59.9413 + 0.002 * static_cast<double>(reading % 3), 59.0);
+    }
+    EXPECT_TRUE(steady.does_read_steadily(59.0)) << "59.94 Hz read over again, on a mode Windows gives as 59";
+    CompositorReadings wandering;
+    const double       measured[] = {240.0, 233.1, 241.4, 228.7, 240.3, 236.2, 238.9, 244.8};
+    for (double hertz : measured)
+    {
+        wandering.Note(hertz, 240.0);
+    }
+    EXPECT_FALSE(wandering.does_read_steadily(240.0)) << "these all agree with the mode, and are no rate to divide";
+    CompositorReadings stuck;
+    for (std::size_t reading = 0; reading < kRefreshPeriodsJudged; ++reading)
+    {
+        stuck.Note(233.0, 240.0);
+    }
+    EXPECT_FALSE(stuck.does_read_steadily(240.0)) << "nor is a wandering reading that has stuck for a moment";
+}
+
+TEST(CompositorReadings, AWindowOnAnotherMonitorDisagreesForGood)
+{
+    // A window dragged to a 60 Hz monitor of a desktop the compositor reads at 240: the mode moves, the reading does
+    // not.
+    using reckless::window::CompositorReadings;
+    using reckless::window::kCompositorDisagreesForGoodAfterReadings;
+    CompositorReadings readings;
+    for (int i = 0; i < 100; ++i)
+    {
+        readings.Note(240.0, 240.0);
+    }
+    readings.Forget();
+    for (std::size_t reading = 0; reading + 1 < kCompositorDisagreesForGoodAfterReadings; ++reading)
+    {
+        EXPECT_TRUE(readings.Note(240.0 + static_cast<double>(reading % 2), 60.0))
+            << "set aside at first: reading " << reading;
+        EXPECT_FALSE(readings.does_disagree_for_good());
+    }
+    EXPECT_FALSE(readings.Note(240.0, 60.0)) << "the reading that fills the count is believed";
+    EXPECT_TRUE(readings.does_disagree_for_good());
+    EXPECT_FALSE(readings.does_vary()) << "this is another monitor, not a varying panel";
+    EXPECT_FALSE(readings.Note(60.0, 60.0)) << "back on a display it agrees with";
+    EXPECT_FALSE(readings.does_disagree_for_good());
+}
+
+TEST(CompositorReadings, AWanderingReadingThatSticksForAMomentIsNotAnotherMonitor)
+{
+    // A run of readings far from the mode holding still among themselves, as was seen once on the unchanged 240 Hz
+    // panel.
+    using reckless::window::CompositorReadings;
+    using reckless::window::kRefreshPeriodsJudged;
+    CompositorReadings readings;
+    for (std::size_t reading = 0; reading < kRefreshPeriodsJudged + 2; ++reading)
+    {
+        EXPECT_TRUE(readings.Note(218.0, 240.0)) << "set aside: reading " << reading;
+    }
+    EXPECT_FALSE(readings.does_disagree_for_good());
+}
+
+TEST(CompositorReadings, APanelWhoseRateReallyVariesIsTold)
+{
+    // A variable-refresh panel following what is drawn on it: no real panel of this kind has been measured here, so
+    // this is the shape the page describes, whole multiples apart.
+    using reckless::window::CompositorReadings;
+    using reckless::window::kRefreshPeriodsJudged;
+    CompositorReadings readings;
+    const double       varying[] = {240.0, 120.0, 80.0, 48.0, 96.0, 200.0, 144.0, 60.0};
+    for (double hertz : varying)
+    {
+        readings.Note(hertz, 240.0);
+    }
+    EXPECT_TRUE(readings.does_vary());
+    EXPECT_FALSE(readings.does_disagree_for_good()) << "it does not hold still at another rate";
+
+    CompositorReadings too_few;
+    for (std::size_t reading = 0; reading + 1 < kRefreshPeriodsJudged; ++reading)
+    {
+        too_few.Note(reading % 2 == 0 ? 240.0 : 60.0, 240.0);
+    }
+    EXPECT_FALSE(too_few.does_vary()) << "nothing is judged until there are enough to judge";
+
+    CompositorReadings no_mode;
     EXPECT_FALSE(no_mode.Note(60.0, 0.0)) << "with no mode to set a reading aside for, a reading is all there is";
     EXPECT_FALSE(no_mode.Note(0.0, 240.0)) << "and a compositor that says nothing has said nothing to set aside";
 }

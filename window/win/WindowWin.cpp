@@ -653,13 +653,13 @@ class WinDisplayClock
         display's grid, waited for and posted. */
     void Wait()
     {
-        FrameClock        clock;
-        RefreshSteadiness steadiness;
-        CompositorWander  wander;
-        HMONITOR          display        = nullptr;
-        double            display_hertz  = 0.0;
-        double            period_divided = 0.0;
-        std::size_t       unsteady       = 0;
+        FrameClock         clock;
+        RefreshSteadiness  steadiness;
+        CompositorReadings readings;
+        HMONITOR           display        = nullptr;
+        double             display_hertz  = 0.0;
+        double             period_divided = 0.0;
+        std::size_t        unsteady       = 0;
         for (;;)
         {
             CompositionTiming timing         = CompositionTimingNow();
@@ -672,10 +672,16 @@ class WinDisplayClock
                 display  = under;
                 unsteady = 0;
                 steadiness.Forget();
-                wander.Forget();
+                readings.Forget();
                 display_hertz = DisplayRefreshHertzOf(window_);
             }
-            if (wander.Note(timing.hertz, display_hertz))
+            const bool is_set_aside = readings.Note(timing.hertz, display_hertz);
+            // A reading that agrees with the mode but is wandering is no more a period to put a frame on than one that
+            // does not: it goes on being the mode's until the readings are one rate read over again.
+            const bool is_on_the_mode =
+                is_set_aside || (IsBelievableRefreshRate(display_hertz) &&
+                                 !readings.does_read_steadily(display_hertz) && !readings.does_disagree_for_good());
+            if (is_on_the_mode)
             {
                 timing.hertz          = display_hertz;
                 timing.period_seconds = 1.0 / display_hertz;
@@ -693,9 +699,9 @@ class WinDisplayClock
             }
             if (IsBelievableRefreshRate(display_hertz))
             {
-                // The compositor's reading wanders inside the agreement as it does outside it, and the display's mode
-                // is a rate to divide whatever it does: a panel that really has left that rate disagrees, and is found.
-                unsteady = 0;
+                // Two readings of an unchanged panel can be a twentieth apart and more (CompositorReadings), so with a
+                // mode to compare them with it is only a wider spread that says the panel's rate varies.
+                unsteady = readings.does_vary() ? unsteady + 1 : 0;
                 steadiness.Forget();
             }
             else
@@ -735,8 +741,11 @@ class WinDisplayClock
             }
             // The due time pulled onto the grid the compositor's last vertical blank and its period describe, which
             // is where a whole number of refresh periods lands by construction.
-            clock.MoveNextFrameTo(
-                OnTheRefreshGrid(clock.next_frame_seconds(), timing.vblank_seconds, timing.period_seconds));
+            if (!is_on_the_mode || has_period_moved)
+            {
+                clock.MoveNextFrameTo(
+                    OnTheRefreshGrid(clock.next_frame_seconds(), timing.vblank_seconds, timing.period_seconds));
+            }
             if (WaitUntil(LedWakeSeconds(clock.next_frame_seconds(), lead_seconds)) == Woke::kStopped)
             {
                 return;
@@ -1684,6 +1693,10 @@ class WinChildWindow final : public ChildWindow, public WinSurface
     {
         request_ = request;
         pacing_  = DecidedPacing();
+        if (pacing_.pacing == FramePacing::kDisplayClock)
+        {
+            has_clock_found_disagreement_ = false; // it agrees now: the clock's thread judges it again from here
+        }
         if (pacing_.pacing == FramePacing::kDisplayClock && !paced_message_)
         {
             // Installed once a product has asked and never taken back: a frame still on the queue as the clock stops
@@ -1748,11 +1761,13 @@ class WinChildWindow final : public ChildWindow, public WinSurface
         DisplayClockReading     reading;
         reading.has_clock     = timing.is_read;
         reading.display_hertz = DisplayRefreshHertzOf(hwnd_);
-        // One reading is not enough to refuse on: the compositor's wanders (CompositorWander), and the clock's own
-        // thread goes on to judge it.
-        CompositorWander wander;
-        reading.compositor_hertz =
-            wander.Note(timing.hertz, reading.display_hertz) ? reading.display_hertz : timing.hertz;
+        // One reading is not enough to refuse on (CompositorReadings), and the clock's own thread goes on to judge it,
+        // unless that thread has already found this display to disagree: asking again while that is still so is
+        // answered at once, and starts no clock to find it out a second time.
+        CompositorReadings readings;
+        reading.compositor_hertz = !has_clock_found_disagreement_ && readings.Note(timing.hertz, reading.display_hertz)
+                                       ? reading.display_hertz
+                                       : timing.hertz;
         return ChosenPacing(request_, reading);
     }
 
@@ -1826,6 +1841,7 @@ class WinChildWindow final : public ChildWindow, public WinSurface
             return;
         }
         pacing_ = {FramePacing::kPlatformTimer, 0, pacing_.display_hertz, 0.0, clock_.gave_up_because(), 0};
+        has_clock_found_disagreement_ = clock_.gave_up_because() == FramePacingFallback::kRefreshRateDisagrees;
         ArrangePacing();
     }
 
@@ -1833,6 +1849,8 @@ class WinChildWindow final : public ChildWindow, public WinSurface
     FramePacingState pacing_{};  ///< what the window is pacing on, and why where it fell back.
     WinDisplayClock  clock_;     ///< the display clock's thread; stopped, and holding nothing, until a product asks.
     double frame_first_asked_seconds_{0.0}; ///< when the frame standing back first asked to run; 0 for none standing.
+    bool   has_clock_found_disagreement_{
+        false}; ///< true once the clock's thread has given up on the two rates disagreeing.
 };
 
 namespace
