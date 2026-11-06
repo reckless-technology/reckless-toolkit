@@ -341,13 +341,17 @@ z-order first, and in brackets the thread's total:
 
 | | 1 window | 4 windows | 6 windows | 8 windows |
 |---|---|---|---|---|
-| the platform's timer | 36.9 | 37.5 37.4 37.4 37.3 (150) | 34.1 each (205) | 30.8 each (247) |
-| the clock, every frame posted and run | 58.7 | 60.0 59.9 59.9 59.9 (240) | 59.9 59.7 58.9 54.0 28.5 0.6 (261) | 59.3 59.2 58.1 53.1 26.7 0.1 0.0 0.0 (256) |
-| a frame waits for its own window's paint | | 59.8 59.8 59.1 55.8 (235) | 58.5 58.3 57.8 56.6 40.3 6.4 (278) | 59.0 59.5 57.5 51.6 19.6 0.3 0.0 0.0 (247) |
-| the paint made inside the frame | | 58.0 58.3 57.9 58.8 (233) | 42.3 41.0 43.5 40.4 44.1 42.1 (253) | 33.4 39.4 39.2 1.6 43.2 40.5 40.1 27.7 (265) |
-| a frame waits for the thread's paints and timers, in one pass | | 59.7 59.6 59.9 59.9 (239) | 41.4 36.7 42.8 42.0 46.1 44.8 (254) | 25.7 26.4 23.8 23.6 31.9 33.1 36.6 31.1 (232) |
-| **the same in two passes: what a window does** | **59.8** | **59.4 59.5 59.5 59.5 (238)** | **43.8 each (263)** | **30.6 each (244)** |
-| the same, 30 frames a second | 30.5 | 30.0 each (120) | 30.0 each (180) | 30.0 each (240) |
+| the platform's timer | 38.9 | 36.9 each (148) | 34.9 34.9 34.9 34.8 34.9 34.8 (209) | 31.3 to 31.4 (251) |
+| the clock, every frame posted and run | 60.0 | 60.0 60.0 59.1 55.2 (234) | 59.0 59.6 56.6 48.0 23.9 0.4 (248) | 59.4 59.7 57.9 49.1 25.3 0.3 0.0 0.0 (252) |
+| a frame waits for its own window's paint | | 59.8 60.0 58.1 53.8 (232) | 59.6 59.1 58.8 49.2 29.1 0.4 (256) | 59.5 59.5 57.9 52.5 31.6 0.3 0.0 0.0 (261) |
+| the paint made inside the frame | | 60.0 59.8 60.0 59.7 (240) | 45.5 43.7 43.3 46.3 43.0 45.6 (267) | 32.7 31.4 33.1 31.3 32.3 31.5 32.0 33.0 (258) |
+| a frame waits for the thread's paints and timers, in one pass | | 57.5 59.1 58.2 58.6 (233) | 41.6 40.5 44.9 42.3 44.4 45.1 (259) | 27.6 28.8 26.6 26.3 35.1 38.1 39.6 40.3 (262) |
+| **the same in two passes: what a window does** | **59.9** | **59.9 60.0 59.9 60.0 (240)** | **47.1 to 47.2 (283)** | **34.1 to 34.2 (273)** |
+| the same, 30 frames a second | 30.0 | 30.0 to 30.1 (120) | 30.0 each (180) | 29.8 to 29.9 (239) |
+
+The thread's total moves between runs on this machine, as a laptop's does: two earlier rounds of the two passes, on code
+before the last of its readings' rules, read 43.8 each (263) at six windows and 30.6 and 31.1 each (244, 249) at eight.
+What holds in every round is the shape: the windows even with each other within a few pictures a second.
 
 The same shape was measured on 2026-11-04 on 3840 x 2160 at 59.94 Hz and 125 %, a frame every refresh: 54 54 54 53 38
 2.1 0 0 at eight windows, and which windows starve is not fixed.
@@ -356,13 +360,13 @@ A window on that thread with a timer of its own every 20 ms and a paint of 1 ms,
 
 | | its timers a second | its paints a second | the longest it waited |
 |---|---|---|---|
-| the clock, every frame posted and run, the window under the panels | 0.4 | 0.4 | 1685 ms |
+| the clock, every frame posted and run, the window under the panels | 0.0 | 0.0 | the whole run |
 | the same, the window over the panels | 0.0 | 0.0 | the whole run |
 | a frame waits for its own window's paint | 0.0 | 0.0 | the whole run |
 | the paint made inside the frame | 0.0 | 0.0 | the whole run |
-| **a frame waits for the thread's paints and timers** | **30.0** | **30.0** | **69 ms** |
-| the same, the window over the panels | 29.6 | 29.6 | 71 ms |
-| the platform's timer | 28.8 | 28.8 | 70 ms |
+| **a frame waits for the thread's paints and timers** | **30.6** | **30.6** | **69 ms** |
+| the same, the window over the panels | 30.0 | 30.0 | 74 ms |
+| the platform's timer | 30.2 | 30.2 | 71 ms |
 
 **A frame that waits only for its own window's paint does not do it.** It still invalidates the window nearest the top the
 moment that one has painted, so the bottom of the z-order goes on starving. **Nor does painting inside the frame**, which
@@ -413,7 +417,7 @@ should not take a window hidden for a moment as a display it cannot pace on. Win
 changes there: a hidden window goes on being handed frames, and a product stands down as it always could.
 
 Measured on an M1 Pro on 2026-11-05, 1920 x 1080 at 60 Hz, two seconds each, a product that stands down as a window hides
-and asks again as it shows: shown, 60.0 frames a second on the clock; hidden, 52.5 a second over the two seconds, the first
+and asks again as it shows: shown, 60.0 frames a second on the clock; hidden, 49.0 a second over the two seconds, the first
 quarter of a second being the silence, and on the platform's timer; shown again, 60.0 on the clock.
 
 ## The three things that are actually hard

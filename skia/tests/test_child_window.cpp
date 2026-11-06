@@ -954,7 +954,7 @@ TEST(ChildWindowFramePacing, AThreadWithMorePanelsThanARefreshHasRoomForStarvesN
         while (GetTickCount64() < until)
         {
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 50, QS_ALLINPUT);
-            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+            while (GetTickCount64() < until && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
             {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
@@ -1038,7 +1038,7 @@ TEST(ChildWindowFramePacing, PanelsThatFitARefreshPaintInOneOrderEveryRefresh)
         while (GetTickCount64() < until)
         {
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 50, QS_ALLINPUT);
-            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+            while (GetTickCount64() < until && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
             {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
