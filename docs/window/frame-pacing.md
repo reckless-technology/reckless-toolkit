@@ -133,7 +133,9 @@ Nothing here knows a product.
 `window::ChildWindow::SetFramePacing` and `window::ChildWindow::FramePacingNow`
 ([window/Window.h](../../window/Window.h)) are the pair, both new virtuals with default bodies that answer "the
 platform's timer" - so a window that does not implement them, and a product that does not call them, are exactly what
-they were. [window/FramePacing.h](../../window/FramePacing.h) is everything they hand over.
+they were. `window::ChildWindow::DisplayModeHertz` beside them says the panel's rate, for a product to choose its divisor
+from ([below](#choosing-a-divisor)), and starts nothing. [window/FramePacing.h](../../window/FramePacing.h) is everything
+they hand over.
 
 An app on the shell reaches its child window through `app::AppRunHooks::on_child`
 ([app/AppRun.h](../../app/AppRun.h)), as the raw keys do ([raw-keys.md](raw-keys.md)):
@@ -165,6 +167,39 @@ frames a second that comes to, `why` - a `window::FramePacingFallback` - where i
 (`lead_microseconds`), which is 0 wherever the platform cannot lead. `frames_a_second` is
 **0 on the platform timer**, because the platform timer's rate is not a number the window knows: it is the
 platform's, it is not the period asked for, and on Windows it is not even steady.
+
+## Choosing a divisor
+
+The divisor is the product's, and a product whose rule is a rate - no more than so many frames a second - works it out
+from the panel's. **`window::ChildWindow::DisplayModeHertz` is the rate to work it out from**: the mode of the display the
+window is on now (`window::ModeHertzOf`), read with nothing asked for and nothing started.
+
+```cpp
+// This product's rule: the smallest divisor that brings the panel to 60 frames a second or fewer.
+const double mode_hertz = child.DisplayModeHertz();
+const int    divisor    = mode_hertz > 0.0 ? static_cast<int>(std::ceil(std::lround(mode_hertz) / 60.0)) : 1;
+child.SetFramePacing({reckless::window::FramePacing::kDisplayClock, divisor, 1});
+```
+
+- **Round to a whole hertz before dividing.** Windows names a mode in whole hertz and a driver may round a fractional
+  panel either way, so 59.94 Hz reads 59 or 60 and 143.98 Hz reads 143 or 144; a Mac's mode is a fraction as it stands,
+  and one a hair over 60 taken up as it is would be a divisor of 2. Whole, each lands where it should: 30, 50, 59 and 60
+  give 1; 75 to 120 give 2, 143 to 165 give 3, 239 and 240 give 4. `ModeHertz` in `tests/test_frame_pacing.cpp` holds
+  these.
+- **`FramePacingState::display_hertz` is not the rate to work it out from.** It is what the window is dividing, for a
+  product to report, and on Windows it is the compositor's own reading where that is steady: within a whole hertz of the
+  mode (`window::RateOfOneReading` for the answer to `SetFramePacing`, `window::CompositorReadings` from then on), which
+  is near enough to report and not to round up, since 240.8 / 60 is over 4. A rule that rounds to the nearest can take
+  it.
+- **The clock follows the display and keeps the product's divisor.** A window moved from 240 Hz to 60 Hz goes on with the
+  divisor it was asked for, so a rule that is a rate reads the mode again about once a second - it asks the system each
+  time, so not every frame - and asks again where the divisor would change. Asking starts the clock's schedule again.
+- **0 means not here.** Linux has no clock to ask for at all. A window not yet on a screen may have the wrong answer rather
+  than none: a Mac's view in no window reads the main screen, as a plug-in's may as it is made. So a product reads it
+  again once the window shows (`ChildWindow::Showing`).
+- **A fallback on Windows lasts until the product asks again.** A window that has left the clock - another monitor's
+  rate, a panel that varies - stays on the platform's timer with the reason said, so a product that wants the clock back
+  when the window moves home asks again.
 
 ## What the window promises
 
@@ -537,7 +572,7 @@ total; `DisplayLinkSilence` holds what counts as a link that has stopped.
 
 `tests/test_app_shell.cpp`, in the `app` suite, holds the seam's default body on every platform: a child window that
 paces nothing itself answers the platform's timer, with `kNotAsked` until someone asks and `kNoDisplayClock` once
-someone has.
+someone has, and names no mode.
 
 `skia/tests/test_child_window.cpp` and `skia/tests/test_child_window_mac.mm`, the `child_window` CTest (label
 `window`), hold a **real** window on whatever display clock the machine has - macOS's half is Objective-C++ because
@@ -546,7 +581,7 @@ fail and none of the three CI runners is a machine to measure one on. The Window
 station that shows nothing, where the compositor's timing is very probably not to be had; the Linux job runs under
 Xvfb, which has no vertical blank. So each test holds whichever branch its machine reached - on the display's clock,
 a believable rate and the divisor honoured; on the platform's timer, a reason that is neither `kNone` nor `kNotAsked`
-and no rate claimed - and **prints the probe**, so one run says which branch it was on. CTest keeps a passing test's output to itself, so the probe is read with `ctest --preset windows -V -R child_window`, or by running `reckless_child_window_test` itself. Each of them runs twice, once having asked for nothing and once having asked for the display's clock, and holds that the frames arrive on the window's own thread either way - which is how the unchanged path is held rather than inferred. macOS is the one
+and no rate claimed - and **prints the probe**, so one run says which branch it was on. CTest keeps a passing test's output to itself, so the probe is read with `ctest --preset windows -V -R child_window`, or by running `reckless_child_window_test` itself. Each of them runs twice, once having asked for nothing and once having asked for the display's clock, and holds that the frames arrive on the window's own thread either way - which is how the unchanged path is held rather than inferred. On Windows a further test counts it from the outside, with the window that asks as its control: unasked, every frame arrives as a `WM_TIMER`, nothing is posted to the window for one and the process has no more threads; asked, and on the clock, no frame is a `WM_TIMER`, each is posted, and there is the clock's thread, one more. macOS is the one
 CI platform with a real window server, which the window suites already rely on, so there a display link is genuinely
 made and ticked: that test holds that the frames arrive and keep arriving inside a generous window, and still never
 a rate. On a Mac the same suite holds a hidden window, both ways: asking for frames off a screen it goes on having them, says

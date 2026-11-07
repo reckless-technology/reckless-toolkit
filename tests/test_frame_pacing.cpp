@@ -847,6 +847,65 @@ TEST(CompositorReadings, ASteadyReadingIsWorthMoreThanTheModeAndAWanderingOneIsN
     EXPECT_FALSE(stuck.does_read_steadily(240.0)) << "nor is a wandering reading that has stuck for a moment";
 }
 
+TEST(ModeHertz, TheModeIsTheRateAndTheCompositorOnlyWhereTheModeNamesNone)
+{
+    using reckless::window::ModeHertzOf;
+    DisplayClockReading reading;
+    reading.display_hertz    = 240.0;
+    reading.compositor_hertz = 181.0; // measured on a 240 Hz panel with one window drawing thirty pictures a second
+    EXPECT_EQ(ModeHertzOf(reading), 240.0) << "the mode holds still where the compositor's reading wanders";
+    reading.display_hertz    = 1.0; // Windows' answer for the hardware's default, which is no rate
+    reading.compositor_hertz = 59.94;
+    EXPECT_EQ(ModeHertzOf(reading), 59.94);
+    reading.display_hertz    = 0.0; // a built-in panel's mode on a Mac can name no rate
+    reading.compositor_hertz = 120.0;
+    EXPECT_EQ(ModeHertzOf(reading), 120.0);
+    reading.compositor_hertz = 5000.0;
+    EXPECT_EQ(ModeHertzOf(reading), 0.0) << "nothing a display could be, so nothing to work a divisor out from";
+    EXPECT_EQ(ModeHertzOf(DisplayClockReading{}), 0.0);
+}
+
+TEST(ModeHertz, ARateOfSixtyOrBelowComesOfEveryPanelsModeHoweverItIsNamed)
+{
+    // What docs/window/frame-pacing.md, "Choosing a divisor", tells a product to write, on the numbers a mode is named
+    // in: whole hertz on Windows, where a fractional panel's may be rounded either way, and as the mode says on a Mac.
+    const auto divisor_for = [](double mode_hertz) {
+        return static_cast<int>(std::ceil(static_cast<double>(std::lround(mode_hertz)) / 60.0));
+    };
+
+    const struct
+    {
+        double hertz;
+        int    divisor;
+    } panels[] = {{30.0, 1},  {50.0, 1},  {59.0, 1},  {59.94, 1},  {60.0, 1},   {60.02, 1}, {75.0, 2},
+                  {90.0, 2},  {100.0, 2}, {119.0, 2}, {119.88, 2}, {120.0, 2},  {143.0, 3}, {143.98, 3},
+                  {144.0, 3}, {165.0, 3}, {180.0, 3}, {239.0, 4},  {239.76, 4}, {240.0, 4}, {360.0, 6}};
+
+    for (const auto &panel : panels)
+    {
+        EXPECT_EQ(divisor_for(panel.hertz), panel.divisor) << panel.hertz << " Hz";
+        const double frames_a_second = panel.hertz / panel.divisor;
+        EXPECT_GE(frames_a_second, 30.0) << panel.hertz << " Hz";
+        EXPECT_LE(frames_a_second, 60.02) << panel.hertz << " Hz";
+    }
+}
+
+TEST(CompositorReadings, OneReadingIsAnsweredWithOnlyWhereItIsTheModeReadMoreFinely)
+{
+    using reckless::window::RateOfOneReading;
+    EXPECT_EQ(RateOfOneReading(59.94, 60.0), 59.94) << "a mode Windows rounded up";
+    EXPECT_EQ(RateOfOneReading(59.94, 59.0), 59.94) << "and one it cut down";
+    EXPECT_EQ(RateOfOneReading(143.98, 144.0), 143.98);
+    EXPECT_EQ(RateOfOneReading(240.2576, 240.0), 240.2576);
+    // Within the twentieth the two are taken to agree, and past what a divisor can be worked out from: 252 / 60 is over
+    // 4, and a product rounding up would be at 48 frames a second on a panel that gives it 60.
+    EXPECT_EQ(RateOfOneReading(252.0, 240.0), 240.0);
+    EXPECT_EQ(RateOfOneReading(181.0, 240.0), 240.0);
+    EXPECT_EQ(RateOfOneReading(0.0, 240.0), 240.0) << "a compositor that said nothing";
+    EXPECT_EQ(RateOfOneReading(59.94, 0.0), 59.94) << "a mode that names no rate leaves the reading";
+    EXPECT_EQ(RateOfOneReading(59.94, 1.0), 59.94) << "and so does the hardware's default";
+}
+
 TEST(CompositorReadings, AWindowOnAnotherMonitorDisagreesForGood)
 {
     // A window dragged to a 60 Hz monitor of a desktop the compositor reads at 240: the mode moves, the reading does

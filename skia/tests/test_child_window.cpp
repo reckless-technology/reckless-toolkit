@@ -758,6 +758,8 @@ using reckless::window::FrameRequest;
 } // namespace
 
 #if defined(_WIN32)
+#include <tlhelp32.h> // windows.h first, which the top of this file has included and this needs for its types
+
 TEST(ChildWindowFramePacing, IsOnThePlatformTimerUntilItIsAskedAndSaysWhichItGotAndWhy)
 {
     HWND top = CreateWindowExW(0, L"STATIC", L"", WS_OVERLAPPEDWINDOW, 0, 0, 240, 160, nullptr, nullptr,
@@ -784,6 +786,87 @@ TEST(ChildWindowFramePacing, IsOnThePlatformTimerUntilItIsAskedAndSaysWhichItGot
     EXPECT_EQ(back.why, FramePacingFallback::kNotAsked);
     child.reset();
     DestroyWindow(top);
+}
+
+TEST(ChildWindowFramePacing, AWindowThatIsNotAskedTakesItsFramesFromItsTimerAndStartsNoThread)
+{
+    // What keeps a product that does not opt in unchanged, held from the outside: which message each frame arrives on,
+    // and how many threads the process has. The window that asks is the control, so a count of none here is one that
+    // could have been more than none.
+    const auto threads_in_this_process = [] {
+        int           count    = 0;
+        const HANDLE  snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        THREADENTRY32 entry{};
+        entry.dwSize = sizeof(entry);
+        for (BOOL more = Thread32First(snapshot, &entry); more != FALSE; more = Thread32Next(snapshot, &entry))
+        {
+            count += entry.th32OwnerProcessID == GetCurrentProcessId() ? 1 : 0;
+        }
+        CloseHandle(snapshot);
+        return count;
+    };
+    for (const bool does_ask : {false, true})
+    {
+        HWND top = CreateWindowExW(0, L"STATIC", L"", WS_OVERLAPPEDWINDOW, 0, 0, 240, 160, nullptr, nullptr,
+                                   GetModuleHandleW(nullptr), nullptr);
+        ASSERT_NE(top, nullptr);
+        reckless::view::View root;
+        root.SetBounds({240, 160});
+        auto child = reckless::window::CreateChildWindow(top, root, 240, 160, 1.0f);
+        ASSERT_NE(child, nullptr);
+        const int threads_before = threads_in_this_process();
+        EXPECT_EQ(child->FramePacingNow().why, FramePacingFallback::kNotAsked);
+        const double mode_hertz = child->DisplayModeHertz();
+        EXPECT_TRUE(mode_hertz == 0.0 || reckless::window::IsBelievableRefreshRate(mode_hertz)) << mode_hertz;
+        EXPECT_EQ(child->FramePacingNow().why, FramePacingFallback::kNotAsked) << "reading the rate asks for nothing";
+        if (does_ask)
+        {
+            child->SetFramePacing({FramePacing::kDisplayClock, 1, 1});
+        }
+        const bool is_on_the_clock = child->FramePacingNow().pacing == FramePacing::kDisplayClock;
+        int        frames          = 0;
+        child->SetFrameCallback([&] { ++frames; });
+        const int       threads_with_frames = threads_in_this_process();
+        int             timers              = 0;
+        int             posted              = 0;
+        MSG             message{};
+        const ULONGLONG until = GetTickCount64() + 3000;
+        while (frames < 20 && GetTickCount64() < until)
+        {
+            MsgWaitForMultipleObjects(0, nullptr, FALSE, 50, QS_ALLINPUT);
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+            {
+                timers += message.message == WM_TIMER ? 1 : 0;
+                posted += message.message >= WM_APP && message.message < 0xC000 ? 1 : 0;
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+        std::printf("[ frame pacing ] Windows, %s: %d frames, %d WM_TIMER, %d of the window's own messages, %d threads "
+                    "then %d; the mode %.2f Hz\n",
+                    does_ask ? "asked for the display's clock" : "asked for nothing", frames, timers, posted,
+                    threads_before, threads_with_frames, mode_hertz);
+        std::fflush(stdout);
+        EXPECT_GE(frames, 20) << "the callback runs either way";
+        if (!is_on_the_clock)
+        {
+            EXPECT_GE(timers, frames) << "every frame is a WM_TIMER";
+            EXPECT_EQ(posted, 0) << "and nothing is posted to the window for one";
+        }
+        else
+        {
+            EXPECT_EQ(timers, 0) << "the control: on the clock no frame is a WM_TIMER";
+            EXPECT_GE(posted, frames) << "and each is posted to the window";
+            EXPECT_EQ(threads_with_frames, threads_before + 1) << "the control: the clock's thread, seen";
+        }
+        if (!does_ask)
+        {
+            EXPECT_EQ(threads_with_frames, threads_before) << "no thread of a clock";
+        }
+        child->SetFrameCallback(nullptr);
+        child.reset();
+        DestroyWindow(top);
+    }
 }
 
 TEST(ChildWindowFramePacing, RunsTheFrameCallbackOnTheWindowsOwnThreadWhicheverItIsPacedBy)
@@ -1104,6 +1187,7 @@ TEST(ChildWindowFramePacing, SaysPlainlyThatThereIsNoDisplayClockOnX11)
     HoldsWhicheverPacingItReached(asked, 4, "Linux, asked for a frame every fourth refresh, 5 ms ahead", 5000);
     EXPECT_EQ(asked.why, FramePacingFallback::kNoDisplayClock) << "which is the honest answer on X11, not a rate";
     EXPECT_EQ(child->FramePacingNow().why, FramePacingFallback::kNoDisplayClock) << "and it says the same again";
+    EXPECT_EQ(child->DisplayModeHertz(), 0.0) << "and names no rate for a product to work a divisor out from";
 
     const FramePacingState back = child->SetFramePacing({});
     EXPECT_EQ(back.why, FramePacingFallback::kNotAsked) << "a default request is a window asking for nothing";

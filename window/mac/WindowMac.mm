@@ -1127,6 +1127,15 @@ class MacChildWindow final : public ChildWindow, public MacSurface
         return pacing_;
     }
 
+    /** The rate of the mode of the display the window is on now, and where a built-in panel's mode names none, the most
+        its screen says it can show.
+        @return  the rate, in hertz, of the main screen for a view in no window yet, as a plug-in's may be as it is
+       made; 0 where nothing can be believed */
+    double DisplayModeHertz() const override
+    {
+        return ModeHertzOf(DisplayClockReadingOf(view_));
+    }
+
     /** In a window that is on screen and not in the Dock, and not hidden in it by the host.
         @return true when the window shows */
     bool Showing() const override
