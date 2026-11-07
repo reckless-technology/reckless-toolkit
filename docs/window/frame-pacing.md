@@ -423,6 +423,10 @@ two passes through the queue:
   two (`ChildWindowFramePacing.PanelsThatFitARefreshPaintInOneOrderEveryRefresh`, whose printout this is).
 - **The wait is bounded.** A queue whose paint never comes - a host pumping only some messages, a window whose paint
   never validates it - costs a frame `window::kFrameStandsBackAtMostSeconds` and not the window's frames for good.
+- **A frame that is lost is asked for again.** One frame is in flight at a time, so a host's pump that takes a posted
+  message and throws it away would leave a window with no frames at all, still saying it is on the clock, and nothing run
+  to notice. After `window::kFrameInFlightIsLostAfterSeconds` the clock asks again; each asking is numbered and the window
+  answers only the latest, so a thread that was merely busy, with several on its queue when it comes back, runs one frame.
 - **Asking again is itself a posted message**, which outranks the paint it stood back for. A millisecond's wait left a
   thread idle once its last paint was done; no wait at all kept it answering, and six panels fell to 9 pictures a second
   each. So the wait starts at a tenth of a millisecond and doubles only while the window answers within a moment of being

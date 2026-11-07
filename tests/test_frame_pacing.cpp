@@ -777,6 +777,16 @@ TEST(DisplayLinkSilence, ALinkThatHasStoppedIsToldFromOneThatIsTicking)
         << "more than a few ticks of the slowest refresh a display can have";
 }
 
+TEST(FrameStandsBack, AFrameInFlightIsTakenForLostOnlyAfterTheBound)
+{
+    using reckless::window::IsFrameInFlightLost;
+    using reckless::window::kFrameInFlightIsLostAfterSeconds;
+    EXPECT_FALSE(IsFrameInFlightLost(0.0));
+    EXPECT_FALSE(IsFrameInFlightLost(0.25)) << "a frame that has only stood back for as long as one can";
+    EXPECT_TRUE(IsFrameInFlightLost(kFrameInFlightIsLostAfterSeconds));
+    EXPECT_TRUE(IsFrameInFlightLost(60.0));
+}
+
 TEST(FrameStandsBack, AsksAgainSoonUnlessItIsAskingFasterThanTheThreadCanGetOn)
 {
     using reckless::window::FrameAsksAgainAfter;

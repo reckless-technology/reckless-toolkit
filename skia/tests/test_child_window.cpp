@@ -869,6 +869,76 @@ TEST(ChildWindowFramePacing, AWindowThatIsNotAskedTakesItsFramesFromItsTimerAndS
     }
 }
 
+TEST(ChildWindowFramePacing, AFrameAHostThrowsAwayIsAskedForAgainAndABusyThreadIsHandedNoBurst)
+{
+    // A frame is a posted message and one frame is in flight at a time, so a host's pump that took one and did not
+    // dispatch it would otherwise leave the window with no frames for good, still saying it is on the clock.
+    HWND top = CreateWindowExW(0, L"STATIC", L"", WS_OVERLAPPEDWINDOW, 0, 0, 240, 160, nullptr, nullptr,
+                               GetModuleHandleW(nullptr), nullptr);
+    ASSERT_NE(top, nullptr);
+    reckless::view::View root;
+    root.SetBounds({240, 160});
+    auto child = reckless::window::CreateChildWindow(top, root, 240, 160, 1.0f);
+    ASSERT_NE(child, nullptr);
+    const bool is_on_the_clock =
+        child->SetFramePacing({FramePacing::kDisplayClock, 1, 1}).pacing == FramePacing::kDisplayClock;
+    int frames = 0;
+    child->SetFrameCallback([&] { ++frames; });
+    MSG        message{};
+    const auto pump_for = [&message](ULONGLONG milliseconds) {
+        const ULONGLONG until = GetTickCount64() + milliseconds;
+        while (GetTickCount64() < until)
+        {
+            MsgWaitForMultipleObjects(0, nullptr, FALSE, 10, QS_ALLINPUT);
+            while (GetTickCount64() < until && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+            {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+    };
+    int thrown_away = 0;
+    int after_lost  = 0;
+    int after_block = 0;
+    if (is_on_the_clock)
+    {
+        pump_for(200);
+        const ULONGLONG wait_until = GetTickCount64() + 500;
+        while (thrown_away == 0 && GetTickCount64() < wait_until)
+        {
+            thrown_away += PeekMessageW(&message, nullptr, WM_APP, 0xBFFF, PM_REMOVE) != FALSE ? 1 : 0;
+        }
+        const int frames_then = frames;
+        pump_for(2500);
+        after_lost = frames - frames_then;
+        // Busy for long enough that the clock has asked several times over, then a moment to take what it asked.
+        Sleep(3500);
+        const int frames_before = frames;
+        pump_for(5);
+        after_block = frames - frames_before;
+    }
+    std::printf(
+        "[ frame pacing ] Windows, a posted frame thrown away %d time(s): %d frames in the 2.5 s after; %d in the "
+        "5 ms after a 3.5 s block\n",
+        thrown_away, after_lost, after_block);
+    std::fflush(stdout);
+    child->SetFrameCallback(nullptr);
+    child.reset();
+    DestroyWindow(top);
+    if (!is_on_the_clock)
+    {
+        GTEST_SKIP() << "no display clock on this machine, so no frame to lose";
+    }
+    if (thrown_away == 0)
+    {
+        GTEST_SKIP() << "no frame came to throw away: a window station that shows nothing";
+    }
+    EXPECT_GT(after_lost, 0) << "the window has frames again";
+    // At most what was in flight as it went busy, the last asked for, and the one next due: every asking run would be
+    // those and the three the clock asked for in between.
+    EXPECT_LE(after_block, 3) << "and a thread back from being busy has the last it was asked for, not a burst";
+}
+
 TEST(ChildWindowFramePacing, RunsTheFrameCallbackOnTheWindowsOwnThreadWhicheverItIsPacedBy)
 {
     // Both ways round, and the unasked window first: a window no product has asked to pace runs its frame callback
