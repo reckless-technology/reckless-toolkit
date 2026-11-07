@@ -553,6 +553,22 @@ are one refresh period either side of the mean, which is exactly one frame slipp
 `most_frames_behind` doing what the product asked for, and a product that would rather re-phase than ever make a
 frame up asks for 0.
 
+**Retaken on 2026-11-06** with the same harness on the same machine and display (Legion5i, 3840 x 2160 at 59.94 Hz, whose
+mode Windows names 59; nothing building, the desktop and its programs at about 6 % of the processor, 13 % at most):
+
+| Mechanism | mean | rate | sd | a whole refresh period, +/- 1/10 | +/- 1/30 |
+|---|---|---|---|---|---|
+| `SetTimer(16)` - the platform timer | 25.594 ms | 39.07 Hz | 8.065 ms | 63.7 % | 26.3 % |
+| the display clock, N = 1 | 16.683 ms | 59.941 Hz | 0.445 ms | 98.7 % | 87.6 % |
+| the display clock, N = 2 | 33.367 ms | 29.970 Hz | 0.492 ms | 99.3 % | 81.9 % |
+| the display clock, N = 4 | 66.732 ms | 14.985 Hz | 0.565 ms | 98.2 % | 81.8 % |
+
+The display clock's rates reproduce to the figures given and the timer's mixture of one and two scans is still there, with
+16 ms still the least steady of the periods swept, but the spreads above do not reproduce: the standard deviation fell 18-fold rather than 29-fold,
+and the last column closed from 99.0 % against 4.4 % to 87.6 % against 26.3 %. One scan a frame also measured lower that day,
+58 to 60 Hz at periods of 1 to 15 ms where the sweep above has 57 to 63.5. Why they moved was not looked into, so the older
+figures are kept with this beside them.
+
 ## What is held, and where
 
 The policy needs no window, no display and no clock, and it is in one place for that reason
