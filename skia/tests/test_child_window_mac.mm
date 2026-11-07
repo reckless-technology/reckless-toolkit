@@ -170,6 +170,10 @@ TEST(ChildWindowFramePacing, IsOnThePlatformTimerUntilItIsAskedAndSaysWhichItGot
     EXPECT_EQ(unasked.why, FramePacingFallback::kNotAsked);
 
     // A lead asked for, which a Mac's display link does not yet keep: the state says 0 (docs/window/frame-pacing.md).
+    const double mode_hertz = child->DisplayModeHertz();
+    EXPECT_TRUE(mode_hertz == 0.0 || reckless::window::IsBelievableRefreshRate(mode_hertz)) << mode_hertz;
+    EXPECT_EQ(child->FramePacingNow().why, FramePacingFallback::kNotAsked) << "reading the rate asks for nothing";
+
     const FramePacingState asked = child->SetFramePacing({FramePacing::kDisplayClock, 2, 1, 5000});
     HoldsWhicheverPacingItReached(asked, 2, "macOS, asked for a frame every second refresh, 5 ms ahead", 5000);
 

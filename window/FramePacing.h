@@ -130,8 +130,9 @@ struct FramePacingState
         nothing. */
     int refresh_divisor{0};
 
-    /** The display's refresh rate, in hertz, as the window read it. 0 where nothing said, and on the platform timer,
-        which reads none. */
+    /** The display's refresh rate, in hertz, as the window read it: the rate being divided, which is the one to report.
+        It can move by a fraction of a hertz from one reading to the next, so a divisor is worked out from
+        ChildWindow::DisplayModeHertz instead. 0 where nothing said, and on the platform timer, which reads none. */
     double display_hertz{0.0};
 
     /** The frames a second the callback is being run at: `display_hertz` over `refresh_divisor`. **0 on the platform
@@ -248,6 +249,42 @@ struct RefreshRateChoice
     double              hertz{0.0};                                    ///< the rate to divide; 0 where there is none
     FramePacingFallback why{FramePacingFallback::kRefreshRateUnknown}; ///< kNone where `hertz` is a rate
 };
+
+/** How close a compositor's reading must be to the mode of the window's display to be that mode read more finely, in
+    hertz: Windows gives a mode in whole hertz, so a 59.94 Hz panel's mode may say 59 or 60. A bound on what a mode's
+    number can mean, not a rate. */
+inline constexpr double kModeIsNamedWithinHertz = 1.0;
+
+/** The rate of the panel, for a product that works its divisor out from it (ChildWindow::DisplayModeHertz): the mode of
+    the window's display where that is believable, since it holds still where a compositor's reading wanders with what
+   is being composed, and only where the mode names no rate the compositor's.
+    @param reading  what the platform said
+    @return         the rate, in hertz; 0 where neither can be believed */
+constexpr double ModeHertzOf(const DisplayClockReading &reading) noexcept
+{
+    if (IsBelievableRefreshRate(reading.display_hertz))
+    {
+        return reading.display_hertz;
+    }
+    return IsBelievableRefreshRate(reading.compositor_hertz) ? reading.compositor_hertz : 0.0;
+}
+
+/** The rate a window answers with where it has one reading of the compositor to go on, as it is asked for the clock:
+   the reading where that is the mode of the window's display read more finely, and otherwise the mode. One reading can
+   be anywhere a compositor's go (CompositorReadings), and the clock this starts stays on the mode until its readings
+    settle, so the answer does not say a rate that clock is not dividing.
+    @param compositor_hertz  the rate the compositor reports now, in hertz
+    @param display_hertz     the rate of the mode of the window's display, in hertz
+    @return                  the rate to answer with, in hertz: `compositor_hertz` where the mode names no rate */
+inline double RateOfOneReading(double compositor_hertz, double display_hertz) noexcept
+{
+    if (!IsBelievableRefreshRate(display_hertz) ||
+        std::fabs(compositor_hertz - display_hertz) <= kModeIsNamedWithinHertz)
+    {
+        return compositor_hertz;
+    }
+    return display_hertz;
+}
 
 /** The refresh rate to divide, from the two readings a platform can take, and the reason where there is none: the
     compositor's own where it is believable, the window's display's where the compositor gave none, and none at all
@@ -561,7 +598,8 @@ class CompositorReadings
     {
         return count_ == kRefreshPeriodsJudged &&
                widest() - narrowest() <= kCompositorReadsSteadilyWithin * narrowest() &&
-               widest() <= display_hertz + 1.0 && narrowest() >= display_hertz - 1.0;
+               widest() <= display_hertz + kModeIsNamedWithinHertz &&
+               narrowest() >= display_hertz - kModeIsNamedWithinHertz;
     }
 
     /** Every reading forgotten: what a window does when its display changes. */

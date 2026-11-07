@@ -126,6 +126,19 @@ class ChildWindow
         return {};
     }
 
+    /** The refresh rate of the mode of the display the window is on now, in hertz (ModeHertzOf): what a product that
+        works its divisor out from the panel's rate reads, before it asks for anything and with nothing started. Windows
+        gives a mode in whole hertz, so 59.94 Hz reads 59 or 60 and 143.98 Hz reads 143 or 144, as the driver names it,
+        and macOS as its mode says. It is not the rate FramePacingState::display_hertz reports, which is the one being
+        divided and moves as the compositor's readings do (docs/window/frame-pacing.md, "Choosing a divisor"). Asks the
+        system each time, so read it as often as the display might have moved, about once a second, and not every frame.
+        @return  the rate, in hertz; 0 where nothing can say, as on a platform with no display clock, Linux among them
+     */
+    virtual double DisplayModeHertz() const
+    {
+        return 0.0;
+    }
+
     /** Whether the panel is on a screen a person can see: in a window that is shown and not minimised. What a panel
         tells its core once a frame (core::PanelWatch), so what runs only for someone looking stops when nobody is.
         @return  true when the window shows; the default, for a window with no way to know, is true */

@@ -215,6 +215,7 @@ TEST(ChildWindowPacing, AWindowThatPacesNothingItselfAnswersThePlatformTimerAndS
     EXPECT_EQ(asked.refresh_divisor, 0);
     EXPECT_EQ(asked.frames_a_second, 0.0);
     EXPECT_EQ(asked.lead_microseconds, 0) << "and keeps no lead: it has no blank to lead";
+    EXPECT_EQ(child.DisplayModeHertz(), 0.0) << "and names no rate for a product to work a divisor out from";
 }
 
 TEST(RunApp, TheChildWindowIsHandedToTheProductWhichMayAskItForTheRawKeys)

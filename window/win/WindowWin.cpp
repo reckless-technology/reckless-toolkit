@@ -1725,6 +1725,20 @@ class WinChildWindow final : public ChildWindow, public WinSurface
         return state;
     }
 
+    /** The rate of the mode of the display the window is on now: the whole hertz Windows names it in, and the
+        compositor's reading only where the mode names no rate.
+        @return  the rate, in hertz; 0 where neither can be believed */
+    double DisplayModeHertz() const override
+    {
+        DisplayClockReading reading;
+        reading.display_hertz = DisplayRefreshHertzOf(hwnd_);
+        if (!IsBelievableRefreshRate(reading.display_hertz))
+        {
+            reading.compositor_hertz = CompositionTimingNow().hertz;
+        }
+        return ModeHertzOf(reading);
+    }
+
     /** Visible with every window above it, and its top-level window not minimised.
         @return true when the window shows */
     bool Showing() const override
@@ -1764,10 +1778,8 @@ class WinChildWindow final : public ChildWindow, public WinSurface
         // One reading is not enough to refuse on (CompositorReadings), and the clock's own thread goes on to judge it,
         // unless that thread has already found this display to disagree: asking again while that is still so is
         // answered at once, and starts no clock to find it out a second time.
-        CompositorReadings readings;
-        reading.compositor_hertz = !has_clock_found_disagreement_ && readings.Note(timing.hertz, reading.display_hertz)
-                                       ? reading.display_hertz
-                                       : timing.hertz;
+        reading.compositor_hertz =
+            has_clock_found_disagreement_ ? timing.hertz : RateOfOneReading(timing.hertz, reading.display_hertz);
         return ChosenPacing(request_, reading);
     }
 
