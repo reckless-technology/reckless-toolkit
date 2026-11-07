@@ -497,6 +497,22 @@ constexpr bool DoesFrameStandBack(bool is_work_ahead, double seconds_stood_back)
     return is_work_ahead && seconds_stood_back < kFrameStandsBackAtMostSeconds;
 }
 
+/** How long a frame may be in flight unanswered before the clock asks for it again, in seconds. A frame is a posted
+    message, and a queue can lose one that WM_TIMER, which is generated as it is taken, could not: a host's pump that
+    takes a message and throws it away, a hook that rewrites it. With a frame in flight no other is posted, so without
+    this one lost message would leave the window with no frames at all, and nothing to run a product's own check on
+    them. A bound on what a thread can be doing, not a rate: long enough that a thread that is merely busy is asked only
+    a few times, and it answers just the last. */
+inline constexpr double kFrameInFlightIsLostAfterSeconds = 1.0;
+
+/** Whether a frame in flight has gone unanswered for as long as one that was lost.
+    @param seconds_since_asked  how long since the frame was last posted, in seconds
+    @return                     true where the clock is to ask for it again */
+constexpr bool IsFrameInFlightLost(double seconds_since_asked) noexcept
+{
+    return seconds_since_asked >= kFrameInFlightIsLostAfterSeconds;
+}
+
 /** The shortest a frame that stood back waits before asking again, in seconds: short, because a thread that has just
     finished its last paint stays idle until some frame asks. Measured on a Tape panel's paint at this and at a tenth of
     a millisecond's multiples (docs/window/frame-pacing.md, "Several windows on one thread"). */
