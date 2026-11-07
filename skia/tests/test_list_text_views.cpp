@@ -271,7 +271,7 @@ TEST(ListViewOnSkia, ReviewImage)
     TableModel        table;
     const std::string half = "\xC2\xBD"; // one half, U+00BD
     table.rows             = {{"1", "Pawnstar 2.1", "*", "1", half, "1", "2" + half},
-                              {"2", "Zenith 0.9", "0", "*", "1", "1", "2"},
+                              {"2", "Trebuchet 0.9", "0", "*", "1", "1", "2"},
                               {"3", "Stoopid 1.4", half, "0", "*", "1", "1" + half},
                               {"4", "Pawnstar-Go 0.3", "0", "0", "0", "*", "0"}};
     table.colour           = [](std::size_t row, std::size_t column) -> std::optional<Color> {
@@ -347,7 +347,7 @@ namespace
 const char *const kGame = "[Event \"Club championship\"]\n"
                           "[Site \"Home\"]\n"
                           "[White \"Pawnstar 2.1\"]\n"
-                          "[Black \"Zenith 0.9\"]\n"
+                          "[Black \"Trebuchet 0.9\"]\n"
                           "[Result \"*\"]\n"
                           "\n"
                           "1. e4 c5 2. Nf3 d6 3. d4 cxd4 4. Nxd4 Nf6 5. Nc3 a6 6. Be3 e5 7. Nb3 Be6 8. f3 Be7 "
