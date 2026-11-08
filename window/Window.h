@@ -6,6 +6,8 @@
 
 #include "FramePacing.h"
 #include "Geometry.h"
+#include "GpuDrawing.h"
+#include "ProcessEnvironment.h"
 #include "RawKey.h"
 #include "View.h"
 
@@ -137,6 +139,40 @@ class ChildWindow
     virtual double DisplayModeHertz() const
     {
         return 0.0;
+    }
+
+    /** The window drawn as `request` asks: on the GPU - Skia's Ganesh on the platform's GL, each frame presented with a
+        swap - where the platform has a GPU path, the request names a back end (GpuDrawingRequest, which needs
+        reckless_window_gpu linked) and a context can be made, and with the CPU raster it has always drawn with where
+        not. The answer says which it is drawing with and, where it fell back, why (GpuDrawing.h,
+        docs/window/gpu-drawing.md).
+
+        **Nothing until it is asked.** A window whose owner has not called this makes no context, loads no GL and draws
+        exactly as it always did; `DrawingRequest{}` asks for that, and calling it with `DrawingRequest{}` after the GPU
+        puts the window back on the CPU raster. It may be called at any time, before the first frame or after: the
+        window's whole picture is drawn again on whichever it ends up with.
+
+        On the GPU the views draw into a canvas whose pixels are on the GPU, so a view that writes them by hand
+        (`SkCanvas::accessTopLayerPixels`) is answered null there and draws another way; the frame callback, its pacing
+        (SetFramePacing) and the views' paints are otherwise as they were. The window rebuilds its GPU surface as
+        its size or scale changes - a resize, full screen, a move to a monitor of another DPI - and makes its context
+        again if the GPU is lost (DrawingState::contexts_lost), going back to the CPU raster where it cannot.
+        @param request  what the product asks for; `DrawingRequest{}` for the CPU raster, which is the default
+        @return         what the window is drawing with, and why where it fell back */
+    virtual DrawingState SetDrawing(const DrawingRequest &request)
+    {
+        // No GPU path here: the CPU raster, and the reason.
+        return ChosenDrawing(request, IsGpuDrawingForcedOff(core::EnvironmentVariable(kGpuDrawingEnvironmentVariable)),
+                             false);
+    }
+
+    /** What the window is drawing with now: the answer SetDrawing gave, unless the GPU has since been lost and could
+        not be made again, in which case the window has gone back to the CPU raster and this says so. A product that
+        reports or logs its drawing reads this rather than keeping SetDrawing's answer.
+        @return  the drawing in force */
+    virtual DrawingState DrawingNow() const
+    {
+        return {};
     }
 
     /** Whether the panel is on a screen a person can see: in a window that is shown and not minimised. What a panel

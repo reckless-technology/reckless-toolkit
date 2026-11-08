@@ -2,7 +2,9 @@
 // size of the window and putting it on screen with SetDIBitsToDevice in WM_PAINT, the mouse, the keys and dropped
 // files handed to a MouseRouter, and a window timer for the frame callback - or, where a product has asked for it
 // (ChildWindow::SetFramePacing), the display's own clock in a thread of the window's own, each frame posted here.
-// A popup is the same surface in a no-activate tool window over the host's, watched by a thread mouse hook for
+// Where a product has asked for the GPU (ChildWindow::SetDrawing) and linked its back end, the tree is drawn into a
+// surface on the GPU instead and presented with a swap (GpuPresenterWin.h), and nothing of the GPU is touched until
+// then. A popup is the same surface in a no-activate tool window over the host's, watched by a thread mouse hook for
 // presses outside it. The window class is the module's own, registered with the first window and unregistered with
 // the last, so two plug-ins' copies of this code never share a window procedure. Screen points are the screen's
 // pixels, opaque to the views.
@@ -53,6 +55,7 @@
 #include <dwmapi.h>
 
 #include "ClipboardWin.h"
+#include "GpuPresenterWin.h"
 #include "HandedKeys.h"
 
 namespace reckless::window
@@ -1343,6 +1346,9 @@ class WinSurface : public view::Host
                 SetFocus(previous_focus_);
             }
             KillTimer(hwnd_, kFrameTimer);
+            // The views' surface before the GPU it is on, and both while the window and its device context are there.
+            surface_.reset();
+            gpu_.reset();
             SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
             DestroyWindow(hwnd_);
             hwnd_ = nullptr;
@@ -1354,11 +1360,26 @@ class WinSurface : public view::Host
         registered_ = false;
     }
 
-    /** The raster made again at the root's size times the scale, cleared, with the Skia surface over it. */
+    /** The raster made again at the root's size times the scale, cleared, with the Skia surface over it - or, on the
+        GPU, the GPU's surface at that size, and the CPU raster instead where the GPU will not make one. */
     void ResizeRaster()
     {
         pixel_width_  = std::max(1, static_cast<int>(std::lround(root_.width() * scale_)));
         pixel_height_ = std::max(1, static_cast<int>(std::lround(root_.height() * scale_)));
+        if (gpu_)
+        {
+            surface_.reset();
+            surface_ = gpu_->SurfaceOfSize(pixel_width_, pixel_height_);
+            if (surface_)
+            {
+                std::vector<std::uint32_t>().swap(pixels_); // no raster while the GPU draws
+                return;
+            }
+            // No surface of this size on the GPU, or the GPU gone: the CPU raster from here, and the reason kept.
+            gpu_.reset();
+            drawing_.drawing = Drawing::kCpuRaster;
+            drawing_.why     = DrawingFallback::kNoSurface;
+        }
         pixels_.assign(static_cast<std::size_t>(pixel_width_) * static_cast<std::size_t>(pixel_height_), 0u);
         surface_ = SkSurfaces::WrapPixels(
             SkImageInfo::Make(pixel_width_, pixel_height_, kBGRA_8888_SkColorType, kPremul_SkAlphaType), pixels_.data(),
@@ -1374,6 +1395,66 @@ class WinSurface : public view::Host
             .SmallestIntegerContainer();
     }
 
+    /** The GPU made on the window by the back end it was asked for with (`gpu_backend_`), and `drawing_` saying
+        whichever it came to: the GPU, or the CPU raster and the step that refused. The surface is the caller's to make
+        (ResizeRaster).
+        @return  true when the window now draws on the GPU */
+    bool MakeGpu()
+    {
+        win::GpuPresenterMade made = gpu_backend_->make(hwnd_);
+        if (!made.renderer.empty())
+        {
+            drawing_.renderer = std::move(made.renderer);
+        }
+        if (!made.presenter)
+        {
+            drawing_.drawing = Drawing::kCpuRaster;
+            drawing_.why     = made.why;
+            return false;
+        }
+        gpu_             = std::move(made.presenter);
+        drawing_.drawing = Drawing::kGpu;
+        drawing_.why     = DrawingFallback::kNone;
+        return true;
+    }
+
+    /** The GPU let go - its surface first - and the window back on the CPU raster, `why` kept; the whole window drawn
+        again. Nothing for a window that was not on the GPU.
+        @param why  why the window draws with the CPU raster now */
+    void LetGoOfTheGpu(DrawingFallback why)
+    {
+        if (gpu_)
+        {
+            surface_.reset();
+            gpu_.reset();
+            drawing_.drawing = Drawing::kCpuRaster;
+            drawing_.why     = why;
+            ResizeRaster();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+    }
+
+    /** The GPU lost - the driver reset, the context abandoned, or the context no longer made current - and made again
+        in its place, at most kMostGpuContextsLost times; the CPU raster where it is not made again, and either way the
+        whole window drawn again, since nothing of the lost surface is left. */
+    void GpuLost()
+    {
+        surface_.reset();
+        gpu_.reset();
+        ++drawing_.contexts_lost;
+        if (!MayMakeTheGpuContextAgain(drawing_.contexts_lost))
+        {
+            drawing_.drawing = Drawing::kCpuRaster;
+            drawing_.why     = DrawingFallback::kContextLostTooOften;
+        }
+        else if (!MakeGpu())
+        {
+            drawing_.why = DrawingFallback::kContextNotMadeAgain;
+        }
+        ResizeRaster();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+
     view::View                &root_;            ///< the tree drawn.
     view::MouseRouter          router_;          ///< hands the mouse, keys and drops to the tree.
     float                      scale_;           ///< window pixels per design pixel.
@@ -1381,8 +1462,16 @@ class WinSurface : public view::Host
     int                        pixel_width_{1};  ///< the raster's width, in pixels.
     int                        pixel_height_{1}; ///< the raster's height, in pixels.
     std::vector<std::uint32_t> pixels_;          ///< the raster, B G R A with premultiplied alpha, top-down.
-    sk_sp<SkSurface>           surface_;         ///< Skia's surface over the raster.
-    std::function<void()>      frame_;           ///< the frame callback, run on the frame timer; may be empty.
+    /** The GPU the tree is drawn on (ChildWindow::SetDrawing): **null until a product asks for the GPU** and its back
+        end makes one, so a popup's and an unasked child window's is null for the window's whole life and the tree is
+        rastered and handed to SetDIBitsToDevice exactly as it always was. Declared before `surface_`, which may be on
+        it and so goes first. */
+    std::unique_ptr<win::GpuPresenter> gpu_;
+    sk_sp<SkSurface> surface_; ///< Skia's surface the tree is drawn into: over the raster, or on the GPU.
+    /** The back end the GPU was asked for with, to make it again with when it is lost; null until a product asks. */
+    const GpuBackend     *gpu_backend_{nullptr};
+    DrawingState          drawing_{}; ///< what the window draws with, and why where it fell back.
+    std::function<void()> frame_;     ///< the frame callback, run on the frame timer; may be empty.
     /** What the window does with a message its display clock's thread posted - a frame due, or the clock giving up
         (ChildWindow::SetFramePacing). **Empty until a product asks to be paced on the display's clock**, and nothing
         posts those messages until then: a popup's and an unasked child window's is empty for the window's whole
@@ -1428,6 +1517,11 @@ class WinSurface : public view::Host
         {
             return;
         }
+        if (gpu_ && !gpu_->BeginFrame())
+        {
+            GpuLost();
+            return;
+        }
         const gfx::RectI dirty = gfx::RectI::LeftTopRightBottom(area.left, area.top, area.right, area.bottom)
                                      .Intersection({pixel_width_, pixel_height_});
         if (!dirty.IsEmpty())
@@ -1446,6 +1540,15 @@ class WinSurface : public view::Host
                 view::PaintTree(root_, canvas);
             }
             sk->restore();
+        }
+        if (gpu_)
+        {
+            // The whole surface to the window and swapped: the paint's clip is GDI's and the GL's present ignores it.
+            if (!gpu_->Present())
+            {
+                GpuLost();
+            }
+            return;
         }
         BITMAPINFO info{};
         info.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
@@ -1750,6 +1853,45 @@ class WinChildWindow final : public ChildWindow, public WinSurface
             }
         }
         return state;
+    }
+
+    /** The window drawn as `request` asks: on the GPU where the request names a back end, the environment has not
+        turned the GPU off and the back end makes one on this window, and with the CPU raster otherwise. A request for
+        the CPU raster on a window that was never on the GPU touches nothing; one that changes what the window draws
+        with draws the whole window again on the new one.
+        @param request  what the product asks for; DrawingRequest{} for the CPU raster
+        @return         what the window is drawing with, and why where it fell back */
+    DrawingState SetDrawing(const DrawingRequest &request) override
+    {
+        const DrawingState chosen = ChosenDrawing(
+            request, IsGpuDrawingForcedOff(core::EnvironmentVariable(kGpuDrawingEnvironmentVariable)), true);
+        if (chosen.drawing != Drawing::kGpu)
+        {
+            LetGoOfTheGpu(chosen.why);
+            drawing_.drawing = chosen.drawing;
+            drawing_.why     = chosen.why;
+            return DrawingNow();
+        }
+        if (gpu_ && request.gpu_backend == gpu_backend_)
+        {
+            return DrawingNow(); // asked again for what it has
+        }
+        LetGoOfTheGpu(DrawingFallback::kNotAsked);
+        gpu_backend_           = request.gpu_backend;
+        drawing_.contexts_lost = 0;
+        drawing_.renderer.clear();
+        MakeGpu();
+        ResizeRaster();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return DrawingNow();
+    }
+
+    /** What the window is drawing with now: what SetDrawing answered, or the CPU raster and why where the GPU has since
+        been lost and not made again, or would not make a surface at a new size.
+        @return  the drawing in force */
+    DrawingState DrawingNow() const override
+    {
+        return drawing_;
     }
 
     /** The rate of the mode of the display the window is on now: the whole hertz Windows names it in, and the
