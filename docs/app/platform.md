@@ -111,7 +111,9 @@ was.
 
 **Why borderless on Windows, not exclusive.** Exclusive full screen is a swap chain's, and the child window rasters on
 the CPU and hands its pixels to GDI (`SetDIBitsToDevice`): there is no swap chain to make exclusive, and a borderless
-window over the monitor is what a browser's F11 is. The monitor's DPI is the window's - the window is on it - and a
+window over the monitor is what a browser's F11 is. A child window an app has asked to draw on the GPU
+([../window/gpu-drawing.md](../window/gpu-drawing.md)) swaps a GL child window's buffers, which makes nothing exclusive
+either, so full screen is the same borderless window for it. The monitor's DPI is the window's - the window is on it - and a
 change of DPI or of the display's resolution while full screen (`WM_DPICHANGED`, `WM_DISPLAYCHANGE`) covers the monitor
 again. Alt+Enter never reaches the bar, whether a shortcut takes it or not, nor does any other key with Alt that a
 shortcut takes: its character's menu (`WM_SYSCOMMAND`'s `SC_KEYMENU`, which a child window with the keyboard hands on to

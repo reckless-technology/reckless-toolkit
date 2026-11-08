@@ -7,7 +7,9 @@ functions and suites; this file is how work here is done.
 
 The Reckless Technology toolkit: the C++20 library the company's products share (all of it in the
 namespace `reckless`): JSON, text and the user's files (`core/`), the drawing layer (`gfx/`) and the series' look
-(`look/`), the views (`view/`) and the series' panel (`panel/`), the child window on Skia (`window/`, `skia/`), an app's
+(`look/`), the views (`view/`) and the series' panel (`panel/`), the child window on Skia (`window/`, `skia/`) - drawn with Skia's CPU
+raster, or on the GPU where a product asks and links `reckless_window_gpu` (Ganesh on WGL, Windows only so far:
+[docs/window/gpu-drawing.md](docs/window/gpu-drawing.md)) - an app's
 platform layer (`app/`), the audio device layer (`audio/`), the controllers a program reads beside the keyboard
 (`input/`), the network (`net/`), the update check every product runs
 (`update/`: the check, a product's description and the one factory its checker comes from, and the Updates menu) and
