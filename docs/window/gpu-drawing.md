@@ -8,7 +8,7 @@ window gives it where it can, says so, and draws with the CPU raster where it ca
 
 ## The decision
 
-Jonny, 2026-11-08, of a study of what Sentinel would gain from the GPU: *"Windows should get the GPU window first.
+Jonny, 2026-11-07, of a study of what Sentinel would gain from the GPU: *"Windows should get the GPU window first.
 Ignore the raspberry pi for now."* and *"Yes"* to starting. Sentinel's HD look is what asked for it - at 4K its frame
 costs 5.1 to 5.4 ms on the CPU raster against a refresh of 16.68 - but the window is the toolkit's, so the path is here
 and every product may ask for it.
