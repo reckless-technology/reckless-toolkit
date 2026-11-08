@@ -92,9 +92,47 @@ a refresh early. With 0 the swap does not wait, the frame reaches the compositor
 the compositor shows it at the next blank, which is what the CPU raster's `SetDIBitsToDevice` has always done.
 `wglSwapIntervalEXT` is asked for 0 where the driver has it.
 
-What this does live - one tick a refresh, frames late or shown twice, and the frame's cost on the CPU against the CPU
-raster's - is measured with Sentinel's live route (its `docs/app/motion.md`), windowed and full screen at 4K, and is
-recorded below once taken.
+### What it did live
+
+Measured on `Legion5i` (RTX 4070 Laptop, GL 4.6.0 NVIDIA 610.62), 2026-11-07 from 23:24 to 23:29 Pacific time, one
+3840 x 2160 display at 59.941 Hz, with Sentinel's live route (its `docs/app/motion.md`: a probed build, scripted play
+through `--smoke`, 2,400 frames a run, the frame log's compositor reports and a Desktop Duplication capture of the tick
+written into the frame). Three builds of Sentinel `8a5d68d`, each windowed at its 150 % and full screen: as it is, on
+its own copy of the toolkit; on this toolkit with the GPU asked for; and that same binary with `RECKLESS_GPU_DRAWING=off`,
+the control that differs from the GPU run in nothing but the drawing. One round, no compiler, linker, `ninja`, `ctest` or
+`ffmpeg` running throughout, the binaries' hashes the same after as before.
+
+| Run | Refreshes not one tick (the compositor's reports) | Late, shown twice, dropped (the compositor's count) | Woke to handed over: mean, p99 | Paint, p50 | Hand-over, p50 / p99 |
+|---|---|---|---|---|---|
+| 150 %, today's build | 9 of 2,278, 0.40 % | 0, 0, 0 | 6.64 ms, 13.02 | 5.12 ms | 0.79 / 2.35 ms |
+| 150 %, GPU | 15 of 2,282, 0.66 % | 0, 0, 0 | 5.85 ms, 9.57 | 4.73 ms | 0.67 / 2.79 ms |
+| 150 %, GPU build, GPU off | 3 of 2,278, 0.13 % | 0, 0, 0 | 5.44 ms, 6.86 | 4.66 ms | 0.68 / 1.15 ms |
+| Full screen, today's build | 7 of 2,279, 0.31 % | 0, 0, 0 | 9.18 ms, 13.46 | 8.05 ms | 1.86 / 2.72 ms |
+| Full screen, GPU | 8 of 2,280, 0.35 % | 0, 0, 0 | 5.58 ms, 8.90 | 4.64 ms | 0.69 / 1.88 ms |
+| Full screen, GPU build, GPU off | 11 of 2,278, 0.48 % | 0, 0, 0 | 11.83 ms, 16.97 | 9.25 ms | 2.28 / 7.07 ms |
+
+- **The display clock still paces every frame.** Every run held the clock (`is_locked` on all 2,280 frames), the
+  compositor's blanks read 59.941 Hz in all six, and a swap interval of 0 changed nothing of that.
+- **What the screen showed.** On the CPU raster the capture found one refresh in 1,051 that was not one tick at 150 % and
+  none in 1,278 full screen for today's build; for the GPU build with the GPU off, nothing at 150 % and one late frame
+  full screen, outside five seconds of the game's own banner, whose state does not tick and which is set aside as Sentinel
+  sets it aside. **The capture cannot read the GPU runs**: on a GPU canvas Sentinel's HD look draws its frame at 1080
+  lines and scales it (its `PaintCapture` fallback, density 1 where the others are 2), and the scaling filters the tick
+  the probe writes into the corner, which the capture reads only to the colour. The GPU runs' figures are the frame log's
+  alone.
+- **One hitch, on the GPU only.** Both GPU runs have one frame of 65 and 82 ms, at the same moment of the scripted play,
+  29.8 seconds in, nearly all of it in the present (60.5 and 76.2 ms). Nothing like it is on the CPU raster. It is
+  most likely Ganesh compiling the shaders for something drawn for the first time, which Skia does as it first draws it;
+  not yet shown. It accounts for the GPU run's extra refreshes that were not one tick at 150 %.
+- **The frame's cost on the CPU.** Full screen at 4K the GPU's frame cost 5.58 ms mean against 9.18 and 11.83 on the CPU
+  raster, and its hand-over 0.69 ms against 1.86 and 2.28, with no 4K blit through GDI. But this is not like for like:
+  on the GPU the HD look drew its 1080-line frame and scaled it, where the CPU raster drew at 2160 lines, and the picture
+  is the softer for it. At 150 % the two CPU-raster runs, one path in two builds, differ by 1.2 ms in their means, so one
+  round does not separate the GPU from the CPU raster there.
+- **Tearing was not measured.** Desktop Duplication hands over whole frames the compositor composed, before they are
+  scanned out, so it cannot see a tear; nor can the frame log. Whether a full-screen GL window with a swap interval of 0
+  tears is for an eye or a camera, or for PresentMon, whose present mode says whether the window was composed or flipped
+  independently.
 
 ## Size, scale, full screen, another monitor
 
