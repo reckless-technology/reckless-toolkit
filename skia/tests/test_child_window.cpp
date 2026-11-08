@@ -13,11 +13,16 @@
 // (UriList.h), whatever the text holds.
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdio>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "include/core/SkCanvas.h"
+#include "include/core/SkImageInfo.h"
+
+#include "SkiaCanvas.h"
 #include "UriList.h"
 
 TEST(ChildWindow, AUriListsFilePathsArePercentDecodedAndAStrayPercentIsItself)
@@ -759,6 +764,89 @@ using reckless::window::FrameRequest;
 
 #if defined(_WIN32)
 #include <tlhelp32.h> // windows.h first, which the top of this file has included and this needs for its types
+
+namespace
+{
+/** A panel that says what it learnt of the canvas it was painted on: whether the canvas has a GPU context, and whether
+    its pixels can be written by hand, which a product's skin relies on where it has them. */
+class CanvasWitness final : public reckless::view::View
+{
+  public:
+    void Paint(reckless::gfx::Canvas &canvas) override
+    {
+        canvas.FillAll(reckless::gfx::Color::FromRgb(20, 40, 60));
+        ++paints;
+        if (auto *skia_canvas = dynamic_cast<reckless::gfx::SkiaCanvas *>(&canvas))
+        {
+            SkImageInfo info;
+            std::size_t row_bytes = 0;
+            is_on_gpu             = skia_canvas->skia().recordingContext() != nullptr;
+            has_pixels_in_memory  = skia_canvas->skia().accessTopLayerPixels(&info, &row_bytes) != nullptr;
+            is_raster_as_before   = info.colorType() == kBGRA_8888_SkColorType && row_bytes == info.width() * 4u;
+        }
+    }
+
+    int  paints{0};                   ///< how many times it has been painted.
+    bool is_on_gpu{false};            ///< the last paint's canvas had a GPU context.
+    bool has_pixels_in_memory{false}; ///< the last paint's canvas gave its pixels to be written by hand.
+    bool is_raster_as_before{false};  ///< and they were the raster's: B G R A, rows packed, as SetDIBitsToDevice takes.
+};
+} // namespace
+
+TEST(ChildWindowDrawing, AWindowThatIsNotAskedDrawsWithTheCpuRasterAsItAlwaysDidAndLoadsNoGl)
+{
+    // What keeps a product that does not opt in unchanged, held from the outside: this suite links the window and not
+    // the GPU's back end (reckless_window_gpu), as every plug-in and every app that does not ask does, so nothing of
+    // the GL is in the process, and the canvas the views draw on is the raster it always was.
+    EXPECT_EQ(GetModuleHandleW(L"opengl32.dll"), nullptr) << "a window that links no GPU back end loads no GL";
+    HWND top = CreateWindowExW(WS_EX_NOACTIVATE, L"STATIC", L"", WS_POPUP, 100, 100, 240, 160, nullptr, nullptr,
+                               GetModuleHandleW(nullptr), nullptr);
+    ASSERT_NE(top, nullptr);
+    ShowWindow(top, SW_SHOWNOACTIVATE);
+    CanvasWitness witness;
+    witness.SetBounds({240, 160});
+    auto child = reckless::window::CreateChildWindow(top, witness, 240, 160, 1.0f);
+    ASSERT_NE(child, nullptr);
+    const reckless::window::DrawingState unasked = child->DrawingNow();
+    EXPECT_EQ(unasked.drawing, reckless::window::Drawing::kCpuRaster) << "a window no one has asked draws as it did";
+    EXPECT_EQ(unasked.why, reckless::window::DrawingFallback::kNotAsked);
+    EXPECT_TRUE(unasked.renderer.empty()) << "and has made no GL context";
+    EXPECT_EQ(unasked.contexts_lost, 0);
+
+    const ULONGLONG until = GetTickCount64() + 1500;
+    MSG             message{};
+    while (witness.paints == 0 && GetTickCount64() < until)
+    {
+        MsgWaitForMultipleObjects(0, nullptr, FALSE, 20, QS_ALLINPUT);
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+        {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+    const bool was_painted = witness.paints > 0;
+    if (was_painted)
+    {
+        EXPECT_FALSE(witness.is_on_gpu) << "the canvas has no GPU context";
+        EXPECT_TRUE(witness.has_pixels_in_memory) << "its pixels can be written by hand, as a product's skin does";
+        EXPECT_TRUE(witness.is_raster_as_before) << "and they are the raster SetDIBitsToDevice is handed";
+    }
+
+    // Asked for the GPU with no back end linked: said, and still nothing of the GL loaded.
+    const reckless::window::DrawingState not_linked = child->SetDrawing({reckless::window::Drawing::kGpu, nullptr});
+    EXPECT_EQ(not_linked.drawing, reckless::window::Drawing::kCpuRaster);
+    EXPECT_TRUE(not_linked.why == reckless::window::DrawingFallback::kNotLinked ||
+                not_linked.why == reckless::window::DrawingFallback::kForcedOff)
+        << reckless::window::TextOf(not_linked.why);
+    EXPECT_EQ(child->SetDrawing({}).why, reckless::window::DrawingFallback::kNotAsked) << "and back to not asked";
+    EXPECT_EQ(GetModuleHandleW(L"opengl32.dll"), nullptr) << "asking loads no GL where no back end is linked";
+    child.reset();
+    DestroyWindow(top);
+    if (!was_painted)
+    {
+        GTEST_SKIP() << "nothing painted at all: a window station that shows nothing, so the canvas is not held";
+    }
+}
 
 TEST(ChildWindowFramePacing, IsOnThePlatformTimerUntilItIsAskedAndSaysWhichItGotAndWhy)
 {

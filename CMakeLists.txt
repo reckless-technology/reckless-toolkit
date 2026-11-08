@@ -639,13 +639,13 @@ if(RECKLESS_TOOLKIT_BUILD_TESTS)
 
     # The views, the series' panel, a picture kept between paints and the window's shell (window/ShellView.h, header
     # only, on the views alone) with the licence's card on a store of the suite's own, its licences the shared vectors';
-    # and the raw keys a window delivers (window/RawKey.h) and how it paces its frame callback
-    # (window/FramePacing.h), whose policies need no window, display, keyboard or display clock and so are held on
-    # every platform and in the builds with no GUI.
+    # and the raw keys a window delivers (window/RawKey.h), how it paces its frame callback (window/FramePacing.h) and
+    # what it decides about drawing on the GPU (window/GpuDrawing.h), whose policies need no window, display, keyboard,
+    # display clock or GPU and so are held on every platform and in the builds with no GUI.
     add_executable(reckless_view_test tests/test_view.cpp tests/test_panel.cpp tests/test_cached_picture.cpp
                                       tests/test_shell_view.cpp tests/test_list_view.cpp
                                       tests/test_text_view.cpp tests/test_raw_keys.cpp
-                                      tests/test_frame_pacing.cpp)
+                                      tests/test_frame_pacing.cpp tests/test_gpu_drawing.cpp)
     target_compile_definitions(reckless_view_test PRIVATE
         RECKLESS_LICENCE_VECTORS="${CMAKE_CURRENT_SOURCE_DIR}/licence/tests/vectors.json")
     target_link_libraries(reckless_view_test PRIVATE reckless_window_headers reckless_core_preset_files
