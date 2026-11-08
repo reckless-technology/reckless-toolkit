@@ -631,7 +631,30 @@ TEST(GpuWindow, TheGpuAskedForWithNoBackEndIsAnsweredNotLinked)
     DestroyWindow(top);
 }
 #else
+#include <functional>
+#include <memory>
+#include <utility>
+
 #include "TestHostWindow.h"
+
+namespace
+{
+/** A host's loop that takes the window's watch and its timer and never runs them: a Linux window needs a loop to be
+    made at all, and nothing this case holds waits for an event. */
+class LoopThatRunsNothing final : public reckless::window::RunLoop
+{
+  public:
+    bool WatchFd(int, std::function<void()>) override
+    {
+        return true;
+    }
+
+    bool StartTimer(int, std::function<void()>) override
+    {
+        return true;
+    }
+};
+} // namespace
 
 TEST(GpuWindow, IsAcceptedAndAnsweredWithTheCpuRasterWhereThePlatformHasNoGpuPathYet)
 {
@@ -647,7 +670,13 @@ TEST(GpuWindow, IsAcceptedAndAnsweredWithTheCpuRasterWhereThePlatformHasNoGpuPat
     }
     reckless::view::View root;
     root.SetBounds({240, 160});
-    auto child = reckless::window::CreateChildWindow(host.Parent(), root, 240, 160, 1.0f);
+    // A host's loop where the platform needs one (Linux); macOS's window runs on AppKit's and is handed none.
+#if defined(__linux__)
+    auto loop = std::make_unique<LoopThatRunsNothing>();
+#else
+    std::unique_ptr<reckless::window::RunLoop> loop;
+#endif
+    auto child = reckless::window::CreateChildWindow(host.Parent(), root, 240, 160, 1.0f, std::move(loop));
     ASSERT_NE(child, nullptr);
     EXPECT_EQ(child->DrawingNow().why, DrawingFallback::kNotAsked)
         << "a window no one has asked draws as it always did";
