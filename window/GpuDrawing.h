@@ -40,7 +40,7 @@ enum class DrawingFallback
     kNotAsked,            ///< no one asked for the GPU - a window's state until a product does
     kForcedOff,           ///< the environment turned the GPU off (RECKLESS_GPU_DRAWING=off)
     kNotLinked,           ///< the request named no GPU back end: the product did not link reckless_window_gpu
-    kNoGpuOnThisPlatform, ///< this platform's window has no GPU path yet: Linux, until its back end lands
+    kNoGpuOnThisPlatform, ///< this platform's window has no GPU path: Linux built without libEGL's files
     kNoPixelFormat,       ///< the window could not be given a pixel format the GL draws to
     kNoContext,           ///< the platform would not make a GL context on the window
     kGlTooOld,            ///< the GL the platform gave is older than the 3.0 Skia's Ganesh is asked to draw on

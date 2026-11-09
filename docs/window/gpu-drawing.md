@@ -2,8 +2,9 @@
 
 A child window draws its view tree with Skia's CPU raster and hands the pixels to the platform, and has done since the
 toolkit began: `SkSurfaces::WrapPixels` and `SetDIBitsToDevice` on Windows, a `CGImage` in `drawRect:` on macOS,
-`XPutImage` on Linux. So a window now carries an **opt-in GPU path** beside it, on Windows and macOS: Skia's Ganesh on
-OpenGL through WGL on Windows and on Metal on macOS, each frame drawn into a surface on the GPU and presented. A
+`XPutImage` on Linux. So a window now carries an **opt-in GPU path** beside it, on every platform: Skia's Ganesh on
+OpenGL through WGL on Windows, on Metal on macOS and on OpenGL through EGL on Linux, each frame drawn into a surface on
+the GPU and presented. A
 product asks for it, and the window gives it where it can, says so, and draws with the CPU raster where it cannot and
 says why.
 
@@ -251,6 +252,70 @@ each presenter taking its layer off the view as it goes, and then the CPU raster
   (`gpu_window` in 3.45 s, `child_window` in 6.42 s with its one Linux drop case skipped). The window-only suite's
   binary names no Metal and the GPU suite's names it, read off each with `otool -L`.
 
+## EGL on X11 on Linux
+
+The third back end, on the shared seam below: `window/linux/GpuDrawingLinux.cpp` and its seam with the window,
+`window/linux/GpuPresenterLinux.h`, compiled into `reckless_window_gpu` beside `GpuSurfacePresenter.cpp`. The pinned
+pack has only GLX's native interface on Linux x64, so Skia is handed an interface assembled from `eglGetProcAddress`
+(`GrGLMakeAssembledInterface`), which `EGL_KHR_client_get_all_proc_addresses` makes good for the core functions too:
+no GL header is included and libGL is not linked. libGLX is on the link line all the same, because the pack's GL
+context maker shares an object with its GLX interface; nothing of it is called. libEGL's files are found by hand
+(`find_path`, `find_library`) rather than through FindOpenGL, which makes its EGL target only where libOpenGL's are
+found too (CMake 3.28), and **where they are missing the back end is none**, as it was, and configuring says so: a CI
+image needs `libegl-dev` (`.github/actions/cpp/action.yml`, `tools/setup-dev.sh`).
+
+### How a frame is drawn there
+
+1. **An EGL display on the window's own X11 connection**, `eglGetPlatformDisplay(EGL_PLATFORM_X11_KHR, ...)`. Each
+   child window has a connection of its own, so each has a display of its own, and the presenter terminates it.
+2. **A software device refused before any context is made**: the display's device is asked for its extensions
+   (`EGL_EXT_device_query`), and one that names `EGL_MESA_device_software` - Xvfb's, `LIBGL_ALWAYS_SOFTWARE`'s, an X
+   server with no DRI3 - is `kSoftwareRenderer`. A machine that has only llvmpipe, which CI's runners are and which the
+   chess matches run on, so never starts a software rasteriser's threads for a window. NVIDIA's EGL names no such
+   extension, and answers no.
+3. **A config whose native visual is the window's own** (the window was made with its parent's), eight bits of red,
+   green and blue, a stencil where there is one, and the fewest samples and depth bits after that.
+4. **A desktop GL context, robust where the driver makes one**: EGL 1.5's own `EGL_CONTEXT_OPENGL_ROBUST_ACCESS` and
+   lose-on-reset first, `EGL_KHR_create_context`'s flags after, a plain context last. `EGL_EXT_create_context_robustness`
+   is not asked: its attributes are for OpenGL ES alone, and Mesa 25.2.8 and NVIDIA 580.178.04 both refused them for
+   desktop GL with `EGL_BAD_ATTRIBUTE`. A robust context's `glGetGraphicsResetStatus` is the back end's `IsDeviceReset`,
+   beside `EGL_CONTEXT_LOST` from a make-current or a swap.
+5. **The renderer read with no surface, then refused or accepted**: with `EGL_KHR_surfaceless_context` the context is
+   made current with no surface, so a GL that is refused - a software renderer `IsSoftwareRenderer` names, a GL older
+   than 3.0 - never had the window. Only then is a window surface made on the window and made current, and **the draw
+   and read buffers set to `GL_BACK`**: a context first made current with no default framebuffer starts with both at
+   `GL_NONE` (OpenGL 4.6 core, 17.4.1 and 18.2.1), and binding a surface after does not change them. NVIDIA keeps to
+   that, and until they were set every frame went nowhere and the window read back black; Mesa starts them at
+   `GL_BACK` regardless.
+6. **Skia's context on the assembled interface, and a swap interval of 0**: the frame callback runs on the host loop's
+   16 ms timer, and a swap that waited for the blank would hold that loop, which every window on it shares.
+7. **The present** is the shared seam's: the views' surface copied over the window's framebuffer 0, wrapped bottom-up
+   at the window surface's own size (`eglQuerySurface`, which follows the X window's even when the server has not yet
+   reported a resize), and `eglSwapBuffers`. A 24-bit visual's buffer has no alpha, so it is wrapped as RGB8.
+
+The popups stay on the CPU raster and `XPutImage`, as do a window that is not asked, a refusal and a loss: the window
+falls back to the raster it always had, and the suite holds that it is shown.
+
+### Two GPUs, PRIME and Xvfb
+
+The display is the X server's, so the GPU is the one EGL's vendor library picks for it. On a laptop with PRIME render
+offload that is the integrated GPU, and the discrete one where the product is started with
+`__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia` (glvnd's EGL follows them as GLX does); the toolkit
+chooses neither. Under Xvfb, and wherever the user cannot open a render node, Mesa offers only llvmpipe, which step 2
+refuses.
+
+### What it did
+
+- **jonny-precision** (Dell Precision 5530, Linux Mint 22.3, Cinnamon on Xorg, Intel UHD 630 on Mesa 25.2.8 driving
+  the display and a Quadro P2000 on NVIDIA 580.178.04 by PRIME render offload), 2026-11-08, `RECKLESS_REQUIRE_WINDOW=1
+  RECKLESS_REQUIRE_GPU=1`: on the Intel GPU all nine of the GPU suite's cases pass - the known frame read back off the
+  canvas and off the window (`00E6141E 0014D228 001E28DC 00F0E614`) at 1 and at 1.5 and other sizes, lost and made
+  again, given up, back to the CPU raster and on again, a popup over it, a software GL refused under
+  `LIBGL_ALWAYS_SOFTWARE=1`, and the fallbacks. On the P2000 eight pass and the software case skips, since NVIDIA's EGL
+  ignores `LIBGL_ALWAYS_SOFTWARE`.
+- **Under Xvfb**, as CI runs it, every GPU case is refused at step 2 with no context made, and the toolkit's whole
+  suite, all 21 tests, passes. The window-only suite (`child_window`) holds that it loads no EGL or GL.
+
 ## Falling back
 
 Every refusal is a reason (`window::DrawingFallback`), said in words by `window::TextOf`:
@@ -259,9 +324,10 @@ Every refusal is a reason (`window::DrawingFallback`), said in words by `window:
 |---|---|
 | `kNotAsked` | no one asked for the GPU |
 | `kForcedOff` | the environment says `RECKLESS_GPU_DRAWING=off` |
-| `kNoGpuOnThisPlatform` | Linux, for now |
+| `kNoGpuOnThisPlatform` | Linux built where libEGL's files were not found, whose back end is none |
 | `kNotLinked` | the request named no back end |
 | `kNoPixelFormat`, `kNoContext`, `kGlTooOld`, `kNoSkiaInterface`, `kNoSkiaContext` | the step of making the GPU that refused |
+| `kSoftwareRenderer` | the GL is a software rasteriser (llvmpipe, softpipe, swrast) or, on Linux, EGL's device is a software one |
 | `kNoMetalDevice` | macOS: no Metal device drives the window's display, or it gives no command queue |
 | `kNoSurface` | Skia would not make a surface the window's size |
 | `kContextLostTooOften`, `kContextNotMadeAgain` | the GPU was lost and given up |
@@ -280,10 +346,9 @@ another way there. Sentinel's HD skin already has one: where it cannot write the
 into a raster of its own at 1080 lines and draws that scaled (its `hd_skin.cpp`, `PaintIntoPixels` and the
 `PaintCapture` fallback), and that path is what a GPU canvas reaches unchanged.
 
-**On Linux** the request is accepted and answered with the CPU raster, `kNoGpuOnThisPlatform`, and
-`reckless_window_gpu` there is a back end of none (`window/GpuDrawingNone.cpp`), so a product may link it and ask on
-every platform alike. The pinned skia-pack has GLX's GL on Linux x64 and EGL's GLES on Linux arm64. Its back end is
-planned on the shared seam below.
+**On Linux built without libEGL's files** the request is accepted and answered with the CPU raster,
+`kNoGpuOnThisPlatform`, and `reckless_window_gpu` there is a back end of none (`window/GpuDrawingNone.cpp`), so a
+product may link it and ask on every platform alike.
 
 ## The shared seam
 
@@ -306,13 +371,11 @@ Every back end is the same two halves, so a new platform writes only the second.
   `ChosenDrawing` never answers the new two: they are a back end's own, found only when it tries, after the environment,
   the platform and the back end have been checked in the order above.
 
-### Planned back ends
+### The back ends
 
-- **Metal on macOS (T1)** is done: [Metal on macOS](#metal-on-macos), above.
-- **EGL on X11 on Linux (T2).** Skia's Ganesh on GLES over an EGL surface on the window. A software EGL
-  (`EGL_MESA_device_software`) or a renderer `IsSoftwareRenderer` names (llvmpipe, softpipe) is refused with
-  `kSoftwareRenderer`, because the CPU raster is as fast and CI's Xvfb has only that; robustness is requested where
-  `EGL_EXT_create_context_robustness` is offered, and it supplies `IsDeviceReset`.
+- **WGL on Windows**, the first, described from [How a frame is drawn](#how-a-frame-is-drawn) on.
+- **Metal on macOS (T1)**: [Metal on macOS](#metal-on-macos), above.
+- **EGL on X11 on Linux (T2)**: [EGL on X11 on Linux](#egl-on-x11-on-linux), above.
 
 ## Reading a GPU window back off the screen
 
@@ -350,5 +413,10 @@ that wait for a first paint, too.
   drawables made again at each; lost and made again, then given up for the CPU raster with no layer left over the view;
   put back on the CPU raster and on the GPU again; a product's drawables `framebufferOnly`; the fallback with
   `RECKLESS_GPU_DRAWING=off`; `kNotLinked`; and the suite's own binary naming Metal, the control for the window suite's
-  holding that its binary does not. Each GPU case skips where no Metal device drives the display. On Linux, the request
-  answered with the CPU raster.
+  holding that its binary does not. Each GPU case skips where no Metal device drives the display. On Linux, on EGL:
+  the known frame read back off the canvas and off the window (`XGetImage`, after a window on the CPU raster read the
+  same way as the control), at other scales and sizes, lost and made again and given up, back to the CPU raster and
+  on again, a popup over a GPU window kept on the CPU raster, a software GL refused, the fallback with
+  `RECKLESS_GPU_DRAWING=off`, `kNotLinked`, and the suite loading libEGL and not libGL. Each GPU case skips with the
+  window's own reason where EGL will not draw, as under CI's Xvfb, unless `RECKLESS_REQUIRE_GPU=1` says a GPU is there,
+  and then it fails. The window suite (`ChildWindowDrawing`) holds that a window not asked loads no EGL or GL.

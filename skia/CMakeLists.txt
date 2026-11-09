@@ -215,8 +215,29 @@ elseif(APPLE)
     target_link_libraries(reckless_window_gpu PUBLIC reckless_window_api "-framework Metal" "-framework QuartzCore"
                                               PRIVATE reckless_warnings)
 else()
-    add_library(reckless_window_gpu STATIC "${RECKLESS_TOOLKIT_DIR}/window/GpuDrawingNone.cpp")
-    target_link_libraries(reckless_window_gpu PUBLIC reckless_window_api PRIVATE reckless_warnings)
+    # Linux: Ganesh on desktop GL through EGL on the window's own X11 connection, every GL function EGL's to give
+    # (window/linux/GpuDrawingLinux.cpp). Skia's GL context maker in the pack's libskia.a shares an object with its
+    # GLX interface, so libGLX goes on the link line beside libEGL, as d3d12 does on Windows: nothing of it is called,
+    # and libGL itself is not linked. Where libEGL's development files are not found (libegl-dev, which brings
+    # libGLX's) the back end is none, as it was, so a product that links this library still configures on a machine
+    # without them - and says so here. Found by hand rather than through FindOpenGL, which makes its EGL target only
+    # where libOpenGL's files are found too (CMake 3.28), and this needs nothing of those.
+    find_path(RECKLESS_EGL_INCLUDE_DIR EGL/egl.h)
+    find_library(RECKLESS_EGL_LIBRARY EGL)
+    find_library(RECKLESS_GLX_LIBRARY GLX)
+    if(RECKLESS_EGL_INCLUDE_DIR AND RECKLESS_EGL_LIBRARY AND RECKLESS_GLX_LIBRARY)
+        set(RECKLESS_WINDOW_GPU_EGL ON)
+        add_library(reckless_window_gpu STATIC "${RECKLESS_TOOLKIT_DIR}/window/linux/GpuDrawingLinux.cpp"
+                                             "${RECKLESS_TOOLKIT_DIR}/window/GpuSurfacePresenter.cpp")
+        target_include_directories(reckless_window_gpu SYSTEM PRIVATE "${RECKLESS_EGL_INCLUDE_DIR}")
+        target_link_libraries(reckless_window_gpu PUBLIC reckless_window_api "${RECKLESS_EGL_LIBRARY}"
+                                                  "${RECKLESS_GLX_LIBRARY}" PRIVATE reckless_warnings)
+    else()
+        message(STATUS "reckless_window_gpu: no EGL found (libegl-dev), so no GPU back end on Linux: a window asked "
+                       "for the GPU draws with the CPU raster")
+        add_library(reckless_window_gpu STATIC "${RECKLESS_TOOLKIT_DIR}/window/GpuDrawingNone.cpp")
+        target_link_libraries(reckless_window_gpu PUBLIC reckless_window_api PRIVATE reckless_warnings)
+    endif()
 endif()
 set_target_properties(reckless_window_gpu PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_VISIBILITY_PRESET hidden
                                                      VISIBILITY_INLINES_HIDDEN ON)
@@ -281,6 +302,10 @@ if(RECKLESS_TOOLKIT_BUILD_TESTS)
     endif()
     add_test(NAME gpu_window COMMAND reckless_gpu_window_test)
     set_tests_properties(gpu_window PROPERTIES LABELS window RESOURCE_LOCK display)
+    if(RECKLESS_WINDOW_GPU_EGL)
+        # Linux's half holds that the back end it links is EGL's, and loads libEGL (the window suite's control).
+        target_compile_definitions(reckless_gpu_window_test PRIVATE RECKLESS_GPU_EGL)
+    endif()
 endif()
 
 # reckless_module_window(<target>): the child window inside one plug-in module, compiled into it. On macOS the window's

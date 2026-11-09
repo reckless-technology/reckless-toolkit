@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
@@ -75,30 +76,7 @@ class GpuDrawingVariable
 
     std::optional<std::string> was_; ///< the value it had, where it had one.
 };
-} // namespace
 
-#if defined(_WIN32)
-#include <algorithm>
-#include <cstdint>
-#include <cstring>
-#include <functional>
-#include <memory>
-#include <vector>
-
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
-#include <d3d11.h>
-#include <dxgi1_2.h>
-#include <wrl/client.h>
-
-namespace
-{
 using reckless::gfx::Color;
 
 /** The four colours of the known frame, its quarters from the top left, along and down. */
@@ -172,6 +150,64 @@ class KnownFrame final : public reckless::view::View
     int           losses_to_cause{0};          ///< paints still to abandon the GPU's context after.
 };
 
+/** Whether every quarter read is the colour drawn there.
+    @param quarters  the four pixels read, 0xAARRGGBB
+    @return          true when each is its quarter's colour */
+bool AreTheKnownFrame(const std::uint32_t *quarters)
+{
+    for (int quarter = 0; quarter < 4; ++quarter)
+    {
+        if (!IsColor(quarters[quarter], kQuarterColors[quarter]))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** The pixels read, for a failure's message.
+    @param quarters  the four pixels
+    @return          them in hexadecimal */
+std::string TextOfPixels(const std::uint32_t *quarters)
+{
+    char text[64];
+    std::snprintf(text, sizeof(text), "%08X %08X %08X %08X", quarters[0], quarters[1], quarters[2], quarters[3]);
+    return text;
+}
+
+/** The state a window drawn on the GPU reports, said for the log.
+    @param state  the state
+    @return       it in words */
+std::string Described(const DrawingState &state)
+{
+    return std::string(state.drawing == Drawing::kGpu ? "the GPU" : "the CPU raster") + " (" +
+           reckless::window::TextOf(state.why) + "), " + (state.renderer.empty() ? "no GL" : state.renderer) + ", " +
+           std::to_string(state.contexts_lost) + " lost";
+}
+} // namespace
+
+#if defined(_WIN32)
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <memory>
+#include <vector>
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+#include <d3d11.h>
+#include <dxgi1_2.h>
+#include <wrl/client.h>
+
+namespace
+{
 /** A window on the screen for a child window to sit in: a borderless, never-activated tool window at the top of the
     z-order, so the screen under it is its own and the focus stays where it was; on a thread aware of each monitor's
    DPI, so its pixels are the screen's. */
@@ -238,31 +274,6 @@ void RunMessages(int milliseconds, const std::function<bool()> &is_done = {})
             return;
         }
     }
-}
-
-/** Whether every quarter read is the colour drawn there.
-    @param quarters  the four pixels read, 0xAARRGGBB
-    @return          true when each is its quarter's colour */
-bool AreTheKnownFrame(const std::uint32_t *quarters)
-{
-    for (int quarter = 0; quarter < 4; ++quarter)
-    {
-        if (!IsColor(quarters[quarter], kQuarterColors[quarter]))
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
-/** The pixels read, for a failure's message.
-    @param quarters  the four pixels
-    @return          them in hexadecimal */
-std::string TextOfPixels(const std::uint32_t *quarters)
-{
-    char text[64];
-    std::snprintf(text, sizeof(text), "%08X %08X %08X %08X", quarters[0], quarters[1], quarters[2], quarters[3]);
-    return text;
 }
 
 /** The middle of each quarter of `window`'s client area as the display is shown it: read through DXGI Desktop
@@ -404,15 +415,6 @@ void HoldsTheKnownFrameOnScreen(HWND window, int width, int height, KnownFrame &
     EXPECT_TRUE(AreTheKnownFrame(quarters->data())) << what << ": " << TextOfPixels(quarters->data());
 }
 
-/** The state a window drawn on the GPU reports, said for the log.
-    @param state  the state
-    @return       it in words */
-std::string Described(const DrawingState &state)
-{
-    return std::string(state.drawing == Drawing::kGpu ? "the GPU" : "the CPU raster") + " (" +
-           reckless::window::TextOf(state.why) + "), " + (state.renderer.empty() ? "no GL" : state.renderer) + ", " +
-           std::to_string(state.contexts_lost) + " lost";
-}
 } // namespace
 
 TEST(GpuWindow, DrawsAKnownFrameOnTheGpuThatTheCanvasAndTheScreenBothGiveBack)
@@ -644,64 +646,667 @@ TEST(GpuWindow, TheGpuAskedForWithNoBackEndIsAnsweredNotLinked)
     child.reset();
     DestroyWindow(top);
 }
-#elif !defined(__APPLE__) // macOS's half is test_gpu_window_mac.mm, Objective-C++ to reach the Metal layer
+#elif defined(__linux__) // macOS's half is test_gpu_window_mac.mm, Objective-C++ to reach the Metal layer
+// Linux, on EGL: the known frame drawn on the GPU and read back off the canvas and off the window (XGetImage, against
+// a window on the CPU raster read the same way as the control), at other scales and sizes, through a lost GPU and into
+// the fallback, back to the CPU raster and to the GPU again, with the environment turning the GPU off, with no back
+// end, a popup over a GPU window kept on the CPU raster, and a software GL refused. Each GPU case skips with the
+// window's own reason where this machine's EGL will not draw - CI's Xvfb, which has only llvmpipe - unless the run
+// says a GPU is there (RECKLESS_REQUIRE_GPU), and then it fails. The software refusal is held everywhere: on CI as it
+// is, and on a machine with a GPU with Mesa told to rasterise in software.
+#include <dirent.h>
+
+#include <chrono>
+#include <cstring>
+#include <fstream>
 #include <functional>
 #include <memory>
+#include <string_view>
+#include <thread>
 #include <utility>
+#include <vector>
 
+#include "LoadedLibrariesLinux.h"
 #include "TestHostWindow.h"
+
+// Xlib last: its macros (None, Bool, Status) would reach into the headers above.
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
 
 namespace
 {
-/** A host's loop that takes the window's watch and its timer and never runs them: a Linux window needs a loop to be
-    made at all, and nothing this case holds waits for an event. */
-class LoopThatRunsNothing final : public reckless::window::RunLoop
+/** A host's loop the suite turns by hand: the connection's events and the frame tick, each time it is turned. */
+class TurnedLoop final : public reckless::window::RunLoop
 {
   public:
-    bool WatchFd(int, std::function<void()>) override
+    bool WatchFd(int, std::function<void()> ready) override
     {
+        ready_ = std::move(ready);
         return true;
     }
 
-    bool StartTimer(int, std::function<void()>) override
+    bool StartTimer(int, std::function<void()> tick) override
     {
+        tick_ = std::move(tick);
         return true;
     }
+
+    /** The connection's events read and the frame tick run - which paints what was invalidated - once. */
+    void Turn()
+    {
+        if (ready_)
+        {
+            ready_();
+        }
+        if (tick_)
+        {
+            tick_();
+        }
+    }
+
+  private:
+    std::function<void()> ready_; ///< the connection's watch.
+    std::function<void()> tick_;  ///< the frame tick.
 };
+
+/** An environment variable set for a scope, or taken away for a null value, and put back as it was after. */
+class EnvironmentVariable
+{
+  public:
+    /** The variable set.
+        @param name   its name
+        @param value  its value; null to take it away */
+    EnvironmentVariable(const char *name, const char *value) : name_(name)
+    {
+        if (const char *was = std::getenv(name))
+        {
+            was_ = was;
+        }
+        Set(value);
+    }
+
+    ~EnvironmentVariable()
+    {
+        Set(was_ ? was_->c_str() : nullptr);
+    }
+
+    EnvironmentVariable(const EnvironmentVariable &)            = delete;
+    EnvironmentVariable &operator=(const EnvironmentVariable &) = delete;
+
+  private:
+    void Set(const char *value)
+    {
+        if (value == nullptr)
+        {
+            unsetenv(name_.c_str());
+        }
+        else
+        {
+            setenv(name_.c_str(), value, 1);
+        }
+    }
+
+    std::string                name_; ///< the variable's name.
+    std::optional<std::string> was_;  ///< the value it had, where it had one.
+};
+
+/** Whether the run says this machine has a GPU its EGL draws with (RECKLESS_REQUIRE_GPU set, and not to 0): a GPU case
+    that would skip then fails, so a hardware run whose GPU cases all skipped does not pass with nothing held.
+    @return  true when the GPU is required */
+bool GpuRequired()
+{
+    const char *required = std::getenv("RECKLESS_REQUIRE_GPU");
+    return required != nullptr && *required != '\0' && std::string_view(required) != "0";
+}
+
+/** How many of this process's threads are a software rasteriser's: Mesa names llvmpipe's "llvmpipe-0" and on, one a
+    core. What a GL that was refused before it drew must not have started.
+    @return  the count */
+int SoftwareRasteriserThreads()
+{
+    int  count = 0;
+    DIR *tasks = opendir("/proc/self/task");
+    if (tasks == nullptr)
+    {
+        return 0;
+    }
+    while (const dirent *task = readdir(tasks))
+    {
+        if (task->d_name[0] == '.')
+        {
+            continue;
+        }
+        std::ifstream comm(std::string("/proc/self/task/") + task->d_name + "/comm");
+        std::string   name;
+        std::getline(comm, name);
+        if (name.rfind("llvmpipe", 0) == 0 || name.rfind("softpipe", 0) == 0)
+        {
+            ++count;
+        }
+    }
+    closedir(tasks);
+    return count;
+}
+
+/** A shown window for a child window to sit in, with a connection of the suite's own to read it back off the server
+    by. */
+class ShownHost
+{
+  public:
+    /** The window, `width` x `height` pixels, mapped.
+        @param width   the width, in pixels
+        @param height  the height, in pixels */
+    ShownHost(int width, int height) : host_(width, height)
+    {
+        if (host_.Valid())
+        {
+            host_.Show(true);
+            display_ = XOpenDisplay(nullptr);
+            // Mapped once the window manager has put it up: a read of a window that is not viewable is an X error.
+            const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (display_ != nullptr && !IsShown() && std::chrono::steady_clock::now() < until)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+    }
+
+    ~ShownHost()
+    {
+        if (display_ != nullptr)
+        {
+            XCloseDisplay(display_);
+        }
+    }
+
+    ShownHost(const ShownHost &)            = delete;
+    ShownHost &operator=(const ShownHost &) = delete;
+
+    /** @return whether there is a window and a connection to read it by */
+    bool Valid() const noexcept
+    {
+        return host_.Valid() && display_ != nullptr;
+    }
+
+    /** @return the window's handle, for CreateChildWindow */
+    void *Parent() const noexcept
+    {
+        return host_.Parent();
+    }
+
+    /** The middle of each quarter of the child window in this one, `width` x `height` of its pixels, as the server
+        holds them: XGetImage of the child, which on a compositing desktop is its own pixmap - what an EGL swap
+        presented into - and on Xvfb the screen's. Empty where there is no child yet or the read fails.
+        @param width   the child's width to read the quarters of, in pixels
+        @param height  its height, in pixels
+        @return        the four pixels, 0x00RRGGBB */
+    std::optional<std::vector<std::uint32_t>> Quarters(int width, int height) const
+    {
+        ::Window   root = 0, parent = 0, *children = nullptr;
+        unsigned   count = 0;
+        const auto host  = static_cast<::Window>(reinterpret_cast<std::uintptr_t>(host_.Parent()));
+        if (XQueryTree(display_, host, &root, &parent, &children, &count) == 0 || count == 0)
+        {
+            return std::nullopt;
+        }
+        const ::Window child = children[count - 1];
+        XFree(children);
+        // A window off the screen, or one the server will not read, is an X error, which Xlib's own handler would end
+        // the suite for: it is no read instead.
+        XSync(display_, False);
+        XErrorHandler const was = XSetErrorHandler(IgnoreXErrors);
+        XImage *image = XGetImage(display_, child, 0, 0, static_cast<unsigned>(width), static_cast<unsigned>(height),
+                                  AllPlanes, ZPixmap);
+        XSync(display_, False);
+        XSetErrorHandler(was);
+        if (image == nullptr)
+        {
+            return std::nullopt;
+        }
+        std::vector<std::uint32_t> quarters(4, 0u);
+        for (int quarter = 0; quarter < 4; ++quarter)
+        {
+            quarters[static_cast<std::size_t>(quarter)] = static_cast<std::uint32_t>(
+                XGetPixel(image, (quarter % 2) * width / 2 + width / 4, (quarter / 2) * height / 2 + height / 4) &
+                0xFFFFFFu);
+        }
+        XDestroyImage(image);
+        return quarters;
+    }
+
+  private:
+    /** An X error passed over, for a read that may be refused.
+        @return  zero, always */
+    static int IgnoreXErrors(Display *, XErrorEvent *)
+    {
+        return 0;
+    }
+
+    /** @return whether the window is mapped with every window above it mapped */
+    bool IsShown() const
+    {
+        XWindowAttributes attributes{};
+        const auto        window = static_cast<::Window>(reinterpret_cast<std::uintptr_t>(host_.Parent()));
+        return XGetWindowAttributes(display_, window, &attributes) != 0 && attributes.map_state == IsViewable;
+    }
+
+    reckless::test::TestHostWindow host_;             ///< the window.
+    Display                       *display_{nullptr}; ///< the suite's own connection, for reading the window back.
+};
+
+/** The loop turned for `milliseconds`, or until `is_done` says so, a few milliseconds apart: the child's connection is
+    its own, so what it asked of the server is waited for.
+    @param loop          the window's loop
+    @param milliseconds  the most to turn it for
+    @param is_done       asked after each turn; empty to turn it for the whole time */
+void Turn(TurnedLoop &loop, int milliseconds, const std::function<bool()> &is_done = {})
+{
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(milliseconds);
+    while (std::chrono::steady_clock::now() < until)
+    {
+        loop.Turn();
+        if (is_done && is_done())
+        {
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    }
+}
+
+/** The child's quarters read off the server until they are the known frame or two seconds have gone, the frame drawn
+    again before each read, as a swap may reach the server a frame after it was asked for.
+    @param host    the window the child is in
+    @param loop    the child's loop
+    @param frame   the frame drawn
+    @param width   the child's width, in pixels
+    @param height  its height, in pixels
+    @return        the last quarters read; empty where none could be */
+std::optional<std::vector<std::uint32_t>> QuartersOnScreen(const ShownHost &host, TurnedLoop &loop, KnownFrame &frame,
+                                                           int width, int height)
+{
+    std::optional<std::vector<std::uint32_t>> read;
+    const auto                                until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < until && !(read && AreTheKnownFrame(read->data())))
+    {
+        frame.Repaint();
+        Turn(loop, 30);
+        read = host.Quarters(width, height);
+    }
+    return read;
+}
+
+/** A child window on its own turned loop, in a shown host. */
+struct GpuChild
+{
+    /** The host, the frame and the child window on it, `width` x `height` design pixels at `scale`, in a host of
+        `host_width` x `host_height`.
+        @param width        the frame's width
+        @param height       its height
+        @param host_width   the host's width, in pixels
+        @param host_height  its height, in pixels */
+    GpuChild(int width, int height, int host_width, int host_height) : host(host_width, host_height)
+    {
+        frame.SetBounds({width, height});
+        if (host.Valid())
+        {
+            auto made = std::make_unique<TurnedLoop>();
+            loop      = made.get();
+            child     = reckless::window::CreateChildWindow(host.Parent(), frame, width, height, 1.0f, std::move(made));
+        }
+    }
+
+    ~GpuChild()
+    {
+        child.reset(); // before the window it sits in
+    }
+
+    GpuChild(const GpuChild &)            = delete;
+    GpuChild &operator=(const GpuChild &) = delete;
+
+    ShownHost                                      host;          ///< the shown window.
+    KnownFrame                                     frame;         ///< the frame drawn.
+    TurnedLoop                                    *loop{nullptr}; ///< the child's loop, owned by the child.
+    std::unique_ptr<reckless::window::ChildWindow> child;         ///< the child window; null where none was made.
+};
+
+/** Whether a window could be made at all, failing where the run promised one (RECKLESS_REQUIRE_WINDOW).
+    @param made  the child and its host
+    @return      true to go on; false where the case is to skip */
+bool HasAWindow(const GpuChild &made)
+{
+    if (!made.host.Valid())
+    {
+        EXPECT_FALSE(reckless::test::WindowRequired()) << "a window is required and none was made";
+        return false;
+    }
+    EXPECT_NE(made.child, nullptr);
+    return made.child != nullptr;
+}
+
+/** The known frame drawn in a shown window on the CPU raster, and whether the server gave it back: the control that
+    says whether a window's pixels can be read off this display at all.
+    @return  true when the display gives a window's pixels back */
+bool CanTheScreenBeRead()
+{
+    constexpr int kSize = 160;
+    GpuChild      made(kSize, kSize, kSize, kSize);
+    if (made.child == nullptr)
+    {
+        return false;
+    }
+    Turn(*made.loop, 1500, [&] { return made.frame.paints > 0; });
+    const auto quarters = QuartersOnScreen(made.host, *made.loop, made.frame, kSize, kSize);
+    std::printf("[ gpu window ] the control, on the CPU raster: %d paints, %s read back\n", made.frame.paints,
+                quarters ? TextOfPixels(quarters->data()).c_str() : "nothing");
+    return made.frame.paints > 0 && quarters && AreTheKnownFrame(quarters->data());
+}
+
+/** The known frame as the server holds the child's pixels, checked.
+    @param made    the child and its host
+    @param width   the child's width, in pixels
+    @param height  its height, in pixels
+    @param what    what is being held, for the log and a failure's message */
+void HoldsTheKnownFrameOnScreen(GpuChild &made, int width, int height, const char *what)
+{
+    const auto quarters = QuartersOnScreen(made.host, *made.loop, made.frame, width, height);
+    std::printf("[ gpu window ] %s: %s read back\n", what,
+                quarters ? TextOfPixels(quarters->data()).c_str() : "nothing");
+    ASSERT_TRUE(quarters.has_value()) << what << ": the server gave nothing back, though the control's read";
+    EXPECT_TRUE(AreTheKnownFrame(quarters->data())) << what << ": " << TextOfPixels(quarters->data());
+}
+
+/** The GPU asked for, and whether the case goes on: true on the GPU; false, the reason said, where it fell back - a
+    failure where the run requires a GPU, a skip for the caller to make otherwise.
+    @param made   the child
+    @param state  set to what the window answered
+    @return       true when the window draws on the GPU */
+bool AskedForTheGpu(GpuChild &made, DrawingState &state)
+{
+    state = made.child->SetDrawing(reckless::window::GpuDrawingRequest());
+    std::printf("[ gpu window ] asked for the GPU: %s\n", Described(state).c_str());
+    std::fflush(stdout);
+    if (state.drawing != Drawing::kGpu)
+    {
+        EXPECT_NE(state.why, DrawingFallback::kNone);
+        EXPECT_NE(state.why, DrawingFallback::kNotAsked) << "it was asked, so it says why it did not";
+        EXPECT_FALSE(GpuRequired()) << "the run requires a GPU (RECKLESS_REQUIRE_GPU), and the window fell back: "
+                                    << Described(state);
+        return false;
+    }
+    return true;
+}
 } // namespace
 
-TEST(GpuWindow, IsAcceptedAndAnsweredWithTheCpuRasterWhereThePlatformHasNoGpuPathYet)
+#define RECKLESS_SKIP_WITHOUT_THE_GPU(made, state)                                                \
+    if (!AskedForTheGpu(made, state))                                                             \
+    {                                                                                             \
+        GTEST_SKIP() << "no GPU to draw on here: " << reckless::window::TextOf(state.why) << " (" \
+                     << (state.renderer.empty() ? "no GL context" : state.renderer) << ")";       \
+    }
+
+TEST(GpuWindow, DrawsAKnownFrameOnTheGpuThatTheCanvasAndTheWindowBothGiveBack)
 {
-    GpuDrawingVariable             unset("");
-    reckless::test::TestHostWindow host(240, 160);
-    if (!host.Valid())
+    GpuDrawingVariable unset("");
+    constexpr int      kWidth  = 240;
+    constexpr int      kHeight = 160;
+    GpuChild           made(kWidth, kHeight, kWidth, kHeight);
+    if (!HasAWindow(made))
     {
-        if (reckless::test::WindowRequired())
-        {
-            FAIL() << "a window is required and none was made";
-        }
         GTEST_SKIP() << "no display";
     }
-    reckless::view::View root;
-    root.SetBounds({240, 160});
-    // A host's loop where the platform needs one (Linux); macOS's window runs on AppKit's and is handed none.
-#if defined(__linux__)
-    auto loop = std::make_unique<LoopThatRunsNothing>();
-#else
-    std::unique_ptr<reckless::window::RunLoop> loop;
-#endif
-    auto child = reckless::window::CreateChildWindow(host.Parent(), root, 240, 160, 1.0f, std::move(loop));
-    ASSERT_NE(child, nullptr);
-    EXPECT_EQ(child->DrawingNow().why, DrawingFallback::kNotAsked)
-        << "a window no one has asked draws as it always did";
-    EXPECT_EQ(reckless::window::GpuDrawingBackend(), nullptr) << "there is no GPU back end here yet";
-    const DrawingState state = child->SetDrawing(reckless::window::GpuDrawingRequest());
-    EXPECT_EQ(state.drawing, Drawing::kCpuRaster);
-    EXPECT_EQ(state.why, DrawingFallback::kNoGpuOnThisPlatform);
+    DrawingState state;
+    RECKLESS_SKIP_WITHOUT_THE_GPU(made, state);
+    EXPECT_EQ(made.child->DrawingNow().drawing, Drawing::kGpu) << "and says the same when asked again";
+    EXPECT_EQ(state.why, DrawingFallback::kNone);
+    EXPECT_FALSE(state.renderer.empty()) << "the GL is named, for a product's log";
+    EXPECT_FALSE(reckless::window::IsSoftwareRenderer(state.renderer.c_str())) << state.renderer;
+
+    Turn(*made.loop, 1500, [&] { return made.frame.paints > 0; });
+    ASSERT_GT(made.frame.paints, 0) << "a window on the GPU is painted";
+    EXPECT_TRUE(made.frame.is_on_gpu) << "its canvas has a GPU context, which is how a view asks";
+    EXPECT_FALSE(made.frame.has_pixels_in_memory) << "and gives no pixels to be written by hand";
+    EXPECT_TRUE(AreTheKnownFrame(made.frame.canvas_pixels))
+        << "the canvas gives back what was drawn on it: " << TextOfPixels(made.frame.canvas_pixels);
+    if (!CanTheScreenBeRead())
     {
-        GpuDrawingVariable off("off");
-        EXPECT_EQ(child->SetDrawing(reckless::window::GpuDrawingRequest()).why, DrawingFallback::kForcedOff)
-            << "the environment's word is said first, on every platform";
+        GTEST_SKIP() << "the display gives back no window's pixels - the control on the CPU raster read nothing or "
+                        "read wrong - so what the swap presented is not held";
     }
+    // The swap put the frame on the window, the right way up: GL's bottom-left origin turned over.
+    HoldsTheKnownFrameOnScreen(made, kWidth, kHeight, "on the GPU");
+    EXPECT_EQ(made.child->DrawingNow().drawing, Drawing::kGpu);
+}
+
+TEST(GpuWindow, AScaleAndASizeChangeRebuildTheSurfaceAndItGoesOnDrawing)
+{
+    GpuDrawingVariable unset("");
+    constexpr int      kWidth  = 200;
+    constexpr int      kHeight = 120;
+    GpuChild           made(kWidth, kHeight, kWidth * 2, kHeight * 2);
+    if (!HasAWindow(made))
+    {
+        GTEST_SKIP() << "no display";
+    }
+    DrawingState state;
+    RECKLESS_SKIP_WITHOUT_THE_GPU(made, state);
+    Turn(*made.loop, 1500, [&] { return made.frame.paints > 0; });
+    // A change of the desktop's scale reaches the window as a new scale, full screen and a resize as a new size of the
+    // root at the same scale (app/AppRun.cpp): both come here as SetScale.
+    for (const auto &[scale, width, height] : {std::tuple{2.0f, kWidth, kHeight}, std::tuple{1.0f, kWidth * 2, kHeight},
+                                               std::tuple{1.5f, kWidth, kHeight * 2 / 3}})
+    {
+        made.frame.SetBounds({width, height});
+        const int painted = made.frame.paints;
+        made.child->SetScale(scale);
+        Turn(*made.loop, 1500, [&] { return made.frame.paints > painted; });
+        ASSERT_GT(made.frame.paints, painted) << "the window is drawn again at " << scale;
+        EXPECT_EQ(made.child->DrawingNow().drawing, Drawing::kGpu) << "and is still on the GPU at " << scale;
+        EXPECT_TRUE(made.frame.is_on_gpu);
+        EXPECT_TRUE(AreTheKnownFrame(made.frame.canvas_pixels))
+            << "at " << scale << ", " << width << " x " << height << ": " << TextOfPixels(made.frame.canvas_pixels);
+    }
+    if (CanTheScreenBeRead())
+    {
+        // The window surface follows the X window's size, which the server may give a frame late: what is held is
+        // that the frame lands where it should once it has.
+        HoldsTheKnownFrameOnScreen(made, static_cast<int>(std::lround(made.frame.width() * 1.5f)),
+                                   static_cast<int>(std::lround(made.frame.height() * 1.5f)), "on the GPU at 1.5");
+    }
+}
+
+TEST(GpuWindow, ALostGpuIsMadeAgainAndOneLostTooOftenIsGivenUpForTheCpuRaster)
+{
+    GpuDrawingVariable unset("");
+    constexpr int      kSize = 160;
+    GpuChild           made(kSize, kSize, kSize, kSize);
+    if (!HasAWindow(made))
+    {
+        GTEST_SKIP() << "no display";
+    }
+    DrawingState state;
+    RECKLESS_SKIP_WITHOUT_THE_GPU(made, state);
+    KnownFrame &frame = made.frame;
+    Turn(*made.loop, 1500, [&] { return frame.paints > 0; });
+    ASSERT_GT(frame.paints, 0);
+
+    // Lost once: made again, and the frame drawn again on the new context.
+    frame.losses_to_cause = 1;
+    frame.Repaint();
+    Turn(*made.loop, 1500, [&] { return frame.losses_to_cause == 0 && made.child->DrawingNow().contexts_lost == 1; });
+    const int painted_after_one = frame.paints;
+    Turn(*made.loop, 1500, [&] { return frame.paints > painted_after_one; });
+    DrawingState now = made.child->DrawingNow();
+    std::printf("[ gpu window ] lost once: %s\n", Described(now).c_str());
+    EXPECT_EQ(now.contexts_lost, 1);
+    EXPECT_EQ(now.drawing, Drawing::kGpu) << "a GPU lost once is made again";
+    EXPECT_EQ(now.why, DrawingFallback::kNone);
+    EXPECT_TRUE(frame.is_on_gpu);
+    EXPECT_TRUE(AreTheKnownFrame(frame.canvas_pixels)) << TextOfPixels(frame.canvas_pixels);
+
+    // Lost until it is given up: the CPU raster, said, and the frame drawn on it.
+    frame.losses_to_cause = reckless::window::kMostGpuContextsLost;
+    for (int loss = 0; loss < reckless::window::kMostGpuContextsLost; ++loss)
+    {
+        const int lost_before = made.child->DrawingNow().contexts_lost;
+        frame.Repaint();
+        Turn(*made.loop, 1500, [&] { return made.child->DrawingNow().contexts_lost > lost_before; });
+    }
+    const int painted_after_all = frame.paints;
+    frame.Repaint();
+    Turn(*made.loop, 1500, [&] { return frame.paints > painted_after_all; });
+    now = made.child->DrawingNow();
+    std::printf("[ gpu window ] lost %d times: %s\n", now.contexts_lost, Described(now).c_str());
+    EXPECT_EQ(now.contexts_lost, reckless::window::kMostGpuContextsLost + 1);
+    EXPECT_EQ(now.drawing, Drawing::kCpuRaster) << "a GPU lost too often is given up";
+    EXPECT_EQ(now.why, DrawingFallback::kContextLostTooOften);
+    EXPECT_FALSE(frame.is_on_gpu) << "and the views are drawn on the CPU raster";
+    EXPECT_TRUE(frame.has_pixels_in_memory) << "whose pixels a view may write by hand again";
+    EXPECT_TRUE(AreTheKnownFrame(frame.canvas_pixels)) << TextOfPixels(frame.canvas_pixels);
+    if (CanTheScreenBeRead())
+    {
+        HoldsTheKnownFrameOnScreen(made, kSize, kSize, "the CPU raster through XPutImage on a window that had EGL's");
+    }
+}
+
+TEST(GpuWindow, AWindowAskedBackToTheCpuRasterDrawsThereAgain)
+{
+    GpuDrawingVariable unset("");
+    constexpr int      kSize = 160;
+    GpuChild           made(kSize, kSize, kSize, kSize);
+    if (!HasAWindow(made))
+    {
+        GTEST_SKIP() << "no display";
+    }
+    DrawingState state;
+    RECKLESS_SKIP_WITHOUT_THE_GPU(made, state);
+    KnownFrame &frame = made.frame;
+    Turn(*made.loop, 1500, [&] { return frame.paints > 0; });
+    const DrawingState back = made.child->SetDrawing({});
+    EXPECT_EQ(back.drawing, Drawing::kCpuRaster);
+    EXPECT_EQ(back.why, DrawingFallback::kNotAsked) << "a default request is the CPU raster, not asked for the GPU";
+    const int painted = frame.paints;
+    Turn(*made.loop, 1500, [&] { return frame.paints > painted; });
+    EXPECT_GT(frame.paints, painted) << "the whole window drawn again on the CPU raster";
+    EXPECT_FALSE(frame.is_on_gpu);
+    EXPECT_TRUE(frame.has_pixels_in_memory);
+    EXPECT_TRUE(AreTheKnownFrame(frame.canvas_pixels)) << TextOfPixels(frame.canvas_pixels);
+    // And to the GPU again, on a window surface made again on the same window.
+    EXPECT_EQ(made.child->SetDrawing(reckless::window::GpuDrawingRequest()).drawing, Drawing::kGpu);
+    const int painted_again = frame.paints;
+    Turn(*made.loop, 1500, [&] { return frame.paints > painted_again; });
+    EXPECT_TRUE(frame.is_on_gpu);
+    EXPECT_TRUE(AreTheKnownFrame(frame.canvas_pixels)) << TextOfPixels(frame.canvas_pixels);
+}
+
+TEST(GpuWindow, APopupOverAWindowOnTheGpuStaysOnTheCpuRaster)
+{
+    GpuDrawingVariable unset("");
+    constexpr int      kSize = 160;
+    GpuChild           made(kSize, kSize, kSize, kSize);
+    if (!HasAWindow(made))
+    {
+        GTEST_SKIP() << "no display";
+    }
+    DrawingState state;
+    RECKLESS_SKIP_WITHOUT_THE_GPU(made, state);
+    Turn(*made.loop, 1500, [&] { return made.frame.paints > 0; });
+    KnownFrame menu;
+    menu.SetBounds({60, 40});
+    auto popup = made.frame.OpenPopup(menu, {10, 10}, [](reckless::gfx::PointI) {}, false);
+    ASSERT_NE(popup, nullptr);
+    Turn(*made.loop, 1500, [&] { return menu.paints > 0; });
+    ASSERT_GT(menu.paints, 0) << "the popup is painted";
+    EXPECT_FALSE(menu.is_on_gpu) << "on the CPU raster: a popup is never asked for the GPU";
+    EXPECT_TRUE(menu.has_pixels_in_memory);
+    EXPECT_TRUE(AreTheKnownFrame(menu.canvas_pixels)) << TextOfPixels(menu.canvas_pixels);
+    EXPECT_EQ(made.child->DrawingNow().drawing, Drawing::kGpu) << "while the window it is over stays on the GPU";
+    popup.reset();
+}
+
+TEST(GpuWindow, ASoftwareGlIsRefusedAndTheWindowDrawsOnTheCpuRaster)
+{
+    // What keeps a machine with only a CPU rasteriser - CI's Xvfb, whose EGL has only llvmpipe, on runners that are
+    // also the chess matches' - from spinning one up across its cores for a window: refused as kSoftwareRenderer, the
+    // window left on the CPU raster, and no rasteriser's thread started. On a machine with a GPU, Mesa is told to
+    // rasterise in software for this case; a driver that is not Mesa's does not hear that, and the case skips there.
+    GpuDrawingVariable  unset("");
+    EnvironmentVariable software("LIBGL_ALWAYS_SOFTWARE", "1");
+    EnvironmentVariable llvmpipe("GALLIUM_DRIVER", "llvmpipe"); // over a GALLIUM_DRIVER that names a GPU (WSLg's d3d12)
+    constexpr int       kSize = 160;
+    GpuChild            made(kSize, kSize, kSize, kSize);
+    if (!HasAWindow(made))
+    {
+        GTEST_SKIP() << "no display";
+    }
+    const int          threads_before = SoftwareRasteriserThreads();
+    const DrawingState state          = made.child->SetDrawing(reckless::window::GpuDrawingRequest());
+    std::printf("[ gpu window ] asked for the GPU with software GL: %s\n", Described(state).c_str());
+    if (state.drawing == Drawing::kGpu && !reckless::window::IsSoftwareRenderer(state.renderer.c_str()))
+    {
+        GTEST_SKIP() << "this EGL is not Mesa's, and draws on its GPU whatever LIBGL_ALWAYS_SOFTWARE says: "
+                     << state.renderer;
+    }
+    EXPECT_EQ(state.drawing, Drawing::kCpuRaster);
+    EXPECT_EQ(state.why, DrawingFallback::kSoftwareRenderer) << reckless::window::TextOf(state.why);
+    EXPECT_EQ(made.child->DrawingNow().why, DrawingFallback::kSoftwareRenderer) << "it says the same when asked again";
+    EXPECT_EQ(SoftwareRasteriserThreads(), threads_before)
+        << "refused before a context was made: no software rasteriser's threads were started";
+    Turn(*made.loop, 1500, [&] { return made.frame.paints > 0; });
+    ASSERT_GT(made.frame.paints, 0);
+    EXPECT_FALSE(made.frame.is_on_gpu) << "the views are drawn on the CPU raster";
+    EXPECT_TRUE(made.frame.has_pixels_in_memory);
+    EXPECT_TRUE(AreTheKnownFrame(made.frame.canvas_pixels)) << TextOfPixels(made.frame.canvas_pixels);
+}
+
+TEST(GpuWindow, TheEnvironmentTurnsTheGpuOffAndTheWindowSaysSoAndDrawsOnTheCpuRaster)
+{
+    GpuDrawingVariable off("off");
+    constexpr int      kSize = 160;
+    GpuChild           made(kSize, kSize, kSize, kSize);
+    if (!HasAWindow(made))
+    {
+        GTEST_SKIP() << "no display";
+    }
+    const DrawingState state = made.child->SetDrawing(reckless::window::GpuDrawingRequest());
+    EXPECT_EQ(state.drawing, Drawing::kCpuRaster);
+    EXPECT_EQ(state.why, DrawingFallback::kForcedOff);
+    EXPECT_TRUE(state.renderer.empty()) << "and no GL context was made to find that out";
+    EXPECT_EQ(made.child->DrawingNow().why, DrawingFallback::kForcedOff) << "it says the same when asked again";
+    Turn(*made.loop, 1500, [&] { return made.frame.paints > 0; });
+    ASSERT_GT(made.frame.paints, 0);
+    EXPECT_FALSE(made.frame.is_on_gpu) << "the views are drawn on the CPU raster";
+    EXPECT_TRUE(made.frame.has_pixels_in_memory) << "whose pixels a view may write by hand";
+    EXPECT_TRUE(AreTheKnownFrame(made.frame.canvas_pixels)) << TextOfPixels(made.frame.canvas_pixels);
+}
+
+TEST(GpuWindow, TheGpuAskedForWithNoBackEndIsAnsweredNotLinked)
+{
+    GpuDrawingVariable unset("");
+    GpuChild           made(240, 160, 240, 160);
+    if (!HasAWindow(made))
+    {
+        GTEST_SKIP() << "no display";
+    }
+    EXPECT_EQ(made.child->DrawingNow().why, DrawingFallback::kNotAsked)
+        << "a window no one has asked draws as it always did";
+    const DrawingState state = made.child->SetDrawing({Drawing::kGpu, nullptr});
+    EXPECT_EQ(state.drawing, Drawing::kCpuRaster);
+    EXPECT_EQ(state.why, DrawingFallback::kNotLinked);
+}
+
+TEST(GpuWindow, ThisSuiteLinksTheEglBackEndAndLoadsLibEgl)
+{
+    // The control for the window's own suite, which links no back end and holds that libEGL is not loaded: the same
+    // read finds it here, where the back end is linked.
+#if defined(RECKLESS_GPU_EGL)
+    EXPECT_NE(reckless::window::GpuDrawingBackend(), nullptr) << "the back end is EGL's";
+    const std::string loaded = reckless::test::LoadedLibrariesOfThisProcess();
+    EXPECT_TRUE(reckless::test::NamesLibrary(loaded, "libEGL.so")) << loaded;
+    // libGLX is on the link line for the pack's sake (skia/CMakeLists.txt) and is never called; libGL is not linked.
+    EXPECT_FALSE(reckless::test::NamesLibrary(loaded, "libGL.so")) << "and libGL is not linked: " << loaded;
+#else
+    EXPECT_EQ(reckless::window::GpuDrawingBackend(), nullptr);
+    GTEST_SKIP() << "built where no EGL was found (libegl-dev): the back end is none";
+#endif
 }
 #endif

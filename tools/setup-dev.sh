@@ -183,11 +183,11 @@ echo "Reckless Technology toolkit: $([ "$check" = 1 ] && echo checking || echo '
 local_bin="$HOME/.local/bin"
 case "$os" in
     # The compiler and the build, then what the windowed parts link (FreeType, fontconfig, X11, found by pkg-config),
-    # the audio device layer's ALSA and JACK headers, Xvfb for the window suites on a display, and Python for the
-    # documents' check.
+    # libEGL's files for the GPU window's back end (reckless_window_gpu, which is none without them), the audio device
+    # layer's ALSA and JACK headers, Xvfb for the window suites on a display, and Python for the documents' check.
     Linux)
         linux_base build-essential cmake ninja-build pkg-config gdb curl git python3 libfreetype-dev \
-            libfontconfig1-dev libx11-dev libasound2-dev libjack-jackd2-dev xvfb
+            libfontconfig1-dev libx11-dev libegl-dev libasound2-dev libjack-jackd2-dev xvfb
         ;;
     Darwin) macos_base; have brew && brew_packages cmake ninja ;;
     *) echo "unsupported system: $os (tools/setup-dev.ps1 is the Windows script)" >&2; exit 2 ;;
