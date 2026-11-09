@@ -279,6 +279,21 @@ TEST(ChildWindow, TakesTheDropsDraggedOverTheTopLevelItIsTheProxyOf)
         }
     };
 
+    // The drag's point in the root's coordinates, as a file manager sends it, once the top-level is up: a window
+    // manager frames and places a window as it maps it, after Show returns, and a point read before that is off the
+    // window by the time the child reads it back (Cinnamon on Xorg, 2026-11-08). Xvfb has no window manager, and no
+    // wait.
+    for (int i = 0; i < 400; ++i)
+    {
+        XWindowAttributes attributes{};
+        if (XGetWindowAttributes(display, toplevel, &attributes) != 0 && attributes.map_state == IsViewable)
+        {
+            break;
+        }
+        turns.Turn();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    XSync(display, False);
     int      x = 0, y = 0;
     ::Window under = 0;
     XTranslateCoordinates(display, proxy, DefaultRootWindow(display), 20, 30, &x, &y, &under);
@@ -365,6 +380,64 @@ TEST(ChildWindow, CtrlWithALetterReachesTheViewsAsTheLetterWithThePrimaryModifie
     EXPECT_EQ(copied, (std::vector<std::string>{"1. c4 e5"})) << "Ctrl+A then Ctrl+C, as Command+A and +C on a Mac";
     press(XK_c, ControlMask | Mod1Mask);
     EXPECT_EQ(copied.size(), 1u) << "not with Alt held too";
+    child.reset();
+    XCloseDisplay(display);
+}
+
+TEST(ChildWindow, AViewThatTakesTheKeyboardBeforeTheWindowIsUpGetsXsFocusOnceItIs)
+{
+    // A view may take the keyboard as its window opens, before the top-level is mapped - before a window manager has
+    // put it up, or before its owner has shown it at all. X's focus set on a window that is not viewable is a BadMatch,
+    // which Xlib's default handler answers by ending the process (Cinnamon on Xorg, 2026-11-08): the window waits until
+    // it is viewable, and then takes it.
+    reckless::test::TestHostWindow top(240, 160);
+    if (!top.Valid())
+    {
+        if (reckless::test::WindowRequired())
+        {
+            FAIL() << "the run promises a window and there is no display";
+        }
+        GTEST_SKIP() << "no display";
+    }
+    reckless::view::View     root;
+    reckless::view::TextView text{reckless::view::TextView::Style{}};
+    root.SetBounds({240, 160});
+    text.SetBounds({0, 0, 240, 160});
+    root.AddChild(text);
+    auto        loop  = std::make_unique<TurnedLoop>();
+    TurnedLoop &turns = *loop;
+    auto        child = reckless::window::CreateChildWindow(top.Parent(), root, 240, 160, 1.0f, std::move(loop));
+    ASSERT_NE(child, nullptr);
+    turns.Turn();
+    root.host()->RequestKeyboardFocus(&text); // the top-level not shown, so the child is not viewable
+    turns.Turn();
+
+    Display *display = XOpenDisplay(nullptr);
+    ASSERT_NE(display, nullptr);
+    const auto toplevel  = static_cast<::Window>(reinterpret_cast<std::uintptr_t>(top.Parent()));
+    ::Window   tree_root = 0, tree_parent = 0, *children = nullptr;
+    unsigned   count = 0;
+    ASSERT_NE(XQueryTree(display, toplevel, &tree_root, &tree_parent, &children, &count), 0);
+    ASSERT_EQ(count, 1u) << "the child window in the top-level";
+    const ::Window window = children[0];
+    XFree(children);
+    const auto focus = [display] {
+        ::Window held   = 0;
+        int      revert = 0;
+        XGetInputFocus(display, &held, &revert);
+        return held;
+    };
+    EXPECT_NE(focus(), window) << "not yet: the window is not viewable";
+
+    top.Show(true);
+    bool is_focused = false;
+    for (int i = 0; i < 400 && !is_focused; ++i)
+    {
+        turns.Turn();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        is_focused = focus() == window;
+    }
+    EXPECT_TRUE(is_focused) << "the child took X's focus once it was viewable";
     child.reset();
     XCloseDisplay(display);
 }

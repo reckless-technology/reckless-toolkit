@@ -518,12 +518,12 @@ class LinuxSurface : public view::Host
             int revert = 0;
             XGetInputFocus(display_, &previous_focus_, &revert);
             focus_taken_ = true;
-            XSetInputFocus(display_, window_, RevertToParent, CurrentTime);
+            TakeXFocusOnceViewable();
         }
         else if (focus_taken_)
         {
             focus_taken_ = false;
-            XSetInputFocus(display_, previous_focus_ != 0 ? previous_focus_ : PointerRoot, RevertToParent, CurrentTime);
+            GiveXFocusBack();
         }
         XFlush(display_);
     }
@@ -631,6 +631,10 @@ class LinuxSurface : public view::Host
         {
         case Expose:
             dirty_ = dirty_.Union({event.xexpose.x, event.xexpose.y, event.xexpose.width, event.xexpose.height});
+            if (is_focus_waiting_)
+            {
+                TakeXFocusOnceViewable(); // the window has come on screen since a view took the keyboard
+            }
             break;
         case ButtonPress:
             Press(event.xbutton);
@@ -858,7 +862,7 @@ class LinuxSurface : public view::Host
         root_.SetHost(nullptr);
         if (focus_taken_)
         {
-            XSetInputFocus(display_, previous_focus_ != 0 ? previous_focus_ : PointerRoot, RevertToParent, CurrentTime);
+            GiveXFocusBack();
         }
         connection_.Remove(window_);
         DestroyImage();
@@ -1047,6 +1051,43 @@ class LinuxSurface : public view::Host
         XFlush(display_);
     }
 
+    /** Whether `window` is mapped with every window above it mapped: what X's focus may be set to, since setting it
+        to a window that is not viewable is a BadMatch error, which Xlib's default handler answers by ending the
+        process.
+        @param window  the window
+        @return        true when X reports it viewable */
+    bool IsWindowViewable(::Window window) const
+    {
+        XWindowAttributes attributes{};
+        return XGetWindowAttributes(display_, window, &attributes) != 0 && attributes.map_state == IsViewable;
+    }
+
+    /** X's focus given to this window now where it is viewable, or as soon as it is (its next Expose) where it is not:
+        a view may take the keyboard before the window manager has put the top-level up, as one does that asks for the
+        keyboard as its window opens. */
+    void TakeXFocusOnceViewable()
+    {
+        is_focus_waiting_ = !IsWindowViewable(window_);
+        if (!is_focus_waiting_)
+        {
+            XSetInputFocus(display_, window_, RevertToParent, CurrentTime);
+        }
+    }
+
+    /** X's focus handed back to the window that held it before this one took it - the pointer's window where that one
+        is no longer viewable - and nothing where this one never had it, still waiting to be viewable. */
+    void GiveXFocusBack()
+    {
+        if (is_focus_waiting_)
+        {
+            is_focus_waiting_ = false;
+            return;
+        }
+        const bool is_window = previous_focus_ != None && previous_focus_ != PointerRoot;
+        XSetInputFocus(display_, is_window && IsWindowViewable(previous_focus_) ? previous_focus_ : PointerRoot,
+                       RevertToParent, CurrentTime);
+    }
+
     /** The XImage destroyed, leaving the raster's pixels to the vector. */
     void DestroyImage()
     {
@@ -1122,13 +1163,14 @@ class LinuxSurface : public view::Host
     sk_sp<SkSurface>           surface_;        ///< Skia's surface on pixels_
     XImage                    *image_{nullptr}; ///< the XImage on pixels_, which XPutImage reads
     bool                       pressed_{false}; ///< a button is down, so moves are drags
-    Time                       last_press_time_{0};  ///< the server time of the last press; 0 after a double click
-    float                      last_press_x_{0.0f};  ///< the last press's x, in window pixels
-    float                      last_press_y_{0.0f};  ///< the last press's y, in window pixels
-    bool                       focus_taken_{false};  ///< a view has the keyboard and this window holds X's focus
-    ::Window                   previous_focus_{0};   ///< the window that held X's focus before this one took it
-    DragAtoms                  atoms_;               ///< the XDND atoms; zero until AcceptDrops
-    ::Window                   drag_source_{0};      ///< the window the drag comes from; 0 for none
+    Time                       last_press_time_{0};      ///< the server time of the last press; 0 after a double click
+    float                      last_press_x_{0.0f};      ///< the last press's x, in window pixels
+    float                      last_press_y_{0.0f};      ///< the last press's y, in window pixels
+    bool                       focus_taken_{false};      ///< a view has the keyboard and this window holds X's focus
+    bool                       is_focus_waiting_{false}; ///< a view has the keyboard and the window is not viewable yet
+    ::Window                   previous_focus_{0};       ///< the window that held X's focus before this one took it
+    DragAtoms                  atoms_;                   ///< the XDND atoms; zero until AcceptDrops
+    ::Window                   drag_source_{0};          ///< the window the drag comes from; 0 for none
     ::Window                   drag_target_{0};      ///< the window the source addressed: this one, or its top-level
     std::vector<std::string>   drag_paths_;          ///< the paths being dragged, once fetched
     gfx::PointF                drag_point_{};        ///< the drag's last position, in design pixels
