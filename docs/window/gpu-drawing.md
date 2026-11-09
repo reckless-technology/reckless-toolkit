@@ -323,6 +323,8 @@ window's background behind it, so a read that agrees with a CPU window says noth
 the compositor composed, and checks its reader first on a window on the CPU raster: where that control reads nothing -
 a display that is off, a locked desktop, a service's window station - nothing is held of what the swap presented, and
 the case says so and skips.
+A window station that paints nothing at all (a runner service in Session 0 with nobody logged in) skips the cases
+that wait for a first paint, too.
 
 ## What is held, and where
 
