@@ -48,7 +48,7 @@ if (state.drawing != reckless::window::Drawing::kGpu)
   rasters one surface was **3,572,224 bytes**, and the same program reaching Ganesh GL **5,402,624** - 1.8 MB more - and
   it gained `OPENGL32.dll` as a library loaded as it starts. Every plug-in compiles the window into its own module and is
   loaded into a host's process, and never asks; with the GPU in `WindowWin.cpp` each would carry the 1.8 MB and load the
-  GL into the host. So the window names nothing of Ganesh (`window/win/GpuPresenterWin.h` is the seam), a binary that
+  GL into the host. So the window names nothing of Ganesh (`window/GpuPresenter.h` is the seam, and `window/win/GpuPresenterWin.h` Windows' half of it), a binary that
   never links `reckless_window_gpu` carries none of it, and the window's own suite holds that: it links the window alone,
   and asserts `opengl32.dll` is not in its process. The window's suite grew by 15,360 bytes with this change, its tests
   included.
@@ -187,7 +187,40 @@ into a raster of its own at 1080 lines and draws that scaled (its `hd_skin.cpp`,
 **On macOS and Linux** the request is accepted and answered with the CPU raster, `kNoGpuOnThisPlatform`, and
 `reckless_window_gpu` there is a back end of none (`window/GpuDrawingNone.cpp`), so a product may link it and ask on
 every platform alike. The pinned skia-pack has Ganesh GL and Metal on macOS, GLX's GL on Linux x64 and EGL's GLES on
-Linux arm64, for when those platforms are done.
+Linux arm64. Two back ends are planned on the shared seam below, written in parallel against it and not against each
+other's files.
+
+## The shared seam
+
+Every back end is the same two halves, so a new platform writes only the second.
+
+- **`window/GpuPresenter.h`** is what a window asks of a presenter (`SurfaceOfSize`, `BeginFrame`, `Present`) and what a
+  back end's attempt came to (`GpuPresenterMade`: the presenter, or null and the `DrawingFallback`, and the renderer
+  string). It names nothing of Skia's GPU, GL or Metal, so a window includes it and a binary that never links a back end
+  stays as small as it was.
+- **`window/GpuSurfacePresenter.h` and `.cpp`**, in `reckless_window_gpu`, are `SkiaGpuPresenter`, the neutral half: the
+  offscreen `SkSurfaces::RenderTarget` that keeps its pixels from frame to frame, its copy over the back buffer, Skia's
+  shut down while the context is current, and the lost-GPU test (Skia's context abandoned, or the platform's word that
+  the device was reset). A back end derives from it and supplies four things: `MakeCurrent`, `BackBuffer` (the window's
+  buffer wrapped for Skia), `SwapBuffers`, and `IsDeviceReset` where its API reports a reset.
+- **The platform's own file** holds the rest - for Windows `window/win/GpuDrawingWin.cpp`: the pixel format, the WGL
+  context, the probe, and `GpuBackend`'s `make` function, whose signature is the platform's (`GpuPresenterWin.h`).
+- **`window/GpuDrawing.h`** holds the words, shared by all: `kSoftwareRenderer` and `kNoMetalDevice` joined the reasons,
+  with `IsSoftwareRenderer` to read a GL renderer string (llvmpipe, softpipe, swrast, a "software rasterizer"). Where
+  the GPU is meant in general the words say so ("the GPU's graphics API"); the GL-specific reasons still say GL.
+  `ChosenDrawing` never answers the new two: they are a back end's own, found only when it tries, after the environment,
+  the platform and the back end have been checked in the order above.
+
+### Planned back ends
+
+- **Metal on macOS (T1).** Skia's Ganesh on Metal over a `CAMetalLayer` on the view. It chooses the device that drives
+  the display - the GPU the window is on, not simply the system default, so a laptop with two GPUs does not draw on one
+  and present from the other - and answers `kNoMetalDevice` where there is none. Metal reports no reset code of
+  `glGetGraphicsResetStatus`'s kind, so loss is Skia's context abandoned or the command buffer's error.
+- **EGL on X11 on Linux (T2).** Skia's Ganesh on GLES over an EGL surface on the window. A software EGL
+  (`EGL_MESA_device_software`) or a renderer `IsSoftwareRenderer` names (llvmpipe, softpipe) is refused with
+  `kSoftwareRenderer`, because the CPU raster is as fast and CI's Xvfb has only that; robustness is requested where
+  `EGL_EXT_create_context_robustness` is offered, and it supplies `IsDeviceReset`.
 
 ## Reading a GPU window back off the screen
 
@@ -203,7 +236,8 @@ the case says so and skips.
 
 - **The policy, on every platform and in the builds with no GUI**: `tests/test_gpu_drawing.cpp`, in the `view`
   suite - a default request, the order the refusals are checked in, the environment's word, the GL versions drawn on,
-  how often a lost GPU is made again, every reason in words of its own, and what a window with no GPU path answers.
+  how often a lost GPU is made again, every reason in words of its own (the software-renderer and Metal ones included),
+  the software renderers `IsSoftwareRenderer` names, and what a window with no GPU path answers.
 - **The window that is not asked**: `skia/tests/test_child_window.cpp`, `ChildWindowDrawing` - on Windows, a window that
   links no back end loads no GL, answers `kNotAsked`, paints on a canvas with no GPU context whose pixels are the raster
   `SetDIBitsToDevice` is handed, and answers `kNotLinked` to a request with no back end.
