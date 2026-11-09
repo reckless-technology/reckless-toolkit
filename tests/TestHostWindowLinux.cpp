@@ -4,7 +4,10 @@
 // needs one; under xvfb-run there is.
 #include <X11/Xlib.h>
 
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
+#include <thread>
 
 #include "TestHostWindow.h"
 
@@ -29,7 +32,16 @@ int IgnoreErrors(Display *, XErrorEvent *)
 
 TestHostWindow::TestHostWindow(int width, int height)
 {
+    // Asked again for up to a second where the display is named: Xvfb as xvfb-run starts it resets once its last client
+    // has gone, and a connection asked for while it does is refused - which a case that follows one whose windows all
+    // closed met in three to five runs of twelve (jonny-precision, 2026-11-08). With no display named there is none to
+    // wait for.
     Display *display = XOpenDisplay(nullptr);
+    for (int attempt = 0; display == nullptr && std::getenv("DISPLAY") != nullptr && attempt < 50; ++attempt)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        display = XOpenDisplay(nullptr);
+    }
     if (display == nullptr)
     {
         return;
