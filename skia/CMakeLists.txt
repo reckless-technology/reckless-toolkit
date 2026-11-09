@@ -230,8 +230,12 @@ else()
         add_library(reckless_window_gpu STATIC "${RECKLESS_TOOLKIT_DIR}/window/linux/GpuDrawingLinux.cpp"
                                              "${RECKLESS_TOOLKIT_DIR}/window/GpuSurfacePresenter.cpp")
         target_include_directories(reckless_window_gpu SYSTEM PRIVATE "${RECKLESS_EGL_INCLUDE_DIR}")
+        # libGLX kept whatever its place on a product's line: under --as-needed, Ubuntu's default, a shared library is
+        # linked only where something before it on the line needs it, and CMake puts it before libskia.a, whose
+        # objects are what need it - Sentinel's link dropped it and failed on glXGetProcAddress.
         target_link_libraries(reckless_window_gpu PUBLIC reckless_window_api "${RECKLESS_EGL_LIBRARY}"
-                                                  "${RECKLESS_GLX_LIBRARY}" PRIVATE reckless_warnings)
+                                                  "-Wl,--push-state,--no-as-needed" "${RECKLESS_GLX_LIBRARY}"
+                                                  "-Wl,--pop-state" PRIVATE reckless_warnings)
     else()
         message(STATUS "reckless_window_gpu: no EGL found (libegl-dev), so no GPU back end on Linux: a window asked "
                        "for the GPU draws with the CPU raster")
