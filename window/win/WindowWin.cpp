@@ -1401,7 +1401,7 @@ class WinSurface : public view::Host
         @return  true when the window now draws on the GPU */
     bool MakeGpu()
     {
-        win::GpuPresenterMade made = gpu_backend_->make(hwnd_);
+        GpuPresenterMade made = gpu_backend_->make(hwnd_);
         if (!made.renderer.empty())
         {
             drawing_.renderer = std::move(made.renderer);
@@ -1466,8 +1466,8 @@ class WinSurface : public view::Host
         end makes one, so a popup's and an unasked child window's is null for the window's whole life and the tree is
         rastered and handed to SetDIBitsToDevice exactly as it always was. Declared before `surface_`, which may be on
         it and so goes first. */
-    std::unique_ptr<win::GpuPresenter> gpu_;
-    sk_sp<SkSurface> surface_; ///< Skia's surface the tree is drawn into: over the raster, or on the GPU.
+    std::unique_ptr<GpuPresenter> gpu_;
+    sk_sp<SkSurface>              surface_; ///< Skia's surface the tree is drawn into: over the raster, or on the GPU.
     /** The back end the GPU was asked for with, to make it again with when it is lost; null until a product asks. */
     const GpuBackend     *gpu_backend_{nullptr};
     DrawingState          drawing_{}; ///< what the window draws with, and why where it fell back.

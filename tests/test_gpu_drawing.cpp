@@ -139,7 +139,8 @@ TEST(GpuDrawing, EveryReasonIsSaidInWordsOfItsOwn)
          {DrawingFallback::kNone, DrawingFallback::kNotAsked, DrawingFallback::kForcedOff, DrawingFallback::kNotLinked,
           DrawingFallback::kNoGpuOnThisPlatform, DrawingFallback::kNoPixelFormat, DrawingFallback::kNoContext,
           DrawingFallback::kGlTooOld, DrawingFallback::kNoSkiaInterface, DrawingFallback::kNoSkiaContext,
-          DrawingFallback::kNoSurface, DrawingFallback::kContextLostTooOften, DrawingFallback::kContextNotMadeAgain})
+          DrawingFallback::kNoSurface, DrawingFallback::kContextLostTooOften, DrawingFallback::kContextNotMadeAgain,
+          DrawingFallback::kSoftwareRenderer, DrawingFallback::kNoMetalDevice})
     {
         const char *text = reckless::window::TextOf(why);
         ASSERT_NE(text, nullptr);
@@ -160,4 +161,52 @@ TEST(GpuDrawing, AWindowWithNoGpuPathOfItsOwnAnswersTheCpuRasterAndSaysWhy)
     EXPECT_TRUE(asked.why == DrawingFallback::kNoGpuOnThisPlatform || asked.why == DrawingFallback::kForcedOff)
         << reckless::window::TextOf(asked.why);
     EXPECT_EQ(window.SetDrawing({}).why, DrawingFallback::kNotAsked);
+}
+
+TEST(GpuDrawing, TheNewBackEndsReasonsAreSaidInWordsThatNameWhatRefused)
+{
+    using reckless::window::TextOf;
+    EXPECT_STREQ(TextOf(DrawingFallback::kSoftwareRenderer),
+                 "the GL is a software renderer, which the CPU raster outdraws");
+    EXPECT_STREQ(TextOf(DrawingFallback::kNoMetalDevice), "there is no Metal device to draw with");
+    // Words shared by every back end say nothing of one API; Windows' own say GL, as they always did.
+    EXPECT_STREQ(TextOf(DrawingFallback::kNoSkiaContext),
+                 "Skia would not make its GPU context on the GPU's graphics API");
+    EXPECT_STREQ(TextOf(DrawingFallback::kNoContext), "the platform would not make a GL context on the window");
+    EXPECT_STREQ(TextOf(DrawingFallback::kGlTooOld), "the GL given is older than 3.0");
+}
+
+TEST(GpuDrawing, ARefusalOfTheEnvironmentOrThePlatformComesBeforeAnyBackEndsOwn)
+{
+    // The new reasons are a back end's own, found only once the platform tries: ChosenDrawing never answers them, and
+    // answers the same for every platform that has a path, so the order of its checks is the order it always was.
+    const DrawingRequest asked{Drawing::kGpu, SomeBackEnd()};
+    for (const bool is_forced_off : {false, true})
+    {
+        for (const bool has_platform_gpu : {false, true})
+        {
+            const DrawingFallback why = ChosenDrawing(asked, is_forced_off, has_platform_gpu).why;
+            EXPECT_NE(why, DrawingFallback::kSoftwareRenderer);
+            EXPECT_NE(why, DrawingFallback::kNoMetalDevice);
+        }
+    }
+    EXPECT_EQ(ChosenDrawing(asked, true, true).why, DrawingFallback::kForcedOff);
+    EXPECT_EQ(ChosenDrawing(asked, false, false).why, DrawingFallback::kNoGpuOnThisPlatform);
+    EXPECT_EQ(ChosenDrawing({Drawing::kGpu, nullptr}, false, true).why, DrawingFallback::kNotLinked);
+    EXPECT_EQ(ChosenDrawing(asked, false, true).why, DrawingFallback::kNone);
+}
+
+TEST(GpuDrawing, ASoftwareGlIsNamedByItsRenderer)
+{
+    using reckless::window::IsSoftwareRenderer;
+    EXPECT_TRUE(IsSoftwareRenderer("llvmpipe (LLVM 17.0.6, 256 bits)"));
+    EXPECT_TRUE(IsSoftwareRenderer("softpipe"));
+    EXPECT_TRUE(IsSoftwareRenderer("Mesa Software Rasterizer"));
+    EXPECT_TRUE(IsSoftwareRenderer("SWRAST"));
+    EXPECT_TRUE(IsSoftwareRenderer("Apple Software Renderer"));
+    EXPECT_FALSE(IsSoftwareRenderer("NVIDIA GeForce RTX 4070 Laptop GPU/PCIe/SSE2"));
+    EXPECT_FALSE(IsSoftwareRenderer("Mesa Intel(R) UHD Graphics 630 (CFL GT2)"));
+    EXPECT_FALSE(IsSoftwareRenderer("AMD Radeon Pro 5500M OpenGL Engine"));
+    EXPECT_FALSE(IsSoftwareRenderer(""));
+    EXPECT_FALSE(IsSoftwareRenderer(nullptr));
 }

@@ -201,7 +201,8 @@ set_target_properties(reckless_window PROPERTIES POSITION_INDEPENDENT_CODE ON CX
 # shares a link with, so the link line takes d3d12 and d3dcompiler as well; nothing of either is called, and neither
 # becomes a library the binary loads (dxgi is not needed at all).
 if(WIN32)
-    add_library(reckless_window_gpu STATIC "${RECKLESS_TOOLKIT_DIR}/window/win/GpuDrawingWin.cpp")
+    add_library(reckless_window_gpu STATIC "${RECKLESS_TOOLKIT_DIR}/window/win/GpuDrawingWin.cpp"
+                                         "${RECKLESS_TOOLKIT_DIR}/window/GpuSurfacePresenter.cpp")
     target_link_libraries(reckless_window_gpu PUBLIC reckless_window_api opengl32 d3d12 d3dcompiler
                                               PRIVATE reckless_warnings)
 else()

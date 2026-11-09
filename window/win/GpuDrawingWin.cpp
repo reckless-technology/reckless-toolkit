@@ -12,17 +12,10 @@
 #include <string>
 #include <utility>
 
-#include "include/core/SkBlendMode.h"
-#include "include/core/SkCanvas.h"
 #include "include/core/SkColorSpace.h"
-#include "include/core/SkImageInfo.h"
-#include "include/core/SkPaint.h"
-#include "include/core/SkSamplingOptions.h"
 #include "include/core/SkSurface.h"
-#include "include/gpu/GpuTypes.h"
 #include "include/gpu/ganesh/GrBackendSurface.h"
 #include "include/gpu/ganesh/GrDirectContext.h"
-#include "include/gpu/ganesh/GrTypes.h"
 #include "include/gpu/ganesh/SkSurfaceGanesh.h"
 #include "include/gpu/ganesh/gl/GrGLBackendSurface.h"
 #include "include/gpu/ganesh/gl/GrGLDirectContext.h"
@@ -43,6 +36,7 @@
 #include <GL/gl.h>
 
 #include "GpuPresenterWin.h"
+#include "GpuSurfacePresenter.h"
 
 namespace reckless::window
 {
@@ -99,8 +93,10 @@ bool NamesExtension(const char *extensions, const char *name) noexcept
     return false;
 }
 
-/** A window drawn by Skia's Ganesh on WGL. Made by MakeWglPresenter, which leaves it whole or makes nothing. */
-class WglPresenter final : public win::GpuPresenter
+/** A window drawn by Skia's Ganesh on WGL: the platform-neutral half is SkiaGpuPresenter's (the surface the views draw
+    into, the copy over the back buffer, the loss), and this is the WGL of it. Made by MakeWglPresenter, which leaves it
+    whole or makes nothing. */
+class WglPresenter final : public SkiaGpuPresenter
 {
   public:
     /** The presenter over what MakeWglPresenter made, which it owns from here.
@@ -111,7 +107,7 @@ class WglPresenter final : public win::GpuPresenter
         @param reset_status  the GL's reset status function, where the context is a robust one; null where not */
     WglPresenter(HWND window, HDC dc, HGLRC gl, sk_sp<GrDirectContext> context,
                  GraphicsResetStatusFunction reset_status) noexcept
-        : window_(window), dc_(dc), gl_(gl), context_(std::move(context)), reset_status_(reset_status)
+        : SkiaGpuPresenter(std::move(context)), window_(window), dc_(dc), gl_(gl), reset_status_(reset_status)
     {
     }
 
@@ -120,17 +116,8 @@ class WglPresenter final : public win::GpuPresenter
     ~WglPresenter() override
     {
         const bool is_current = MakeCurrent();
-        offscreen_.reset();
         back_buffer_.reset();
-        if (context_)
-        {
-            if (is_current && !context_->abandoned())
-            {
-                context_->flushAndSubmit(GrSyncCpu::kYes);
-            }
-            context_->releaseResourcesAndAbandonContext();
-            context_.reset();
-        }
+        ShutDownSkia(is_current);
         wglMakeCurrent(nullptr, nullptr);
         wglDeleteContext(gl_);
         ReleaseDC(window_, dc_);
@@ -139,43 +126,14 @@ class WglPresenter final : public win::GpuPresenter
     WglPresenter(const WglPresenter &)            = delete;
     WglPresenter &operator=(const WglPresenter &) = delete;
 
-    sk_sp<SkSurface> SurfaceOfSize(int width, int height) override
+  private:
+    bool MakeCurrent() const noexcept override
     {
-        if (!MakeCurrent() || context_->abandoned())
-        {
-            return nullptr;
-        }
-        if (!offscreen_ || offscreen_->width() != width || offscreen_->height() != height)
-        {
-            offscreen_.reset();
-            back_buffer_.reset();
-            // RGBA, as GL holds it, premultiplied as the CPU raster is; drawn top-down, as the views lay it out.
-            offscreen_ =
-                SkSurfaces::RenderTarget(context_.get(), skgpu::Budgeted::kNo,
-                                         SkImageInfo::Make(width, height, kRGBA_8888_SkColorType, kPremul_SkAlphaType),
-                                         0, kTopLeft_GrSurfaceOrigin, nullptr);
-            if (!offscreen_)
-            {
-                return nullptr;
-            }
-            offscreen_->getCanvas()->clear(SK_ColorTRANSPARENT);
-        }
-        return offscreen_;
+        return wglGetCurrentContext() == gl_ && wglGetCurrentDC() == dc_ ? true : wglMakeCurrent(dc_, gl_) != FALSE;
     }
 
-    bool BeginFrame() override
+    sk_sp<SkSurface> BackBuffer(int width, int height) override
     {
-        return MakeCurrent() && !context_->abandoned();
-    }
-
-    bool Present() override
-    {
-        if (!offscreen_ || !MakeCurrent() || context_->abandoned())
-        {
-            return !IsLost();
-        }
-        const int width  = offscreen_->width();
-        const int height = offscreen_->height();
         if (!back_buffer_ || back_buffer_->width() != width || back_buffer_->height() != height)
         {
             // The window's own framebuffer, 0, at the surface's size - which is the window's, the window having been
@@ -184,48 +142,26 @@ class WglPresenter final : public win::GpuPresenter
             framebuffer.fFBOID                 = 0;
             framebuffer.fFormat                = kGlRgba8;
             const GrBackendRenderTarget target = GrBackendRenderTargets::MakeGL(width, height, 0, 8, framebuffer);
-            back_buffer_ = SkSurfaces::WrapBackendRenderTarget(context_.get(), target, kBottomLeft_GrSurfaceOrigin,
+            back_buffer_ = SkSurfaces::WrapBackendRenderTarget(Context(), target, kBottomLeft_GrSurfaceOrigin,
                                                                kRGBA_8888_SkColorType, nullptr, nullptr);
-            if (!back_buffer_)
-            {
-                return !IsLost();
-            }
         }
-        // The whole frame, as it stands, over the back buffer: the swap leaves the back buffer's pixels undefined, so
-        // only the views' own surface keeps them, and the copy is the GPU's, a fraction of a millisecond at 4K.
-        SkPaint copy;
-        copy.setBlendMode(SkBlendMode::kSrc);
-        offscreen_->draw(back_buffer_->getCanvas(), 0, 0, SkSamplingOptions(), &copy);
-        context_->flushAndSubmit(back_buffer_.get(), GrSyncCpu::kNo);
-        SwapBuffers(dc_);
-        return !IsLost();
+        return back_buffer_;
     }
 
-  private:
-    /** The GL context current on this thread, where it is not already.
-        @return  true when it is current */
-    bool MakeCurrent() const noexcept
+    void SwapBuffers() noexcept override
     {
-        return wglGetCurrentContext() == gl_ && wglGetCurrentDC() == dc_ ? true : wglMakeCurrent(dc_, gl_) != FALSE;
+        ::SwapBuffers(dc_);
     }
 
-    /** Whether the GPU has gone: the driver said the context was reset, or Skia has abandoned its context.
-        @return  true when it is lost */
-    bool IsLost() const noexcept
+    bool IsDeviceReset() const noexcept override
     {
-        if (context_->abandoned())
-        {
-            return true;
-        }
         return reset_status_ != nullptr && reset_status_() != kGlNoError;
     }
 
     HWND                        window_;                ///< the window drawn in.
     HDC                         dc_;                    ///< its device context, held for the presenter's life.
     HGLRC                       gl_;                    ///< the GL context on it.
-    sk_sp<GrDirectContext>      context_;               ///< Skia's GPU context on the GL.
     GraphicsResetStatusFunction reset_status_{nullptr}; ///< the reset status, for a robust context; null otherwise.
-    sk_sp<SkSurface>            offscreen_;             ///< the surface the views draw into, which keeps its pixels.
     sk_sp<SkSurface>            back_buffer_;           ///< the window's framebuffer, wrapped at the surface's size.
 };
 
@@ -377,9 +313,9 @@ DrawingFallback ProbeTheGl(std::string &renderer)
     context on it. Nothing is left behind where a step refuses, and no context is current.
     @param window  the child window
     @return        the presenter, or null and why */
-win::GpuPresenterMade MakeWglPresenter(HWND window)
+GpuPresenterMade MakeWglPresenter(HWND window)
 {
-    win::GpuPresenterMade made;
+    GpuPresenterMade made;
     made.why = ProbeTheGl(made.renderer);
     if (made.why != DrawingFallback::kNone)
     {

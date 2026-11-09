@@ -2,7 +2,8 @@
 
 // How a child window draws (ChildWindow::SetDrawing): Skia's CPU raster, rastered into memory and handed to the
 // platform, which is what every window here has done since the toolkit began, or the GPU - Skia's Ganesh on the
-// platform's own GL, the frame drawn into a GPU surface and presented with a swap. A product asks for the GPU, and the
+// platform's own GPU API (GL on Windows; Metal on macOS and EGL on X11 on Linux are to follow), the frame drawn into a
+// GPU surface and presented with a swap. A product asks for the GPU, and the
 // window gives it where it can and says so, and gives the CPU raster where it cannot and says why: a window that was
 // asked and could not is never left drawing nothing.
 //
@@ -15,7 +16,8 @@
 // whether the GPU was asked for, whether the person's environment has turned it off, what a back end that is missing
 // means, and how many times a lost GPU is made again before the window gives it up. So the suites hold all of it on
 // every platform, as window/FramePacing.h holds the frame pacing's. What is left to each platform is making its
-// context and presenting through it (window/win/GpuDrawingWin.cpp on Windows).
+// context and presenting through it (window/win/GpuDrawingWin.cpp on Windows), over the neutral half of a presenter
+// that every back end shares (window/GpuPresenter.h, window/GpuSurfacePresenter.h).
 
 #include <optional>
 #include <string>
@@ -26,7 +28,7 @@ namespace reckless::window
 enum class Drawing
 {
     kCpuRaster, ///< Skia's CPU raster, handed to the platform: what every window here has drawn with from the start
-    kGpu,       ///< Skia's Ganesh on the platform's GL, presented with a swap; kCpuRaster wherever it cannot be had
+    kGpu, ///< Skia's Ganesh on the platform's GPU API, presented with a swap; kCpuRaster wherever it cannot be had
 };
 
 /** Why a window draws with the CPU raster. Everything but kNone and kNotAsked is a window that was asked for the GPU
@@ -38,15 +40,18 @@ enum class DrawingFallback
     kNotAsked,            ///< no one asked for the GPU - a window's state until a product does
     kForcedOff,           ///< the environment turned the GPU off (RECKLESS_GPU_DRAWING=off)
     kNotLinked,           ///< the request named no GPU back end: the product did not link reckless_window_gpu
-    kNoGpuOnThisPlatform, ///< this platform's window has no GPU path yet: macOS and Linux, for now
+    kNoGpuOnThisPlatform, ///< this platform's window has no GPU path yet: macOS and Linux, until their back ends land
     kNoPixelFormat,       ///< the window could not be given a pixel format the GL draws to
     kNoContext,           ///< the platform would not make a GL context on the window
     kGlTooOld,            ///< the GL the platform gave is older than the 3.0 Skia's Ganesh is asked to draw on
     kNoSkiaInterface,     ///< Skia could not read the GL's functions off the context
-    kNoSkiaContext,       ///< Skia would not make its GPU context on that GL
+    kNoSkiaContext,       ///< Skia would not make its GPU context on that GL or Metal device
     kNoSurface,           ///< Skia would not make a surface the window's size on the GPU
     kContextLostTooOften, ///< the GPU was lost more times than kMostGpuContextsLost, and is not asked again
     kContextNotMadeAgain, ///< the GPU was lost, and a context could not be made again in its place
+    kSoftwareRenderer, ///< the GL is a CPU rasteriser (llvmpipe, softpipe, EGL_MESA_device_software): the CPU raster is
+                       ///< as fast and is Skia's own, so a window is not given a software GL
+    kNoMetalDevice,    ///< macOS has no Metal device to draw with, or none that drives the display
 };
 
 /** `why` in words, for a product to report or log.
@@ -75,13 +80,17 @@ inline const char *TextOf(DrawingFallback why) noexcept
     case DrawingFallback::kNoSkiaInterface:
         return "Skia could not read the GL's functions";
     case DrawingFallback::kNoSkiaContext:
-        return "Skia would not make its GPU context on the GL";
+        return "Skia would not make its GPU context on the GPU's graphics API";
     case DrawingFallback::kNoSurface:
         return "Skia would not make a surface the window's size on the GPU";
     case DrawingFallback::kContextLostTooOften:
         return "the GPU was lost too many times to be asked again";
     case DrawingFallback::kContextNotMadeAgain:
         return "the GPU was lost and could not be made again";
+    case DrawingFallback::kSoftwareRenderer:
+        return "the GL is a software renderer, which the CPU raster outdraws";
+    case DrawingFallback::kNoMetalDevice:
+        return "there is no Metal device to draw with";
     }
     return "unknown";
 }
@@ -123,8 +132,8 @@ struct DrawingState
     /** Why the window draws with the CPU raster; kNone where it draws on the GPU. */
     DrawingFallback why{DrawingFallback::kNotAsked};
 
-    /** The GL's renderer and version as the driver names them ("NVIDIA GeForce RTX 4070 Laptop GPU/PCIe/SSE2, 4.6.0
-        NVIDIA 610.62"), for a product to log; empty where no GL context was made. */
+    /** The GPU's renderer and version as the driver names them ("NVIDIA GeForce RTX 4070 Laptop GPU/PCIe/SSE2, 4.6.0
+        NVIDIA 610.62"; a Metal device's name), for a product to log; empty where no GPU context was made. */
     std::string renderer;
 
     /** How many times the window has lost its GPU context - a driver reset, a driver update, a GPU taken away - since
@@ -194,6 +203,34 @@ inline DrawingState ChosenDrawing(const DrawingRequest &request, bool is_forced_
         state.why     = DrawingFallback::kNone;
     }
     return state;
+}
+
+/** Whether a GL renderer string (glGetString(GL_RENDERER)) names a CPU rasteriser rather than a GPU: Mesa's llvmpipe,
+    softpipe and swrast, "Software Rasterizer", and the like - read case-insensitively. A back end refuses such a GL
+    (kSoftwareRenderer) where it has no other word that it is software, as EGL's EGL_MESA_device_software is, because
+   Skia on the CPU raster is faster and the software GL would only add a copy. Windows' own 1.1 GL is refused by its
+   version already (kGlTooOld) and keeps that reason.
+    @param renderer  the renderer string; null or empty for none
+    @return          true when it is a software renderer */
+inline bool IsSoftwareRenderer(const char *renderer) noexcept
+{
+    if (renderer == nullptr)
+    {
+        return false;
+    }
+    std::string lower;
+    for (const char *at = renderer; *at != 0; ++at)
+    {
+        lower += (*at >= 'A' && *at <= 'Z') ? static_cast<char>(*at - 'A' + 'a') : *at;
+    }
+    for (const char *name : {"llvmpipe", "softpipe", "swrast", "software rasterizer", "software renderer"})
+    {
+        if (lower.find(name) != std::string::npos)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 /** The oldest GL a window draws on with Skia's Ganesh, as a major version: 3. Skia's own floor is lower, but nothing
