@@ -77,6 +77,12 @@ struct Chrome
         there. */
     int         header_right_reserve{look::kHeaderInset};
     std::string plate; ///< the face plate's asset, exactly 2x the design size ("background.png"); empty for none
+    /** The knob's film strip, an asset of the module's, for a plugin whose knob is not the series' chicken head
+        ("RecklessPointer.png"); empty for the chicken head, which is every other plugin's. A strip is one frame wide
+        and as many frames tall as it holds, rendered by assets/knobs/render_knob.py or render_pointer_knob.py to the
+        geometry look::kKnobMargin fixes; the look layer reads the frame count from its height, so a strip of any
+        count draws without telling it. */
+    std::string knob;
 };
 
 /** The knob bank's sizes on every panel of the series: the look's own numbers (LookMetrics.h), so a change to them
@@ -534,7 +540,9 @@ class SeriesFace
     SeriesFace(view::Panel &panel, const view::PanelContext &context, Chrome chrome)
         : panel_(panel), context_(context), chrome_(std::move(chrome)), images_(context),
           version_(context.version.empty() ? std::string() : "v" + context.version),
-          knob_strip_(look::KnobStrip::Shared(images_, Asset("RecklessChickenHead.png"))),
+          knob_strip_(
+              look::KnobStrip::Shared(images_, Asset(chrome_.knob.empty() ? std::string_view("RecklessChickenHead.png")
+                                                                          : std::string_view(chrome_.knob)))),
           mark_(images_, Decode("RecklessRtLogo.png")),
           plate_(chrome_.plate.empty() ? gfx::Image() : Decode(chrome_.plate)),
           presets_(context.presets, chrome_.palette, panel, [this] { ResetControls(); }),
@@ -565,7 +573,8 @@ class SeriesFace
         return context_;
     }
 
-    /** The series' chicken head, for a knob a panel draws on a control of its own (a drawer's, the board's).
+    /** The panel's knob - the series' chicken head, or whatever strip its chrome named - for a knob a panel draws on
+        a control of its own (a drawer's, the board's).
         @return  the film strip, owned by the face */
     look::KnobStrip &knob_strip() noexcept
     {
@@ -1063,7 +1072,7 @@ class SeriesFace
     Chrome                  chrome_;         ///< what the panel is dressed in
     ContextImages           images_;         ///< the images, through the format's functions
     std::string             version_;        ///< "v0.14.0": the stamp beside the title
-    look::KnobStrip         knob_strip_;     ///< the chicken head's film strip
+    look::KnobStrip         knob_strip_;     ///< the panel's knob, the chicken head unless its chrome named one
     look::CompanyMark       mark_;           ///< the company mark in the header
     gfx::Image              plate_;          ///< the face plate in force; invalid for the panel colour
     PresetPlateView         presets_;        ///< the PRESETS plate
