@@ -15,22 +15,20 @@ set(skia_url "https://github.com/JetBrains/skia-pack/releases/download/${RECKLES
 # management, skcms, shares; and the Chromium source tree's, at the revision the zlib commit Skia's DEPS names was
 # copied from, which governs the SIMD routines in that zlib. Each a single file at its pinned commit, with its hash, not
 # extracted.
-FetchContent_Declare(skia_licence
-    URL      https://raw.githubusercontent.com/JetBrains/skia/${RECKLESS_SKIA_COMMIT}/LICENSE
-    URL_HASH SHA256=5f787c1dee3c56547f09ccc2906ab5f5293c4d8dd6c8654e573216c38e908dbd
+reckless_fetch_content(skia_licence
+    https://raw.githubusercontent.com/JetBrains/skia/${RECKLESS_SKIA_COMMIT}/LICENSE
+    5f787c1dee3c56547f09ccc2906ab5f5293c4d8dd6c8654e573216c38e908dbd
     DOWNLOAD_NO_EXTRACT TRUE
     SOURCE_SUBDIR reckless-builds-this-itself)
-FetchContent_Declare(chromium_licence
-    URL      https://raw.githubusercontent.com/chromium/chromium/${RECKLESS_CHROMIUM_COMMIT}/LICENSE
-    URL_HASH SHA256=368cca1106be99d39ecd32a38d8305585d802a475effb66380b91ffc9bcf709b
+reckless_fetch_content(chromium_licence
+    https://raw.githubusercontent.com/chromium/chromium/${RECKLESS_CHROMIUM_COMMIT}/LICENSE
+    368cca1106be99d39ecd32a38d8305585d802a475effb66380b91ffc9bcf709b
     DOWNLOAD_NO_EXTRACT TRUE
     SOURCE_SUBDIR reckless-builds-this-itself)
 FetchContent_MakeAvailable(skia_licence chromium_licence)
 
 function(reckless_fetch_skia name platform hash)
-    FetchContent_Declare(${name}
-        URL      "${skia_url}-${platform}.zip"
-        URL_HASH SHA256=${hash}
+    reckless_fetch_content(${name} "${skia_url}-${platform}.zip" ${hash}
         SOURCE_SUBDIR reckless-builds-this-itself)
     FetchContent_MakeAvailable(${name})
     set(${name}_DIR "${${name}_SOURCE_DIR}" PARENT_SCOPE)

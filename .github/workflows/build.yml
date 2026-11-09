@@ -473,7 +473,7 @@ jobs:
             tag="Release_${DOXYGEN_VERSION//./_}"
             tarball="doxygen-$DOXYGEN_VERSION.linux.bin.tar.gz"
             rm -rf "$dir.part"; mkdir -p "$dir.part"
-            curl -sSLf -o "$dir.part/$tarball" "https://github.com/doxygen/doxygen/releases/download/$tag/$tarball"
+            curl -sSLf --retry 5 --retry-delay 10 -o "$dir.part/$tarball" "https://github.com/doxygen/doxygen/releases/download/$tag/$tarball"
             echo "$DOXYGEN_SHA256  $dir.part/$tarball" | sha256sum -c -
             tar -xzf "$dir.part/$tarball" -C "$dir.part" --strip-components=1
             rm "$dir.part/$tarball"

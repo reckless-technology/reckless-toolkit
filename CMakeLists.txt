@@ -103,6 +103,8 @@ if(NOT TARGET reckless_warnings)
 endif()
 
 include(FetchContent)
+# The fetches below go through reckless_fetch_content, which tries a transient failure from the server again.
+include(RecklessDownload)
 
 if(RECKLESS_TOOLKIT_BUILD_TESTS)
     if(PROJECT_IS_TOP_LEVEL)
@@ -112,10 +114,10 @@ if(RECKLESS_TOOLKIT_BUILD_TESTS)
     if(NOT TARGET GTest::gtest)
         set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
         set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
-        FetchContent_Declare(googletest
-            GIT_REPOSITORY https://github.com/google/googletest.git
-            GIT_TAG        ${RECKLESS_GOOGLETEST_TAG}
-            GIT_SHALLOW    TRUE)
+        # The tag's tarball, not a clone, so that it is a download that can be tried again; its hash is the tag's.
+        reckless_fetch_content(googletest
+            https://github.com/google/googletest/archive/refs/tags/${RECKLESS_GOOGLETEST_TAG}.tar.gz
+            65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c)
         FetchContent_MakeAvailable(googletest)
         # googletest compiles its own two libraries under its own strict set (-Wall -Wshadow -Wconversion on clang),
         # where clang 21's -Wcharacter-conversion meets its char8_t printer in gtest-printers.h. That is googletest's
@@ -138,9 +140,9 @@ endif()
 # three host files (below).
 if(RECKLESS_ASIO AND NOT RECKLESS_ASIO_SDK_DIR
    AND (RECKLESS_TOOLKIT_FETCH_ASIO_SDK OR (WIN32 AND RECKLESS_BUILD_AUDIO)))
-    FetchContent_Declare(asiosdk
-        URL      https://download.steinberg.net/sdk_downloads/ASIO-SDK_${RECKLESS_ASIO_SDK_VERSION}_${RECKLESS_ASIO_SDK_RELEASED}.zip
-        URL_HASH SHA256=d5ebf0c20dd2c5f43771fd0c1418f4b361bf52434ee670097cfa6b3a335e2eca
+    reckless_fetch_content(asiosdk
+        https://download.steinberg.net/sdk_downloads/ASIO-SDK_${RECKLESS_ASIO_SDK_VERSION}_${RECKLESS_ASIO_SDK_RELEASED}.zip
+        d5ebf0c20dd2c5f43771fd0c1418f4b361bf52434ee670097cfa6b3a335e2eca
         SOURCE_SUBDIR reckless-builds-this-itself)
     FetchContent_MakeAvailable(asiosdk)
     # A normal variable over the empty cache entry, on Windows alone: the audio layer compiles ASIO where it is set,
@@ -162,13 +164,13 @@ endif()
 # The dr_libs commit carries fixes after the last tags of both headers (dr_flac 0.13.3, dr_mp3 0.7.3): a decode error
 # dr_flac went on past, and an out-of-bounds read in dr_mp3's Xing parse. stb_vorbis is 1.22, the commit that last
 # touched it. A product finds the stb tree through FetchContent_GetProperties(stb) for stb_image.
-FetchContent_Declare(dr_libs
-    URL      https://github.com/mackron/dr_libs/archive/${RECKLESS_DR_LIBS_COMMIT}.tar.gz
-    URL_HASH SHA256=4654acb029f4f2a43ac2edb60c4cb09f40615b4b5bee9709954f910cb979e5fd
+reckless_fetch_content(dr_libs
+    https://github.com/mackron/dr_libs/archive/${RECKLESS_DR_LIBS_COMMIT}.tar.gz
+    4654acb029f4f2a43ac2edb60c4cb09f40615b4b5bee9709954f910cb979e5fd
     SOURCE_SUBDIR reckless-builds-this-itself)
-FetchContent_Declare(stb
-    URL      https://github.com/nothings/stb/archive/${RECKLESS_STB_COMMIT}.tar.gz
-    URL_HASH SHA256=be9842d207353c89c0b970d618030fe98a944ab3fe1374534cba1b8e934bfdd7
+reckless_fetch_content(stb
+    https://github.com/nothings/stb/archive/${RECKLESS_STB_COMMIT}.tar.gz
+    be9842d207353c89c0b970d618030fe98a944ab3fe1374534cba1b8e934bfdd7
     SOURCE_SUBDIR reckless-builds-this-itself)
 FetchContent_MakeAvailable(dr_libs stb)
 
@@ -176,9 +178,9 @@ FetchContent_MakeAvailable(dr_libs stb)
 # the licence the user prefers of BSD 2-clause and CC0, fetched as its release tag with a hash; only its RFC 8032
 # Ed25519 (src/optional/monocypher-ed25519.c, SHA-512 inside) and the curve arithmetic under it in src/monocypher.c are
 # compiled (reckless_monocypher, below). 4.0.3 is the release that fixed a timing leak in EdDSA signing.
-FetchContent_Declare(monocypher
-    URL      https://github.com/LoupVaillant/Monocypher/archive/refs/tags/${RECKLESS_MONOCYPHER_VERSION}.tar.gz
-    URL_HASH SHA256=a7cbae546fbdc489bca632c3747e1ceb8ca3d4bd39e2706a0916f28ccd280e50
+reckless_fetch_content(monocypher
+    https://github.com/LoupVaillant/Monocypher/archive/refs/tags/${RECKLESS_MONOCYPHER_VERSION}.tar.gz
+    a7cbae546fbdc489bca632c3747e1ceb8ca3d4bd39e2706a0916f28ccd280e50
     SOURCE_SUBDIR reckless-builds-this-itself)
 FetchContent_MakeAvailable(monocypher)
 
