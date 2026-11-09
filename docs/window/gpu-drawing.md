@@ -259,7 +259,9 @@ The third back end, on the shared seam below: `window/linux/GpuDrawingLinux.cpp`
 pack has only GLX's native interface on Linux x64, so Skia is handed an interface assembled from `eglGetProcAddress`
 (`GrGLMakeAssembledInterface`), which `EGL_KHR_client_get_all_proc_addresses` makes good for the core functions too:
 no GL header is included and libGL is not linked. libGLX is on the link line all the same, because the pack's GL
-context maker shares an object with its GLX interface; nothing of it is called. libEGL's files are found by hand
+context maker shares an object with its GLX interface; nothing of it is called. It is linked `--no-as-needed`: under
+Ubuntu's default `--as-needed` a shared library is kept only where something before it on the line needs it, CMake puts
+it before `libskia.a`, and Sentinel's link dropped it. libEGL's files are found by hand
 (`find_path`, `find_library`) rather than through FindOpenGL, which makes its EGL target only where libOpenGL's are
 found too (CMake 3.28), and **where they are missing the back end is none**, as it was, and configuring says so: a CI
 image needs `libegl-dev` (`.github/actions/cpp/action.yml`, `tools/setup-dev.sh`).
