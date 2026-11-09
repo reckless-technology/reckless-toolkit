@@ -28,12 +28,14 @@ namespace reckless::look
 */
 
 /**
-    The chicken-head knob: a film strip rendered from a CAD model of the real thing (assets/knobs/render_knob.py
-    - 128 frames, the count read from the strip, one per pointer angle clockwise from twelve, each lit by the same light
-    from the panel's upper left and casting its own shadow), the frame nearest the knob's angle drawn. The light stays
-    with the panel while the knob turns, which no single picture turned in code can do. The knob is every slider's in
-    the series, drawn small where a cell is small, at the series' one small size (kSmallKnobSide). A drawn teardrop
-    does not look like a chicken head, and neither does a photograph turned in code; the render does.
+    A knob: a film strip rendered from a CAD model of the real thing (assets/knobs/render_knob.py renders the
+    series' chicken head, render_pointer_knob.py the Polysynth's pointer - 128 frames, the count read from the
+    strip, one per pointer angle clockwise from twelve, each lit by the same light from the panel's upper left and
+    casting its own shadow), the frame nearest the knob's angle drawn. The light stays with the panel while the
+    knob turns, which no single picture turned in code can do. One strip is every slider's on a panel, drawn small
+    where a cell is small, at the series' one small size (kSmallKnobSide); which strip that is, a panel says in its
+    Chrome (panel/SeriesPanel.h, Chrome::knob), and every plugin but the Polysynth leaves it the chicken head.
+    A drawn teardrop does not look like a chicken head, and neither does a photograph turned in code; the render does.
 */
 class KnobStrip
 {
