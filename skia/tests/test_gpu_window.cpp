@@ -5,9 +5,9 @@
 // that says whether this screen can be read at all - then drawn again at another scale, then with its GPU lost and made
 // again, and lost until the window gives it up for the CPU raster; and the fallback taken and said where the
 // environment turns the GPU off. Where this machine's GL will not draw - CI's runners, which have no GPU driver and
-// Windows' own software GL 1.1 - the GPU's cases skip with the reason the window gave, and the fallback's run. On macOS
-// and Linux the request is accepted and answered with the CPU raster, which is what those windows draw with until they
-// have a GPU path of their own.
+// Windows' own software GL 1.1 - the GPU's cases skip with the reason the window gave, and the fallback's run. macOS's
+// half, on Metal, is test_gpu_window_mac.mm. On Linux the request is accepted and answered with the CPU raster, which
+// is what its window draws with until it has a GPU path of its own.
 #include <gtest/gtest.h>
 
 #include <cmath>
@@ -630,7 +630,7 @@ TEST(GpuWindow, TheGpuAskedForWithNoBackEndIsAnsweredNotLinked)
     child.reset();
     DestroyWindow(top);
 }
-#else
+#elif !defined(__APPLE__) // macOS's half is test_gpu_window_mac.mm, Objective-C++ to reach the Metal layer
 #include <functional>
 #include <memory>
 #include <utility>

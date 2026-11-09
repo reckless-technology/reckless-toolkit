@@ -194,16 +194,25 @@ set_target_properties(reckless_window PROPERTIES POSITION_INDEPENDENT_CODE ON CX
                                                  VISIBILITY_INLINES_HIDDEN ON)
 
 # The GPU back end a product links to have its window drawn on the GPU (window/GpuDrawingBackend.h,
-# ChildWindow::SetDrawing, docs/window/gpu-drawing.md): on Windows Skia's Ganesh on WGL, elsewhere none yet. A library
-# of its own because Ganesh is about 1.8 MB of a binary and makes opengl32.dll a library the binary loads as it starts
-# (Legion5i, 2026-11-07): a product that never asks - every plug-in, loaded into a host's process - links the window
-# alone and carries none of it. Ganesh's GL is compiled into the pack's skia.lib beside its Direct3D, whose objects it
-# shares a link with, so the link line takes d3d12 and d3dcompiler as well; nothing of either is called, and neither
-# becomes a library the binary loads (dxgi is not needed at all).
+# ChildWindow::SetDrawing, docs/window/gpu-drawing.md): on Windows Skia's Ganesh on WGL, on macOS Ganesh on Metal,
+# elsewhere none yet. A library of its own because Ganesh is about 1.8 MB of a binary and makes opengl32.dll a library
+# the binary loads as it starts (Legion5i, 2026-11-07): a product that never asks - every plug-in, loaded into a host's
+# process - links the window alone and carries none of it. Ganesh's GL is compiled into the pack's skia.lib beside its
+# Direct3D, whose objects it shares a link with, so the link line takes d3d12 and d3dcompiler as well; nothing of either
+# is called, and neither becomes a library the binary loads (dxgi is not needed at all). On macOS the pack's libskia.a
+# carries Ganesh's Metal in both slices, and the back end takes Metal itself - which only a binary linking it then
+# names, as the window's suite holds with otool - and QuartzCore, whose CAMetalLayer the frames are presented in.
 if(WIN32)
     add_library(reckless_window_gpu STATIC "${RECKLESS_TOOLKIT_DIR}/window/win/GpuDrawingWin.cpp"
                                          "${RECKLESS_TOOLKIT_DIR}/window/GpuSurfacePresenter.cpp")
     target_link_libraries(reckless_window_gpu PUBLIC reckless_window_api opengl32 d3d12 d3dcompiler
+                                              PRIVATE reckless_warnings)
+elseif(APPLE)
+    add_library(reckless_window_gpu STATIC "${RECKLESS_TOOLKIT_DIR}/window/mac/GpuDrawingMac.mm"
+                                         "${RECKLESS_TOOLKIT_DIR}/window/GpuSurfacePresenter.cpp")
+    set_source_files_properties("${RECKLESS_TOOLKIT_DIR}/window/mac/GpuDrawingMac.mm" PROPERTIES COMPILE_OPTIONS
+                                -fobjc-arc)
+    target_link_libraries(reckless_window_gpu PUBLIC reckless_window_api "-framework Metal" "-framework QuartzCore"
                                               PRIVATE reckless_warnings)
 else()
     add_library(reckless_window_gpu STATIC "${RECKLESS_TOOLKIT_DIR}/window/GpuDrawingNone.cpp")
@@ -253,14 +262,22 @@ if(RECKLESS_TOOLKIT_BUILD_TESTS)
     # the GPU's back end, which that suite must not: it holds a window that carries none of it. On Windows, a known
     # frame drawn on the GPU and read back off the canvas and off the screen, at other scales, through a lost GPU and
     # into the fallback, each GPU case skipped with the window's reason where this machine's GL will not draw (CI's);
-    # elsewhere the request answered with the CPU raster. Shows windows, so with the window suites.
-    add_executable(reckless_gpu_window_test tests/test_gpu_window.cpp)
+    # on macOS (tests/test_gpu_window_mac.mm, Objective-C++ to reach the Metal layer and its drawables) the same frame
+    # read back off the canvas and off the drawable presented, each GPU case skipped where the Mac has no Metal device
+    # driving its display; elsewhere the request answered with the CPU raster. Shows windows, so with the window suites.
+    set(gpu_window_sources tests/test_gpu_window.cpp)
+    if(APPLE)
+        list(APPEND gpu_window_sources tests/test_gpu_window_mac.mm)
+    endif()
+    add_executable(reckless_gpu_window_test ${gpu_window_sources})
     target_link_libraries(reckless_gpu_window_test PRIVATE reckless_window reckless_window_gpu
                                                            reckless_test_host_window reckless_warnings
                                                            GTest::gtest_main)
     if(WIN32)
         # The screen read back through Desktop Duplication, which sees a GL window's swapped frame as GDI does not.
         target_link_libraries(reckless_gpu_window_test PRIVATE d3d11 dxgi)
+    elseif(APPLE)
+        target_compile_options(reckless_gpu_window_test PRIVATE -fobjc-arc)
     endif()
     add_test(NAME gpu_window COMMAND reckless_gpu_window_test)
     set_tests_properties(gpu_window PROPERTIES LABELS window RESOURCE_LOCK display)

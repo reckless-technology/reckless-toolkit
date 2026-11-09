@@ -2,7 +2,7 @@
 
 // How a child window draws (ChildWindow::SetDrawing): Skia's CPU raster, rastered into memory and handed to the
 // platform, which is what every window here has done since the toolkit began, or the GPU - Skia's Ganesh on the
-// platform's own GPU API (GL on Windows; Metal on macOS and EGL on X11 on Linux are to follow), the frame drawn into a
+// platform's own GPU API (GL on Windows, Metal on macOS; EGL on X11 on Linux is to follow), the frame drawn into a
 // GPU surface and presented with a swap. A product asks for the GPU, and the
 // window gives it where it can and says so, and gives the CPU raster where it cannot and says why: a window that was
 // asked and could not is never left drawing nothing.
@@ -40,7 +40,7 @@ enum class DrawingFallback
     kNotAsked,            ///< no one asked for the GPU - a window's state until a product does
     kForcedOff,           ///< the environment turned the GPU off (RECKLESS_GPU_DRAWING=off)
     kNotLinked,           ///< the request named no GPU back end: the product did not link reckless_window_gpu
-    kNoGpuOnThisPlatform, ///< this platform's window has no GPU path yet: macOS and Linux, until their back ends land
+    kNoGpuOnThisPlatform, ///< this platform's window has no GPU path yet: Linux, until its back end lands
     kNoPixelFormat,       ///< the window could not be given a pixel format the GL draws to
     kNoContext,           ///< the platform would not make a GL context on the window
     kGlTooOld,            ///< the GL the platform gave is older than the 3.0 Skia's Ganesh is asked to draw on

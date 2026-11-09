@@ -9,6 +9,9 @@
 // And how the frame callback is paced (window/FramePacing.h, ChildWindow::SetFramePacing) on the one CI platform with
 // a real window server, so the display link can genuinely be made and ticked: what is held of it, and why no rate is,
 // is tests/FramePacingRule.h.
+//
+// And that a window which links no GPU back end names no Metal in its binary, and answers a request for the GPU with no
+// back end kNotLinked (window/GpuDrawing.h, ChildWindow::SetDrawing).
 #import <AppKit/AppKit.h>
 
 #include <gtest/gtest.h>
@@ -16,10 +19,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "FramePacing.h"
 #include "FramePacingRule.h"
+#include "LinkedLibrariesMac.h"
 #include "TestHostWindow.h"
 #include "View.h"
 #include "Window.h"
@@ -338,5 +343,38 @@ TEST(ChildWindowFramePacing, AHiddenWindowThatAsksStillHasFramesAndSaysWhyAndThe
     EXPECT_EQ(shown.why, FramePacingFallback::kNone);
     EXPECT_GT(shown.frames_a_second, 0.0);
     child->SetFrameCallback(nullptr);
+    child.reset(); // before the window it sits in
+}
+
+TEST(ChildWindowDrawing, AWindowThatIsNotAskedLinksNoMetalAndAnswersNotLinked)
+{
+    // What keeps a product that does not opt in unchanged, held from the outside: this suite links the window and not
+    // the GPU's back end (reckless_window_gpu), as every plug-in and every app that does not ask does, so its binary
+    // names no Metal. Read from the binary's own load commands with otool, not from the libraries loaded: AppKit loads
+    // Metal into every process that makes a window, so that would prove nothing. The GPU's suite reads its own binary
+    // the same way and finds Metal, the control that this reading can see it.
+    const std::string libraries = reckless::test::LinkedLibrariesOfThisProgram();
+    ASSERT_FALSE(libraries.empty()) << "otool read this program's libraries";
+    EXPECT_EQ(libraries.find("/Metal.framework/"), std::string::npos) << libraries;
+
+    reckless::test::TestHostWindow top(240, 160);
+    ASSERT_TRUE(top.Valid());
+    reckless::view::View root;
+    root.SetBounds({240, 160});
+    auto child = reckless::window::CreateChildWindow(top.Parent(), root, 240, 160, 1.0f);
+    ASSERT_NE(child, nullptr);
+    const reckless::window::DrawingState unasked = child->DrawingNow();
+    EXPECT_EQ(unasked.drawing, reckless::window::Drawing::kCpuRaster) << "a window no one has asked draws as it did";
+    EXPECT_EQ(unasked.why, reckless::window::DrawingFallback::kNotAsked);
+    EXPECT_TRUE(unasked.renderer.empty());
+    // Asked for the GPU with no back end linked: said, and the view left as it was.
+    const reckless::window::DrawingState not_linked = child->SetDrawing({reckless::window::Drawing::kGpu, nullptr});
+    EXPECT_EQ(not_linked.drawing, reckless::window::Drawing::kCpuRaster);
+    EXPECT_TRUE(not_linked.why == reckless::window::DrawingFallback::kNotLinked ||
+                not_linked.why == reckless::window::DrawingFallback::kForcedOff)
+        << reckless::window::TextOf(not_linked.why);
+    NSView *view = ((__bridge NSView *)top.Parent()).subviews.firstObject;
+    EXPECT_EQ(view.layer.sublayers.count, 0u) << "no layer put over the view";
+    EXPECT_EQ(child->SetDrawing({}).why, reckless::window::DrawingFallback::kNotAsked) << "and back to not asked";
     child.reset(); // before the window it sits in
 }

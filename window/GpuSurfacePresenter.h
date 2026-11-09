@@ -4,7 +4,7 @@
 // views draw into, which keeps its pixels from frame to frame as the CPU raster does; its copy over the window's back
 // buffer; and the bookkeeping of a GPU lost. What a platform adds is four things - its context made current, its back
 // buffer wrapped for Skia, its swap, and its word that the device was reset - and the Windows back end (WGL) is the
-// first to. Metal on macOS and EGL on X11 on Linux are to be written against this and not against each other's files.
+// first to, Metal on macOS (GpuDrawingMac.mm) the second. EGL on X11 on Linux is to be written against this too.
 
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkSurface.h"
