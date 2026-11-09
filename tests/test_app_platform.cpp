@@ -426,3 +426,30 @@ TEST(AppPlatform, AWindowGoesFullScreenOverItsDisplayAndComesBackToItsOwnPlaceAn
 #endif
 #endif
 }
+
+#if defined(__linux__)
+TEST(AppPlatform, WithNoDisplayThePlatformSaysItCannotTellTheLargestContentRatherThanEndingTheProcess)
+{
+    // An app asks how large its window may be before it opens one (AppRun), and a run with no display - an app's
+    // --smoke under ssh, DISPLAY unset - reached the screen's work area through a null connection and ended on
+    // SIGSEGV (Sentinel's app_smoke, jonny-precision, 2026-11-09). With no display there is no screen to fit: {0, 0},
+    // which AppPlatform's contract says is no limit known.
+    const char *const was  = std::getenv("DISPLAY");
+    const std::string kept = was != nullptr ? was : "";
+    const bool        had  = was != nullptr;
+    unsetenv("DISPLAY");
+    {
+        const std::unique_ptr<reckless::app::AppPlatform> platform =
+            reckless::app::AppPlatform::Create("RecklessPlatformTest", {});
+        ASSERT_NE(platform, nullptr);
+        reckless::app::WindowOptions options;
+        options.width  = 320;
+        options.height = 200;
+        EXPECT_EQ(platform->LargestContent(options), (reckless::gfx::PointI{0, 0}));
+    }
+    if (had)
+    {
+        setenv("DISPLAY", kept.c_str(), 1);
+    }
+}
+#endif

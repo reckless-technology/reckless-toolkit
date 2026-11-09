@@ -619,10 +619,14 @@ class LinuxPlatform final : public AppPlatform
     {
         // The window manager says a frame's extents (_NET_FRAME_EXTENTS) only once a window is mapped: a typical title
         // bar and border are allowed for, in design pixels at the desktop's scale.
-        constexpr int    kAssumedFrameWidth  = 8;
-        constexpr int    kAssumedFrameHeight = 40;
-        const float      scale               = window::DisplayScaleOf(nullptr);
-        const gfx::RectI area                = WorkArea(display_);
+        constexpr int kAssumedFrameWidth  = 8;
+        constexpr int kAssumedFrameHeight = 40;
+        if (display_ == nullptr)
+        {
+            return {0, 0}; // no display, so no screen to fit: the platform cannot say, as AppPlatform allows
+        }
+        const float      scale = window::DisplayScaleOf(nullptr);
+        const gfx::RectI area  = WorkArea(display_);
         // Back in design units to the most whose pixels fit: a size that fits whole, as the window sizes its pixels,
         // never the pixel short a truncation gives at a fractional scale.
         return FittedDesignContent(
