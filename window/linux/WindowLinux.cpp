@@ -6,6 +6,9 @@
 // surface in an override-redirect window over everything, under a pointer grab that shows every press outside the
 // connection's windows to the popups. The file dialog is the desktop's zenity, or kdialog, read without blocking;
 // files dragged from the desktop arrive by XDND.
+// Where a product has asked for the GPU (ChildWindow::SetDrawing) and linked its back end, the child window's tree is
+// drawn into a surface on the GPU instead and presented with an EGL swap (GpuPresenterLinux.h), and nothing of the GPU
+// is touched until then; the popups stay on the CPU raster.
 // Screen points are the root window's, opaque to the views.
 #include <fcntl.h>
 #include <poll.h>
@@ -44,6 +47,7 @@
 // it is asked for raw keys.
 #include <X11/XKBlib.h>
 
+#include "GpuPresenterLinux.h"
 #include "X11Clipboard.h"
 
 namespace reckless::window
@@ -705,14 +709,20 @@ class LinuxSurface : public view::Host
         }
     }
 
-    /** The tree drawn over what was invalidated, and that part put on screen. */
+    /** The tree drawn over what was invalidated, and that part put on screen - or, on the GPU, the whole surface
+        presented. */
     void Paint()
     {
         const gfx::RectI window_area{pixel_width_, pixel_height_};
         const gfx::RectI dirty = dirty_.Intersection(window_area);
         dirty_                 = {};
-        if (dirty.IsEmpty() || !surface_ || image_ == nullptr)
+        if (dirty.IsEmpty() || !surface_ || (!gpu_ && image_ == nullptr))
         {
+            return;
+        }
+        if (gpu_ && !gpu_->BeginFrame())
+        {
+            GpuLost();
             return;
         }
         // Only the dirty part is drawn again: the rest of the raster still holds the last frame. The design pixels
@@ -730,6 +740,16 @@ class LinuxSurface : public view::Host
             view::PaintTree(root_, canvas);
         }
         sk->restore();
+        if (gpu_)
+        {
+            // The whole surface to the window and swapped: the swap leaves the back buffer undefined, so the part
+            // drawn again is not all a present can carry.
+            if (!gpu_->Present())
+            {
+                GpuLost();
+            }
+            return;
+        }
         const gfx::RectI put = ToPixels(design).Intersection(window_area);
         XPutImage(display_, window_, gc_, image_, put.x(), put.y(), put.x(), put.y(),
                   static_cast<unsigned>(put.width()), static_cast<unsigned>(put.height()));
@@ -865,6 +885,9 @@ class LinuxSurface : public view::Host
             GiveXFocusBack();
         }
         connection_.Remove(window_);
+        // The views' surface before the GPU it may be on, and both while the window and its connection are there.
+        surface_.reset();
+        gpu_.reset();
         DestroyImage();
         XFreeGC(display_, gc_);
         XDestroyWindow(display_, window_);
@@ -878,12 +901,27 @@ class LinuxSurface : public view::Host
         (void)event;
     }
 
-    /** The raster and its XImage made again at the root's size times the scale. */
+    /** The raster and its XImage made again at the root's size times the scale - or, on the GPU, the GPU's surface at
+        that size, and the CPU raster instead where the GPU will not make one. */
     void ResizeRaster()
     {
         pixel_width_  = std::max(1, static_cast<int>(std::lround(root_.width() * scale_)));
         pixel_height_ = std::max(1, static_cast<int>(std::lround(root_.height() * scale_)));
         DestroyImage();
+        if (gpu_)
+        {
+            surface_.reset();
+            surface_ = gpu_->SurfaceOfSize(pixel_width_, pixel_height_);
+            if (surface_)
+            {
+                std::vector<std::uint32_t>().swap(pixels_); // no raster while the GPU draws
+                return;
+            }
+            // No surface of this size on the GPU, or the GPU gone: the CPU raster from here, and the reason kept.
+            gpu_.reset();
+            drawing_.drawing = Drawing::kCpuRaster;
+            drawing_.why     = DrawingFallback::kNoSurface;
+        }
         pixels_.assign(static_cast<std::size_t>(pixel_width_) * static_cast<std::size_t>(pixel_height_), 0u);
         const std::size_t row_bytes = static_cast<std::size_t>(pixel_width_) * 4u;
         surface_                    = SkSurfaces::WrapPixels(
@@ -896,6 +934,46 @@ class LinuxSurface : public view::Host
         {
             image_->byte_order = LSBFirst; // the raster's bytes as they lie, whatever the server's order
         }
+    }
+
+    /** The window drawn as `request` asks (ChildWindow::SetDrawing): on the GPU where the request names a back end,
+        the environment has not turned the GPU off and the back end makes one on this window, and with the CPU raster
+        otherwise. A request for the CPU raster on a window that was never on the GPU touches nothing; one that changes
+        what the window draws with draws the whole window again on the new one. The child window's alone: a popup is
+        never asked, and stays on the CPU raster.
+        @param request  what the product asks for; DrawingRequest{} for the CPU raster
+        @return         what the window is drawing with, and why where it fell back */
+    DrawingState SetDrawing(const DrawingRequest &request)
+    {
+        const DrawingState chosen = ChosenDrawing(
+            request, IsGpuDrawingForcedOff(core::EnvironmentVariable(kGpuDrawingEnvironmentVariable)), true);
+        if (chosen.drawing != Drawing::kGpu)
+        {
+            LetGoOfTheGpu(chosen.why);
+            drawing_.drawing = chosen.drawing;
+            drawing_.why     = chosen.why;
+            return drawing_;
+        }
+        if (gpu_ && request.gpu_backend == gpu_backend_)
+        {
+            return drawing_; // asked again for what it has
+        }
+        LetGoOfTheGpu(DrawingFallback::kNotAsked);
+        gpu_backend_           = request.gpu_backend;
+        drawing_.contexts_lost = 0;
+        drawing_.renderer.clear();
+        MakeGpu();
+        ResizeRaster();
+        dirty_ = {pixel_width_, pixel_height_};
+        return drawing_;
+    }
+
+    /** What the window is drawing with now: what SetDrawing answered, or the CPU raster and why where the GPU has since
+        been lost and not made again, or would not make a surface at a new size.
+        @return  the drawing in force */
+    const DrawingState &DrawingNow() const noexcept
+    {
+        return drawing_;
     }
 
     LinuxConnection  &connection_;      ///< the connection the window is on
@@ -1088,6 +1166,66 @@ class LinuxSurface : public view::Host
                        RevertToParent, CurrentTime);
     }
 
+    /** The GPU made on the window by the back end it was asked for with (`gpu_backend_`), and `drawing_` saying
+        whichever it came to: the GPU, or the CPU raster and the step that refused. The surface is the caller's to make
+        (ResizeRaster).
+        @return  true when the window now draws on the GPU */
+    bool MakeGpu()
+    {
+        GpuPresenterMade made = gpu_backend_->make(display_, window_, visual_);
+        if (!made.renderer.empty())
+        {
+            drawing_.renderer = std::move(made.renderer);
+        }
+        if (!made.presenter)
+        {
+            drawing_.drawing = Drawing::kCpuRaster;
+            drawing_.why     = made.why;
+            return false;
+        }
+        gpu_             = std::move(made.presenter);
+        drawing_.drawing = Drawing::kGpu;
+        drawing_.why     = DrawingFallback::kNone;
+        return true;
+    }
+
+    /** The GPU let go - its surface first - and the window back on the CPU raster, `why` kept; the whole window drawn
+        again. Nothing for a window that was not on the GPU.
+        @param why  why the window draws with the CPU raster now */
+    void LetGoOfTheGpu(DrawingFallback why)
+    {
+        if (gpu_)
+        {
+            surface_.reset();
+            gpu_.reset();
+            drawing_.drawing = Drawing::kCpuRaster;
+            drawing_.why     = why;
+            ResizeRaster();
+            dirty_ = {pixel_width_, pixel_height_};
+        }
+    }
+
+    /** The GPU lost - the driver reset, the context abandoned, or the context no longer made current - and made again
+        in its place, at most kMostGpuContextsLost times; the CPU raster where it is not made again, and either way the
+        whole window drawn again on the next tick, since nothing of the lost surface is left. */
+    void GpuLost()
+    {
+        surface_.reset();
+        gpu_.reset();
+        ++drawing_.contexts_lost;
+        if (!MayMakeTheGpuContextAgain(drawing_.contexts_lost))
+        {
+            drawing_.drawing = Drawing::kCpuRaster;
+            drawing_.why     = DrawingFallback::kContextLostTooOften;
+        }
+        else if (!MakeGpu())
+        {
+            drawing_.why = DrawingFallback::kContextNotMadeAgain;
+        }
+        ResizeRaster();
+        dirty_ = {pixel_width_, pixel_height_};
+    }
+
     /** The XImage destroyed, leaving the raster's pixels to the vector. */
     void DestroyImage()
     {
@@ -1158,26 +1296,34 @@ class LinuxSurface : public view::Host
         }
     }
 
-    GC                         gc_{};           ///< the graphics context the raster is put on screen with
-    std::vector<std::uint32_t> pixels_;         ///< the raster: B, G, R, A in memory, premultiplied, a row after a row
-    sk_sp<SkSurface>           surface_;        ///< Skia's surface on pixels_
-    XImage                    *image_{nullptr}; ///< the XImage on pixels_, which XPutImage reads
-    bool                       pressed_{false}; ///< a button is down, so moves are drags
-    Time                       last_press_time_{0};      ///< the server time of the last press; 0 after a double click
-    float                      last_press_x_{0.0f};      ///< the last press's x, in window pixels
-    float                      last_press_y_{0.0f};      ///< the last press's y, in window pixels
-    bool                       focus_taken_{false};      ///< a view has the keyboard and this window holds X's focus
-    bool                       is_focus_waiting_{false}; ///< a view has the keyboard and the window is not viewable yet
-    ::Window                   previous_focus_{0};       ///< the window that held X's focus before this one took it
-    DragAtoms                  atoms_;                   ///< the XDND atoms; zero until AcceptDrops
-    ::Window                   drag_source_{0};          ///< the window the drag comes from; 0 for none
-    ::Window                   drag_target_{0};      ///< the window the source addressed: this one, or its top-level
-    std::vector<std::string>   drag_paths_;          ///< the paths being dragged, once fetched
-    gfx::PointF                drag_point_{};        ///< the drag's last position, in design pixels
-    bool                       have_paths_{false};   ///< drag_paths_ has been fetched
-    bool                       requested_{false};    ///< the selection has been asked for
-    bool                       drop_waiting_{false}; ///< a drop came before the paths and waits for them
-    std::vector<LinuxPopup *>  popups_;              ///< the popups opened over it, which go with it
+    GC                         gc_{};   ///< the graphics context the raster is put on screen with
+    std::vector<std::uint32_t> pixels_; ///< the raster: B, G, R, A in memory, premultiplied, a row after a row
+    /** The GPU the tree is drawn on (SetDrawing): **null until a product asks for the GPU** and its back end makes one,
+        so a popup's and an unasked child window's is null for the window's whole life and the tree is rastered and
+        handed to XPutImage exactly as it always was. Declared before `surface_`, which may be on it and so goes
+        first. */
+    std::unique_ptr<GpuPresenter> gpu_;
+    sk_sp<SkSurface>              surface_;        ///< Skia's surface the tree is drawn into: on pixels_, or on the GPU
+    XImage                       *image_{nullptr}; ///< the XImage on pixels_, which XPutImage reads; null on the GPU
+    /** The back end the GPU was asked for with, to make it again with when it is lost; null until a product asks. */
+    const GpuBackend         *gpu_backend_{nullptr};
+    DrawingState              drawing_{};               ///< what the window draws with, and why where it fell back
+    bool                      pressed_{false};          ///< a button is down, so moves are drags
+    Time                      last_press_time_{0};      ///< the server time of the last press; 0 after a double click
+    float                     last_press_x_{0.0f};      ///< the last press's x, in window pixels
+    float                     last_press_y_{0.0f};      ///< the last press's y, in window pixels
+    bool                      focus_taken_{false};      ///< a view has the keyboard and this window holds X's focus
+    bool                      is_focus_waiting_{false}; ///< a view has the keyboard and the window is not viewable yet
+    ::Window                  previous_focus_{0};       ///< the window that held X's focus before this one took it
+    DragAtoms                 atoms_;                   ///< the XDND atoms; zero until AcceptDrops
+    ::Window                  drag_source_{0};          ///< the window the drag comes from; 0 for none
+    ::Window                  drag_target_{0};          ///< the window the source addressed: this one, or its top-level
+    std::vector<std::string>  drag_paths_;              ///< the paths being dragged, once fetched
+    gfx::PointF               drag_point_{};            ///< the drag's last position, in design pixels
+    bool                      have_paths_{false};       ///< drag_paths_ has been fetched
+    bool                      requested_{false};        ///< the selection has been asked for
+    bool                      drop_waiting_{false};     ///< a drop came before the paths and waits for them
+    std::vector<LinuxPopup *> popups_;                  ///< the popups opened over it, which go with it
     /** Told of every raw key edge (ChildWindow::SetRawKeyCallback); empty until an owner asks, until when the window
         asks the server for no key release and reads nothing of the raw keys. */
     RawKeyCallback raw_key_;
@@ -1585,14 +1731,15 @@ class LinuxChildWindow final : public ChildWindow
         toolkit does not pretend otherwise.
 
         X hands a window's pixels over with XPutImage, which is a copy and not a presentation, so there is nothing to
-        put on a vertical blank and nothing that reports one. The two mechanisms that would report one are out of
-        reach for what they cost. GLX or EGL would need a GL context and a swap, which this path has not got and
-        which three shipped products' pixels do not go through. The X11 Present extension would need the view tree
-        rastered into a Pixmap and handed over with PresentPixmap against a target media stream count, which is a
-        different present path, a new library on every consumer's link line, and a rewrite of the dirty-rectangle
-        handling this file is largely about - for phase alone, since the Linux loop's rate is already right: the
-        app's poll loop keeps its deadline in a steady clock and advances it by the period, which measured 16.000 ms
-        with a standard deviation of 0.306 ms, where Windows' window timer measured 26.9 ms and 7.1 ms
+        put on a vertical blank and nothing that reports one. The two mechanisms that would report one are out of reach
+        for what they cost. GLX or EGL would need a GL context and a swap, which the CPU raster's path has not got and
+        which three shipped products' pixels do not go through - and the GPU path's swap, which has them, is told not to
+        wait for the display (an interval of 0), since a wait would hold the host's loop. The X11 Present extension
+        would need the view tree rastered into a Pixmap and handed over with PresentPixmap against a target media stream
+        count, which is a different present path, a new library on every consumer's link line, and a rewrite of the
+        dirty-rectangle handling this file is largely about - for phase alone, since the Linux loop's rate is already
+        right: the app's poll loop keeps its deadline in a steady clock and advances it by the period, which measured
+        16.000 ms with a standard deviation of 0.306 ms, where Windows' window timer measured 26.9 ms and 7.1 ms
         (docs/window/frame-pacing.md). What display synchronisation would buy on Linux is phase, not rate, and the
         honest answer until that is worth its cost is this one.
         @param request  what the product asks for, which is read for nothing but its `pacing`
@@ -1609,6 +1756,23 @@ class LinuxChildWindow final : public ChildWindow
     FramePacingState FramePacingNow() const override
     {
         return pacing_;
+    }
+
+    /** The window drawn as `request` asks: on the GPU through EGL where the request names the back end and it makes
+        one on this window, with the CPU raster and XPutImage otherwise (docs/window/gpu-drawing.md). The pacing is the
+        host loop's timer either way: the swap interval is 0, so a swap never waits for the display.
+        @param request  what the product asks for; DrawingRequest{} for the CPU raster
+        @return         what the window is drawing with, and why where it fell back */
+    DrawingState SetDrawing(const DrawingRequest &request) override
+    {
+        return surface_->SetDrawing(request);
+    }
+
+    /** What the window is drawing with now, a lost GPU given up for the CPU raster included.
+        @return  the drawing in force */
+    DrawingState DrawingNow() const override
+    {
+        return surface_->DrawingNow();
     }
 
     /** Viewable: mapped, with every window above it mapped - a window manager unmaps a minimised top-level window,
@@ -1650,6 +1814,16 @@ class LinuxChildWindow final : public ChildWindow
             (ChildWindow::SetRawKeyCallback).
             @param raw_key  told of each raw key edge; empty for none */
         using LinuxSurface::TakeRawKeys;
+
+        /** LinuxSurface::DrawingNow, for the child window's ChildWindow::DrawingNow.
+            @return  the drawing in force */
+        using LinuxSurface::DrawingNow;
+
+        /** LinuxSurface::SetDrawing, for the child window's ChildWindow::SetDrawing: the child window's surface is the
+            one a product asks to draw on the GPU, never a popup's.
+            @param request  what the product asks for; DrawingRequest{} for the CPU raster
+            @return         what the window is drawing with, and why where it fell back */
+        using LinuxSurface::SetDrawing;
 
         /** The window drawn at a new scale and resized to its raster.
             @param scale  window pixels per design pixel */

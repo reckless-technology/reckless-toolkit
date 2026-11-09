@@ -3,8 +3,9 @@
 // The GPU back end a product links in to have its window drawn on the GPU (GpuDrawing.h): declared here and defined by
 // reckless_window_gpu alone, so a product that includes this links that library, and one that never asks for the GPU
 // links neither and carries none of the GPU's code. On Windows it is Skia's Ganesh on WGL
-// (window/win/GpuDrawingWin.cpp), on macOS Ganesh on Metal (window/mac/GpuDrawingMac.mm); elsewhere, for now, it is
-// none, and a window asked for the GPU there draws with the CPU raster and says kNoGpuOnThisPlatform.
+// (window/win/GpuDrawingWin.cpp), on macOS Ganesh on Metal (window/mac/GpuDrawingMac.mm), on Linux Ganesh on GL
+// through EGL (window/linux/GpuDrawingLinux.cpp); where Linux is built without libEGL's files it is none, and a window
+// asked for the GPU there draws with the CPU raster and says kNoGpuOnThisPlatform.
 
 #include "GpuDrawing.h"
 

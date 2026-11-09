@@ -1425,3 +1425,51 @@ TEST(ChildWindowFramePacing, SaysPlainlyThatThereIsNoDisplayClockOnX11)
     child.reset(); // before the window it sits in
 }
 #endif
+
+#if defined(__linux__)
+#include "GpuDrawing.h"
+#include "LoadedLibrariesLinux.h"
+
+TEST(ChildWindowDrawing, AWindowThatIsNotAskedLoadsNoEglOrGlAndAnswersNotLinked)
+{
+    // What keeps a product that does not opt in unchanged, held from the outside: this suite links the window and not
+    // the GPU's back end (reckless_window_gpu), as every plug-in and every app that does not ask does, so nothing of
+    // EGL or GL is linked or loaded - read from the dynamic linker's own list, which holds every library the program
+    // was linked against. The GPU's suite reads its own the same way and finds libEGL, the control that this read can
+    // see it.
+    const std::string loaded = reckless::test::LoadedLibrariesOfThisProcess();
+    ASSERT_FALSE(loaded.empty());
+    for (const char *library : {"libEGL.so", "libGL.so", "libGLX.so", "libOpenGL.so", "libGLdispatch.so"})
+    {
+        EXPECT_FALSE(reckless::test::NamesLibrary(loaded, library)) << library << " is loaded:\n" << loaded;
+    }
+    reckless::test::TestHostWindow top(240, 160);
+    if (!top.Valid())
+    {
+        if (reckless::test::WindowRequired())
+        {
+            FAIL() << "the run promised a window and there is none";
+        }
+        GTEST_SKIP() << "no display to make a window on";
+    }
+    reckless::view::View root;
+    root.SetBounds({240, 160});
+    auto child =
+        reckless::window::CreateChildWindow(top.Parent(), root, 240, 160, 1.0f, std::make_unique<TurnedLoop>());
+    ASSERT_NE(child, nullptr);
+    const reckless::window::DrawingState unasked = child->DrawingNow();
+    EXPECT_EQ(unasked.drawing, reckless::window::Drawing::kCpuRaster) << "a window no one has asked draws as it did";
+    EXPECT_EQ(unasked.why, reckless::window::DrawingFallback::kNotAsked);
+    EXPECT_TRUE(unasked.renderer.empty());
+    // Asked for the GPU with no back end linked: said, and still nothing of EGL loaded.
+    const reckless::window::DrawingState not_linked = child->SetDrawing({reckless::window::Drawing::kGpu, nullptr});
+    EXPECT_EQ(not_linked.drawing, reckless::window::Drawing::kCpuRaster);
+    EXPECT_TRUE(not_linked.why == reckless::window::DrawingFallback::kNotLinked ||
+                not_linked.why == reckless::window::DrawingFallback::kForcedOff)
+        << reckless::window::TextOf(not_linked.why);
+    EXPECT_EQ(child->SetDrawing({}).why, reckless::window::DrawingFallback::kNotAsked) << "and back to not asked";
+    EXPECT_FALSE(reckless::test::NamesLibrary(reckless::test::LoadedLibrariesOfThisProcess(), "libEGL.so"))
+        << "asking loads no EGL where no back end is linked";
+    child.reset(); // before the window it sits in
+}
+#endif

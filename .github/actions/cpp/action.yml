@@ -1,13 +1,14 @@
 name: C++ toolchain
 description: >
   What every C++ job of the toolkit needs on a self-hosted runner. On Linux: g++, CMake, Ninja and, for a job that
-  builds the windowed parts, what Skia and the child window link (FreeType, fontconfig, X11, found by pkg-config) with
-  Xvfb for the display the window suites open their windows on - each looked up by name and installed with the runner's
-  passwordless sudo where it is missing, else the job stops with the apt line for a person to run. On macOS: Xcode's
-  clang and the tools the universal checks read (lipo, vtool), Homebrew's CMake and Ninja, an arm64 runner. On Windows:
-  the MSVC developer environment of the Visual Studio vswhere finds, exported to the job's later steps. Then a directory
-  under the runner's tool cache, keyed by compiler, generator and GoogleTest's pin, where FetchContent keeps what it
-  fetches between runs - the toolkit's own, never shared with another repository's (reckless-toolkit-deps).
+  builds the windowed parts, what Skia and the child window link (FreeType, fontconfig, X11 and libEGL, found by
+  pkg-config) with Xvfb for the display the window suites open their windows on - each looked up by name and installed
+  with the runner's passwordless sudo where it is missing, else the job stops with the apt line for a person to run.
+  On macOS: Xcode's clang and the tools the universal checks read (lipo, vtool), Homebrew's CMake and Ninja, an arm64
+  runner. On Windows: the MSVC developer environment of the Visual Studio vswhere finds, exported to the job's later
+  steps. Then a directory under the runner's tool cache, keyed by compiler, generator and GoogleTest's pin, where
+  FetchContent keeps what it fetches between runs - the toolkit's own, never shared with another repository's
+  (reckless-toolkit-deps).
 inputs:
   gui:
     description: Linux - also check for (and install) what the windowed parts and their suites need
@@ -36,9 +37,9 @@ runs:
           tools="g++ cmake ninja pkg-config curl python3"
           packages=""
           if [ "$GUI" = "true" ]; then
-            apt_line="$apt_line xvfb libfreetype-dev libfontconfig1-dev libx11-dev"
+            apt_line="$apt_line xvfb libfreetype-dev libfontconfig1-dev libx11-dev libegl-dev"
             tools="$tools xvfb-run"
-            packages="freetype2 fontconfig x11"
+            packages="freetype2 fontconfig x11 egl"
           fi
           find_missing() {
             missing=""
