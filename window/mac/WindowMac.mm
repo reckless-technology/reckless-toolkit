@@ -4,6 +4,11 @@
 // refreshes the window counts. A popup is the same surface in a borderless, non-activating panel over the host's
 // window, watched by a local event monitor for presses outside it. Screen points are Cocoa's (y up from the main
 // screen's bottom), opaque to the views, which only hand them back to Popup::Contains.
+//
+// Where a product has asked for the GPU (ChildWindow::SetDrawing) and linked its back end, the child window's tree is
+// drawn into a surface on the GPU instead and presented in a Metal layer over the view's own (GpuPresenterMac.h), and
+// painted on the frame callback's own tick rather than through drawRect:, so AppKit keeps no backing store beside it.
+// Nothing of the GPU is touched until a product asks, and a popup is always drawn on the CPU raster.
 #import <AppKit/AppKit.h>
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/QuartzCore.h>
@@ -28,6 +33,7 @@
 #include "include/core/SkSurface.h"
 
 #include "ClipboardMac.h"
+#include "GpuPresenterMac.h"
 #include "SkiaCanvas.h"
 #include "Window.h"
 
@@ -438,6 +444,11 @@ class MacSurface : public view::Host
         @param area  the part, in the root's coordinates */
     void Invalidate(gfx::RectI area) override
     {
+        if (IsDrawnOnTheGpu())
+        {
+            GpuInvalidate(area); // painted on the frame's tick, never through drawRect:
+            return;
+        }
         [view_ setNeedsDisplayInRect:NSMakeRect(area.x() * scale_, area.y() * scale_, area.width() * scale_,
                                                 area.height() * scale_)];
     }
@@ -683,6 +694,10 @@ class MacSurface : public view::Host
         @param dirty    the part to draw again, in the view's points */
     void Draw(CGContextRef context, NSRect dirty)
     {
+        if (IsDrawnOnTheGpu())
+        {
+            return; // the Metal layer over the view shows the frame, and the view's own layer is not drawn
+        }
         const CGFloat backing = [[view_ window] backingScaleFactor] > 0 ? [[view_ window] backingScaleFactor] : 2.0;
         const NSRect  bounds  = [view_ bounds];
         const int     pw      = static_cast<int>(std::ceil(bounds.size.width * backing));
@@ -831,7 +846,30 @@ class MacSurface : public view::Host
         return !clear_first_;
     }
 
+    /** The view's backing scale changed - a move to a screen of another scale - which a surface on the GPU follows by
+        drawing the whole of itself again; the CPU raster is drawn again by AppKit. Called by the view's
+        `viewDidChangeBackingProperties`, so it is public as the view's other answers are. */
+    virtual void BackingChanged()
+    {
+    }
+
+    /** Whether the tree is drawn on the GPU, and so painted on the frame's tick rather than through drawRect:. Only the
+        child window ever is, and only once a product asks; a popup never. Public, as the view's other answers are: the
+        view's `wantsUpdateLayer` reads it.
+        @return true while it is */
+    virtual bool IsDrawnOnTheGpu() const noexcept
+    {
+        return false;
+    }
+
   protected:
+    /** The part of the root to paint again on the GPU, while IsDrawnOnTheGpu says the tree is drawn there.
+        @param area  the part, in the root's coordinates */
+    virtual void GpuInvalidate(gfx::RectI area)
+    {
+        (void)area;
+    }
+
     /** The surface let go, once - what its destruction does, and what a popup's closing with the window it opened
         over does early. From here on nothing it deferred (CallSoon) and no dialog's answer (ChooseFile) runs, each
         holding the lifetime weakly; a dialog still up goes, its answer (which a cancel gives at once) finding the
@@ -1075,7 +1113,9 @@ class MacChildWindow final : public ChildWindow, public MacSurface
         [parent addSubview:view_];
     }
 
-    /** The frame timer invalidated and the display clock stopped, before the view they tick can go. */
+    /** The frame timer invalidated and the display clock stopped, before the view they tick can go; and the GPU let
+        go - the views' surface first, then the presenter, which takes its layer off the view - while the view is still
+        there. */
     ~MacChildWindow() override
     {
         clock_.Stop();
@@ -1083,12 +1123,23 @@ class MacChildWindow final : public ChildWindow, public MacSurface
         link_watch_ = nil;
         [timer_ invalidate];
         timer_ = nil;
+        StopWatchingTheOcclusion();
+        gpu_surface_.reset();
+        gpu_.reset();
     }
 
+    /** The window at `scale`, its view sized to the root at that scale and drawn again whole: on the GPU at its tick,
+        the surface made again at the new size; on the CPU raster by AppKit.
+        @param scale  design pixels to points */
     void SetScale(float scale) override
     {
         scale_ = scale;
         [view_ setFrameSize:NSMakeSize(std::lround(root_.width() * scale), std::lround(root_.height() * scale))];
+        if (gpu_)
+        {
+            GpuInvalidate(WholeRoot());
+            return;
+        }
         [view_ setNeedsDisplay:YES];
     }
 
@@ -1096,6 +1147,55 @@ class MacChildWindow final : public ChildWindow, public MacSurface
     {
         frame_ = std::move(frame);
         ArrangePacing();
+        ScheduleGpuPaint(); // what was owed to a tick that has gone, where it has
+    }
+
+    /** The window drawn as `request` asks: on the GPU where the request names a back end, the environment has not
+        turned the GPU off and the back end makes one on this view, and with the CPU raster otherwise. A request for the
+        CPU raster on a window that was never on the GPU touches nothing; one that changes what the window draws with
+        draws the whole window again on the new one.
+        @param request  what the product asks for; DrawingRequest{} for the CPU raster
+        @return         what the window is drawing with, and why where it fell back */
+    DrawingState SetDrawing(const DrawingRequest &request) override
+    {
+        const DrawingState chosen = ChosenDrawing(
+            request, IsGpuDrawingForcedOff(core::EnvironmentVariable(kGpuDrawingEnvironmentVariable)), true);
+        if (chosen.drawing != Drawing::kGpu)
+        {
+            LetGoOfTheGpu(chosen.why);
+            drawing_.drawing = chosen.drawing;
+            drawing_.why     = chosen.why;
+            return DrawingNow();
+        }
+        if (gpu_ && request.gpu_backend == gpu_backend_)
+        {
+            return DrawingNow(); // asked again for what it has
+        }
+        LetGoOfTheGpu(DrawingFallback::kNotAsked);
+        gpu_backend_           = request.gpu_backend;
+        drawing_.contexts_lost = 0;
+        drawing_.renderer.clear();
+        if (MakeGpu())
+        {
+            TakeTheViewOffItsBackingStore();
+        }
+        return DrawingNow();
+    }
+
+    /** What the window is drawing with now: what SetDrawing answered, or the CPU raster and why where the GPU has since
+        been lost and not made again, or would not make a surface at a new size.
+        @return  the drawing in force */
+    DrawingState DrawingNow() const override
+    {
+        return drawing_;
+    }
+
+    void BackingChanged() override
+    {
+        if (gpu_)
+        {
+            GpuInvalidate(WholeRoot()); // the surface and the drawables made again at the new scale, at the next tick
+        }
     }
 
     /** The frame callback paced as `request` asks: the display's own link - Core Animation's from macOS 14, made from
@@ -1116,6 +1216,7 @@ class MacChildWindow final : public ChildWindow, public MacSurface
             };
         }
         ArrangePacing();
+        ScheduleGpuPaint(); // what was owed to a tick that has gone, where it has
         return pacing_;
     }
 
@@ -1215,6 +1316,7 @@ class MacChildWindow final : public ChildWindow, public MacSurface
                                                      {
                                                          self->frame_();
                                                      }
+                                                     self->PaintOnTheGpu();
                                                                  }];
         [[NSRunLoop currentRunLoop] addTimer:timer_ forMode:NSRunLoopCommonModes];
     }
@@ -1324,6 +1426,267 @@ class MacChildWindow final : public ChildWindow, public MacSurface
         {
             frame_();
         }
+        PaintOnTheGpu(); // on the GPU, the frame just asked for drawn and presented on this tick
+    }
+
+    // ---- On the GPU ------------------------------------------------------------------------------------------------
+
+    bool IsDrawnOnTheGpu() const noexcept override
+    {
+        return gpu_ != nullptr;
+    }
+
+    void GpuInvalidate(gfx::RectI area) override
+    {
+        gpu_dirty_ = gpu_dirty_.Union(area);
+        ScheduleGpuPaint();
+    }
+
+    /** The whole of the root, in its own coordinates: what a new surface, a new scale or a GPU made again draws.
+        @return  the root's rectangle */
+    gfx::RectI WholeRoot() const noexcept
+    {
+        return {0, 0, std::max(1, root_.width()), std::max(1, root_.height())};
+    }
+
+    /** Whether the frame callback's own tick is running - the timer, or a display link that is not silent - and so
+        paints the GPU's frame after it: then nothing else need, and the frame drawn is the one the product's frame
+        asked for, presented once a frame.
+        @return  true while a tick runs */
+    bool IsAFrameTickRunning() const noexcept
+    {
+        return frame_ && (timer_ != nil || (clock_.is_running() && !is_link_silent_));
+    }
+
+    /** A paint on the GPU owed - something invalidated, or a frame drawn and not yet shown - arranged for: the frame's
+        next tick paints it where one runs, and otherwise the main queue once the event in hand is done, once however
+        many invalidations come before it (CallSoon, which nothing reaches once the window has gone). */
+    void ScheduleGpuPaint()
+    {
+        if (!gpu_ || is_gpu_paint_scheduled_ || (gpu_dirty_.IsEmpty() && !is_present_owed_) || IsAFrameTickRunning())
+        {
+            return;
+        }
+        is_gpu_paint_scheduled_ = true;
+        CallSoon([this] { PaintOnTheGpu(); });
+    }
+
+    /** Whether the window is one a frame presented now could be shown in: ordered in, not in the Dock and not hidden -
+        what Showing() answers. A frame is not presented to a window that is not, which has nobody to see it, and the
+        one drawn meanwhile is presented as the window shows again (WatchTheOcclusion). A window that is merely covered,
+        or behind a locked screen, is presented to as usual: its drawables still come back at once (mac-0, an M6 on
+        macOS 27.2 with its screen locked, 2026-11-08: 120 frames, the longest wait for a drawable 5.1 ms, ordered in
+        or out), so nothing is gained by holding them back there.
+        @return  true when a frame is presented */
+    bool IsShownOnTheDisplay() const
+    {
+        return Showing();
+    }
+
+    /** What is owed on the GPU drawn and presented: the part invalidated painted into the views' surface - the whole
+        of it where the surface was made again, at a new size or on a GPU made again - and the surface presented where
+        the window is shown, or kept owed until it is. Nothing where the window is not on the GPU or nothing is owed.
+        The backing scale is read each time, as the CPU raster's draw reads it, so a move to a screen of another scale
+        draws at the new one. */
+    void PaintOnTheGpu()
+    {
+        is_gpu_paint_scheduled_ = false;
+        if (!gpu_ || view_ == nil || (gpu_dirty_.IsEmpty() && !is_present_owed_))
+        {
+            return;
+        }
+        const CGFloat backing = [[view_ window] backingScaleFactor] > 0 ? [[view_ window] backingScaleFactor] : 2.0;
+        const NSRect  bounds  = [view_ bounds];
+        const int     pw      = static_cast<int>(std::ceil(bounds.size.width * backing));
+        const int     ph      = static_cast<int>(std::ceil(bounds.size.height * backing));
+        if (pw <= 0 || ph <= 0)
+        {
+            return;
+        }
+        if (!gpu_->BeginFrame())
+        {
+            GpuLost();
+            return;
+        }
+        sk_sp<SkSurface> surface = gpu_->SurfaceOfSize(pw, ph);
+        if (!surface)
+        {
+            // No surface of this size on the GPU: the CPU raster from here, and the reason kept.
+            LetGoOfTheGpu(DrawingFallback::kNoSurface);
+            return;
+        }
+        if (surface.get() != gpu_surface_.get())
+        {
+            gpu_surface_ = std::move(surface);
+            gpu_dirty_   = WholeRoot(); // a new surface holds nothing yet
+        }
+        // Taken before painting, so a view that invalidates as it paints is owed a paint of its own.
+        const gfx::RectI dirty = gpu_dirty_;
+        gpu_dirty_             = {};
+        if (!dirty.IsEmpty())
+        {
+            SkCanvas *sk = gpu_surface_->getCanvas();
+            sk->save();
+            sk->resetMatrix();
+            const float total = static_cast<float>(backing) * scale_;
+            sk->scale(total, total);
+            {
+                gfx::SkiaCanvas canvas(*sk, 1.0f);
+                canvas.ClipToRect(dirty);
+                view::PaintTree(root_, canvas);
+            }
+            sk->restore();
+            is_present_owed_ = true;
+        }
+        if (!gpu_)
+        {
+            return; // a view's paint let the GPU go
+        }
+        if (!IsShownOnTheDisplay())
+        {
+            // The frame waits for the window to show (WatchTheOcclusion); a GPU lost as it was painted is made again
+            // now, all the same, rather than at a present that may be long in coming.
+            if (!gpu_->BeginFrame())
+            {
+                GpuLost();
+            }
+            return;
+        }
+        is_present_owed_ = false;
+        if (!gpu_->Present())
+        {
+            GpuLost();
+        }
+    }
+
+    /** The GPU made on the view by the back end it was asked for with (`gpu_backend_`), and `drawing_` saying
+        whichever it came to: the GPU, or the CPU raster and the step that refused.
+        @return  true when the window now draws on the GPU */
+    bool MakeGpu()
+    {
+        GpuPresenterMade made = gpu_backend_->make(view_);
+        if (!made.renderer.empty())
+        {
+            drawing_.renderer = std::move(made.renderer);
+        }
+        if (!made.presenter)
+        {
+            drawing_.drawing = Drawing::kCpuRaster;
+            drawing_.why     = made.why;
+            return false;
+        }
+        gpu_             = std::move(made.presenter);
+        drawing_.drawing = Drawing::kGpu;
+        drawing_.why     = DrawingFallback::kNone;
+        return true;
+    }
+
+    /** The view taken off the backing store AppKit draws it into, now that the GPU's layer shows the frame: its layer's
+        contents let go - at 4K, 33 MB beside the GPU's own - the CPU raster with them, and AppKit told never to draw
+        the view again (drawRect:) until the window is back on the CPU raster; the whole tree then painted on the GPU at
+        the next tick, and the window's occlusion watched so a frame owed while it was not shown is presented as it
+        shows. */
+    void TakeTheViewOffItsBackingStore()
+    {
+        if (!is_off_its_backing_store_)
+        {
+            redraw_policy_            = [view_ layerContentsRedrawPolicy];
+            is_off_its_backing_store_ = true;
+        }
+        [view_ setLayerContentsRedrawPolicy:NSViewLayerContentsRedrawNever];
+        [view_ setNeedsDisplay:NO];
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        [view_ layer].contents = nil;
+        [CATransaction commit];
+        surface_.reset();
+        WatchTheOcclusion();
+        GpuInvalidate(WholeRoot());
+    }
+
+    /** The view put back on the backing store AppKit draws it into, as it was before the GPU, and drawn whole there. */
+    void PutTheViewBackOnItsBackingStore()
+    {
+        StopWatchingTheOcclusion();
+        gpu_dirty_       = {};
+        is_present_owed_ = false;
+        if (is_off_its_backing_store_)
+        {
+            [view_ setLayerContentsRedrawPolicy:redraw_policy_];
+            is_off_its_backing_store_ = false;
+        }
+        [view_ setNeedsDisplay:YES];
+    }
+
+    /** The GPU let go - its surface first, then the presenter, which takes its layer off the view - and the window
+        back on the CPU raster, `why` kept; the whole window drawn again. Nothing for a window that was not on the GPU.
+        @param why  why the window draws with the CPU raster now */
+    void LetGoOfTheGpu(DrawingFallback why)
+    {
+        if (gpu_)
+        {
+            gpu_surface_.reset();
+            gpu_.reset();
+            drawing_.drawing = Drawing::kCpuRaster;
+            drawing_.why     = why;
+            PutTheViewBackOnItsBackingStore();
+        }
+    }
+
+    /** The GPU lost - the device gone, or Skia's context abandoned - and made again in its place, at most
+        kMostGpuContextsLost times; the CPU raster where it is not made again. Either way the whole window is drawn
+        again, since nothing of the lost surface is left. */
+    void GpuLost()
+    {
+        gpu_surface_.reset();
+        gpu_.reset();
+        ++drawing_.contexts_lost;
+        if (!MayMakeTheGpuContextAgain(drawing_.contexts_lost))
+        {
+            drawing_.drawing = Drawing::kCpuRaster;
+            drawing_.why     = DrawingFallback::kContextLostTooOften;
+            PutTheViewBackOnItsBackingStore();
+        }
+        else if (!MakeGpu())
+        {
+            drawing_.why = DrawingFallback::kContextNotMadeAgain;
+            PutTheViewBackOnItsBackingStore();
+        }
+        else
+        {
+            GpuInvalidate(WholeRoot());
+        }
+    }
+
+    /** The window's occlusion watched, while it is on the GPU: as it shows again, a frame drawn while it did not is
+        presented. Watched once, however often the GPU is made again. */
+    void WatchTheOcclusion()
+    {
+        if (occlusion_watch_ != nil)
+        {
+            return;
+        }
+        MacChildWindow *self = this;
+        occlusion_watch_ =
+            [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidChangeOcclusionStateNotification
+                                                              object:nil
+                                                               queue:nil
+                                                          usingBlock:^(NSNotification *note) {
+                                                            if (note.object == [self->view_ window])
+                                                            {
+                                                                self->ScheduleGpuPaint();
+                                                            }
+                                                          }];
+    }
+
+    /** The occlusion watch dropped, where there is one. */
+    void StopWatchingTheOcclusion()
+    {
+        if (occlusion_watch_ != nil)
+        {
+            [[NSNotificationCenter defaultCenter] removeObserver:occlusion_watch_];
+            occlusion_watch_ = nil;
+        }
     }
 
     NSTimer *timer_{nil};             ///< The platform's frame timer; nil while there is no callback, or a link ticks.
@@ -1342,6 +1705,22 @@ class MacChildWindow final : public ChildWindow, public MacSurface
     /** The rates the display the window is on reports, read as the display or its mode changes rather than per tick. */
     DisplayClockReading reading_;
     CGDirectDisplayID   display_{kCGNullDirectDisplay}; ///< The display the readings are of.
+
+    /** The GPU the tree is drawn on (ChildWindow::SetDrawing): **null until a product asks for the GPU** and its back
+        end makes one, so an unasked window's is null for its whole life and the tree is drawn through drawRect: into
+        the raster exactly as it always was. Declared before `gpu_surface_`, which is on it and so goes first. */
+    std::unique_ptr<GpuPresenter> gpu_;
+    sk_sp<SkSurface>              gpu_surface_; ///< The views' surface on the GPU, as the presenter last made it.
+    /** The back end the GPU was asked for with, to make it again with when it is lost; null until a product asks. */
+    const GpuBackend *gpu_backend_{nullptr};
+    DrawingState      drawing_{}; ///< What the window draws with, and why where it fell back.
+    gfx::RectI        gpu_dirty_; ///< The part of the root to paint again on the GPU; empty for none.
+    bool is_present_owed_{false}; ///< A frame painted on the GPU and not yet presented: the window was not shown.
+    bool is_gpu_paint_scheduled_{false};   ///< A paint on the GPU is queued on the main queue (ScheduleGpuPaint).
+    bool is_off_its_backing_store_{false}; ///< The view's layer is not drawn by AppKit: the GPU's layer shows it.
+    /** The view's redraw policy before the GPU, put back with the CPU raster. */
+    NSViewLayerContentsRedrawPolicy redraw_policy_{NSViewLayerContentsRedrawDuringViewResize};
+    id occlusion_watch_{nil}; ///< The watch on the window's occlusion, while on the GPU; nil while there is none.
 };
 
 float DisplayScaleOf(void *)
@@ -1558,6 +1937,37 @@ void ViewDrawRect(id self, SEL, NSRect dirty)
     if (MacSurface *owner = OwnerOf(self))
     {
         owner->Draw([[NSGraphicsContext currentContext] CGContext], dirty);
+    }
+}
+
+/** `wantsUpdateLayer`: YES while the tree is drawn on the GPU, so that should AppKit display the view at all then it
+    calls `updateLayer` rather than `drawRect:`, and makes no backing store for the view to draw into - the GPU's layer
+    over it shows the frame. NO otherwise, as NSView's own answers, so the CPU raster is drawn through drawRect: as
+   ever.
+    @param self  the view
+    @return      YES while on the GPU */
+BOOL ViewWantsUpdateLayer(id self, SEL)
+{
+    MacSurface *owner = OwnerOf(self);
+    return owner != nullptr && owner->IsDrawnOnTheGpu();
+}
+
+/** `updateLayer`: the view's own layer left with no contents, while the tree is drawn on the GPU
+   (ViewWantsUpdateLayer).
+    @param self  the view */
+void ViewUpdateLayer(id self, SEL)
+{
+    [static_cast<NSView *>(self) layer].contents = nil;
+}
+
+/** `viewDidChangeBackingProperties`: the view's backing scale changed, a move to a screen of another, which a surface
+    on the GPU follows (MacSurface::BackingChanged). NSView's own does nothing.
+    @param self  the view */
+void ViewDidChangeBackingProperties(id self, SEL)
+{
+    if (MacSurface *owner = OwnerOf(self))
+    {
+        owner->BackingChanged();
     }
 }
 
@@ -1843,6 +2253,10 @@ Class PanelViewClass()
         AddMethod(cls, @selector(isOpaque), reinterpret_cast<IMP>(ViewIsOpaque));
         AddMethod(cls, @selector(acceptsFirstResponder), reinterpret_cast<IMP>(ViewAcceptsFirstResponder));
         AddMethod(cls, @selector(drawRect:), reinterpret_cast<IMP>(ViewDrawRect));
+        AddMethod(cls, @selector(viewDidChangeBackingProperties),
+                  reinterpret_cast<IMP>(ViewDidChangeBackingProperties));
+        AddMethod(cls, @selector(wantsUpdateLayer), reinterpret_cast<IMP>(ViewWantsUpdateLayer));
+        AddMethod(cls, @selector(updateLayer), reinterpret_cast<IMP>(ViewUpdateLayer));
         AddMethod(cls, DisplayLinkTickedSelector(), reinterpret_cast<IMP>(ViewDisplayLinkTicked), "v@:@");
         AddMethod(cls, @selector(resetCursorRects), reinterpret_cast<IMP>(ViewResetCursorRects));
         AddMethod(cls, @selector(cursorUpdate:), reinterpret_cast<IMP>(ViewCursorUpdate));

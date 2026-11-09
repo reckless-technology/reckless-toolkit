@@ -141,11 +141,11 @@ class ChildWindow
         return 0.0;
     }
 
-    /** The window drawn as `request` asks: on the GPU - Skia's Ganesh on the platform's GL, each frame presented with a
-        swap - where the platform has a GPU path, the request names a back end (GpuDrawingRequest, which needs
-        reckless_window_gpu linked) and a context can be made, and with the CPU raster it has always drawn with where
-        not. The answer says which it is drawing with and, where it fell back, why (GpuDrawing.h,
-        docs/window/gpu-drawing.md).
+    /** The window drawn as `request` asks: on the GPU - Skia's Ganesh on the platform's GPU API (GL on Windows, Metal
+       on macOS), each frame presented - where the platform has a GPU path, the request names a back end
+       (GpuDrawingRequest, which needs reckless_window_gpu linked) and a context can be made, and with the CPU raster it
+       has always drawn with where not. The answer says which it is drawing with and, where it fell back, why
+       (GpuDrawing.h, docs/window/gpu-drawing.md).
 
         **Nothing until it is asked.** A window whose owner has not called this makes no context, loads no GL and draws
         exactly as it always did; `DrawingRequest{}` asks for that, and calling it with `DrawingRequest{}` after the GPU

@@ -2,9 +2,10 @@
 
 A child window draws its view tree with Skia's CPU raster and hands the pixels to the platform, and has done since the
 toolkit began: `SkSurfaces::WrapPixels` and `SetDIBitsToDevice` on Windows, a `CGImage` in `drawRect:` on macOS,
-`XPutImage` on Linux. So a window now carries an **opt-in GPU path** beside it, on Windows first: Skia's Ganesh on
-OpenGL through WGL, each frame drawn into a surface on the GPU and presented with a swap. A product asks for it, and the
-window gives it where it can, says so, and draws with the CPU raster where it cannot and says why.
+`XPutImage` on Linux. So a window now carries an **opt-in GPU path** beside it, on Windows and macOS: Skia's Ganesh on
+OpenGL through WGL on Windows and on Metal on macOS, each frame drawn into a surface on the GPU and presented. A
+product asks for it, and the window gives it where it can, says so, and draws with the CPU raster where it cannot and
+says why.
 
 ## The decision
 
@@ -56,9 +57,13 @@ if (state.drawing != reckless::window::Drawing::kGpu)
 - **Linking.** Ganesh's GL is compiled into the pinned skia-pack's `skia.lib` beside its Direct3D, whose objects it
   shares a link with, so `reckless_window_gpu` puts `d3d12` and `d3dcompiler` on the link line too (`dxgi` is not
   needed). Nothing of either is called, and neither becomes a library the binary loads: the probe above imported
-  `OPENGL32.dll` and `KERNEL32.dll` and nothing else.
+  `OPENGL32.dll` and `KERNEL32.dll` and nothing else. On macOS the pinned pack's `libskia.a` carries Ganesh's Metal in
+  both slices, and `reckless_window_gpu` adds `-framework Metal` and `-framework QuartzCore`; the window itself names
+  no Metal, and its suite holds that from the binary (below, "Metal on macOS").
 
 ## How a frame is drawn
+
+On Windows, through WGL (macOS's is [Metal on macOS](#metal-on-macos), below):
 
 1. **A pixel format, asked of a window of its own first.** A window keeps the first pixel format it is given for life. So
    the back end first gives one to a window of its own that is never shown, makes a GL context there, reads its version
@@ -156,6 +161,96 @@ the CPU raster and says `kContextLostTooOften`, and where a context cannot be ma
 `kContextNotMadeAgain`. The window keeps the GL pixel format it was given, and the CPU raster is handed to it through
 `SetDIBitsToDevice` as before; the suite holds that it is shown.
 
+## Metal on macOS
+
+The second back end, on the shared seam below: `window/mac/GpuDrawingMac.mm` and its seam with the window,
+`window/mac/GpuPresenterMac.h`, compiled with ARC into `reckless_window_gpu` beside `GpuSurfacePresenter.cpp`. Nothing
+of Skia changed for it: the pinned pack (`m144-e2e6623374-4`) has `GrDirectContexts::MakeMetal`,
+`GrBackendRenderTargets::MakeMtl` and `SkSurfaces::WrapCAMetalLayer` in both slices, and the library builds universal,
+arm64 and x86_64, for the 13.3 floor.
+
+### How a frame is drawn there
+
+1. **The device that drives the window's display** - `CGDirectDisplayCopyCurrentMetalDevice` of the display the
+   window's screen is, or the main display's for a view in no window yet - not `MTLCreateSystemDefaultDevice`, so a Mac
+   with two GPUs does not draw on one and composite on the other. None is `kNoMetalDevice`, as is a device that will
+   give no command queue. The renderer string is the device's name and "Metal" ("Apple M6, Metal").
+2. **Skia's context on it**, `GrDirectContexts::MakeMetal` on the device and a command queue of the presenter's own,
+   each handed over with a retained bridge, which Skia releases (`GrMtlBackendContext`, under ARC).
+3. **A `CAMetalLayer` added over the view's own layer**, filling it and following it (`autoresizingMask`): BGRA8Unorm,
+   the layout the CPU raster hands the window too; three drawables; `displaySyncEnabled`, so a drawable is shown at the
+   display's blank; `allowsNextDrawableTimeout`, so a wait for a drawable gives up after a second rather than holding the
+   window's thread; `framebufferOnly` (a suite alone turns it off, to read the drawables back); and the **device RGB
+   colour space** the CPU raster's image is tagged with (`CGColorSpaceCreateDeviceRGB`), so the two paths are handed to
+   the compositor alike. A flipped view's layer would flip its sublayers' contents, so the layer's own `geometryFlipped`
+   is set where `contentsAreFlipped` says so, and the suite holds that the frame is the right way up.
+4. **The views draw into the shared seam's offscreen surface**, which keeps its pixels as the CPU raster does.
+5. **The present**: the layer fitted to the view as it is now - its frame the view's bounds, its `contentsScale` the
+   window's backing scale and its `drawableSize` the surface's pixels, read on every frame - then `nextDrawable`, its
+   texture wrapped with `GrBackendRenderTargets::MakeMtl`, the surface copied over it **top-left to top-left**, with no
+   flip (a Metal texture and the views' surface are both top-down, where GL's framebuffer on Windows is bottom-up), Skia's
+   work submitted, and `presentDrawable` in a command buffer on the **same queue**, so the drawable is shown only once
+   the frame is in it. A layer that has no drawable to give in time is a frame not shown; the next is drawn whole.
+
+### Painted on the tick, not through drawRect:
+
+On the CPU raster the window is drawn by AppKit, which calls `drawRect:` and keeps a backing store the view draws into.
+**On the GPU the window paints and presents in the frame callback's own tick** - the timer, or the display link the
+product asked to be paced on ([frame-pacing.md](frame-pacing.md)) - straight after the frame callback, so the frame
+presented is the one the product's frame asked for and there is one present a frame. Where no frame callback runs, an
+invalidation is painted on the main queue once the event in hand is done, however many came before it. The view is
+taken off its backing store meanwhile: its redraw policy `NSViewLayerContentsRedrawNever`, its layer's contents let go,
+and `wantsUpdateLayer` answering YES, so that should AppKit display the view at all it calls `updateLayer`, which
+leaves the contents empty, and makes no backing store - at 4K, 33 MB beside the GPU's own. The suite holds that the
+view's layer has no contents while the window is on the GPU. All of it is put back with the CPU raster.
+
+A frame is presented only to a window that is ordered in, not in the Dock and not hidden - what `Showing()` answers -
+and the one painted meanwhile is presented as the window's occlusion next changes. A window that is merely covered, or
+behind a locked screen, is presented to as usual: its drawables come back at once. Measured on mac-0 (Apple M6, macOS
+27.2, its screen locked, 2026-11-08), 120 frames presented one after another took at most 5.1 ms each to be given a
+drawable, ordered in or out, so holding frames back from a covered window would gain nothing.
+
+### Scale, a move, full screen
+
+The backing scale is read on every paint and every present, as the CPU raster's draw reads it, so a move to a screen
+of another scale - which reaches the view as `viewDidChangeBackingProperties`, and the window as a whole repaint - and
+full screen and a resize, which reach it as `SetScale`, make the surface and the drawables again at the new size. A
+move to a display that another GPU drives keeps the device it was made on: the drawables are then composited across
+GPUs, which works and costs a copy, and the presenter is not made again for it.
+
+### Lost
+
+Metal reports no reset status of GL's kind. The GPU is lost where Skia's context has been abandoned, or where a
+presented frame's command buffer finished with `MTLCommandBufferErrorDeviceRemoved` (an external GPU unplugged),
+`AccessRevoked` (the system took the GPU from the process) or `Timeout` (a hang the driver reset) - that is the back
+end's `IsDeviceReset`. A loss found as a frame is painted for a window that is not shown is acted on then, not at a
+present that may be long in coming. What follows is the shared seam's: made again up to `kMostGpuContextsLost` times,
+each presenter taking its layer off the view as it goes, and then the CPU raster, drawn through `drawRect:` again.
+
+### What it did
+
+- **mac-0** (Apple M6, macOS 27.2, one 1920 x 1080 display at 60 Hz, backing scale 1, its screen locked), 2026-11-08:
+  the GPU suite's eight cases pass and none skips - the known frame read back off the canvas and off the very drawable
+  presented, at 1, 2 and 1.5 and three sizes, lost and made again, given up, back to the CPU raster and on again, and
+  the fallbacks. Paced on the display clock at a divisor of 1 for five seconds, 300 frames were handed to the display
+  at 16.67 ms (p1 15.55, p99 17.62). A locked screen composes nothing, so no drawable reported a time it was shown.
+- **jonny-macbook** (M1 Pro, macOS 27.0.1, its 3024 x 1964 Retina XDR display at 120 Hz, backing scale 2),
+  2026-11-08: the same eight cases pass, a 240 x 160 view presented as 480 x 320 drawables. Paced on the display clock
+  at a divisor of 1 for five seconds, 599 frames were handed over (p50 8.40 ms, p1 4.68, p99 12.57) and 597 were
+  shown, by each drawable's `presentedTime`, at 8.33 ms from p1 to p99, one at 16.67 (a refresh missed) and two never.
+- **The colours** (the same two machines and day). The drawable holds exactly the bytes drawn (230, 20, 30 and the
+  other three quarters), as the CPU raster does, and both are tagged device RGB. On the XDR panel, whose window colour
+  space is "Color LCD", AppKit's own drawing of the CPU-raster window (`cacheDisplayInRect:`) gave D3 33 2D, 61 CF 49,
+  20 28 D3 and EE E6 4F for the four quarters; ColorSync's conversion of the drawable's bytes from device RGB to the
+  window's space gave the same four to the byte. ColorSync takes device RGB as sRGB here: an sRGB tag gave them too.
+  On mac-0's sRGB display all three are the bytes drawn. What is not measured is the window server's own conversion of
+  the layer's tag, since nothing over ssh may record the screen; the two paths hand it the same bytes in the same
+  colour space.
+- **The toolkit's whole suite on a Mac**, which mac-0's run was cut off before it finished: on `jonny-macbook`,
+  2026-11-08, all 21 of the toolkit's tests pass with the GPU back end built, the window suites among them
+  (`gpu_window` in 3.45 s, `child_window` in 6.42 s with its one Linux drop case skipped). The window-only suite's
+  binary names no Metal and the GPU suite's names it, read off each with `otool -L`.
+
 ## Falling back
 
 Every refusal is a reason (`window::DrawingFallback`), said in words by `window::TextOf`:
@@ -164,9 +259,10 @@ Every refusal is a reason (`window::DrawingFallback`), said in words by `window:
 |---|---|
 | `kNotAsked` | no one asked for the GPU |
 | `kForcedOff` | the environment says `RECKLESS_GPU_DRAWING=off` |
-| `kNoGpuOnThisPlatform` | macOS and Linux, for now |
+| `kNoGpuOnThisPlatform` | Linux, for now |
 | `kNotLinked` | the request named no back end |
 | `kNoPixelFormat`, `kNoContext`, `kGlTooOld`, `kNoSkiaInterface`, `kNoSkiaContext` | the step of making the GPU that refused |
+| `kNoMetalDevice` | macOS: no Metal device drives the window's display, or it gives no command queue |
 | `kNoSurface` | Skia would not make a surface the window's size |
 | `kContextLostTooOften`, `kContextNotMadeAgain` | the GPU was lost and given up |
 
@@ -184,11 +280,10 @@ another way there. Sentinel's HD skin already has one: where it cannot write the
 into a raster of its own at 1080 lines and draws that scaled (its `hd_skin.cpp`, `PaintIntoPixels` and the
 `PaintCapture` fallback), and that path is what a GPU canvas reaches unchanged.
 
-**On macOS and Linux** the request is accepted and answered with the CPU raster, `kNoGpuOnThisPlatform`, and
+**On Linux** the request is accepted and answered with the CPU raster, `kNoGpuOnThisPlatform`, and
 `reckless_window_gpu` there is a back end of none (`window/GpuDrawingNone.cpp`), so a product may link it and ask on
-every platform alike. The pinned skia-pack has Ganesh GL and Metal on macOS, GLX's GL on Linux x64 and EGL's GLES on
-Linux arm64. Two back ends are planned on the shared seam below, written in parallel against it and not against each
-other's files.
+every platform alike. The pinned skia-pack has GLX's GL on Linux x64 and EGL's GLES on Linux arm64. Its back end is
+planned on the shared seam below.
 
 ## The shared seam
 
@@ -213,10 +308,7 @@ Every back end is the same two halves, so a new platform writes only the second.
 
 ### Planned back ends
 
-- **Metal on macOS (T1).** Skia's Ganesh on Metal over a `CAMetalLayer` on the view. It chooses the device that drives
-  the display - the GPU the window is on, not simply the system default, so a laptop with two GPUs does not draw on one
-  and present from the other - and answers `kNoMetalDevice` where there is none. Metal reports no reset code of
-  `glGetGraphicsResetStatus`'s kind, so loss is Skia's context abandoned or the command buffer's error.
+- **Metal on macOS (T1)** is done: [Metal on macOS](#metal-on-macos), above.
 - **EGL on X11 on Linux (T2).** Skia's Ganesh on GLES over an EGL surface on the window. A software EGL
   (`EGL_MESA_device_software`) or a renderer `IsSoftwareRenderer` names (llvmpipe, softpipe) is refused with
   `kSoftwareRenderer`, because the CPU raster is as fast and CI's Xvfb has only that; robustness is requested where
@@ -240,10 +332,21 @@ the case says so and skips.
   the software renderers `IsSoftwareRenderer` names, and what a window with no GPU path answers.
 - **The window that is not asked**: `skia/tests/test_child_window.cpp`, `ChildWindowDrawing` - on Windows, a window that
   links no back end loads no GL, answers `kNotAsked`, paints on a canvas with no GPU context whose pixels are the raster
-  `SetDIBitsToDevice` is handed, and answers `kNotLinked` to a request with no back end.
+  `SetDIBitsToDevice` is handed, and answers `kNotLinked` to a request with no back end. On macOS
+  (`skia/tests/test_child_window_mac.mm`) the suite's own binary is read with `otool -L` and names no Metal - read from
+  its load commands, not from what is loaded, since AppKit loads Metal into every process that makes a window - and a
+  request with no back end is answered `kNotLinked` with no layer put over the view.
 - **The GPU window**: `skia/tests/test_gpu_window.cpp`, the `gpu_window` CTest, which links `reckless_window_gpu`. On
   Windows, a known frame drawn on the GPU and read back off the canvas and off the screen; drawn again at three other
   scales and sizes; its GPU lost once and made again, then lost until it is given up for the CPU raster, which is shown;
   put back on the CPU raster and on the GPU again; the fallback with `RECKLESS_GPU_DRAWING=off`; and `kNotLinked`. Each
-  GPU case skips with the window's own reason where this machine's GL will not draw. Elsewhere, the request answered
-  with the CPU raster.
+  GPU case skips with the window's own reason where this machine's GL will not draw. On macOS
+  (`skia/tests/test_gpu_window_mac.mm`, Objective-C++): the layer as described above, on the device driving the
+  window's display; the known frame read back off the canvas and off the very drawable presented, copied on the queue it
+  was drawn on (`window::WatchMetalPresents`, a suite's alone, which leaves its drawables readable), the right way up
+  and the backing scale's size; no backing store kept beside it; drawn again at three other scales and sizes, the
+  drawables made again at each; lost and made again, then given up for the CPU raster with no layer left over the view;
+  put back on the CPU raster and on the GPU again; a product's drawables `framebufferOnly`; the fallback with
+  `RECKLESS_GPU_DRAWING=off`; `kNotLinked`; and the suite's own binary naming Metal, the control for the window suite's
+  holding that its binary does not. Each GPU case skips where no Metal device drives the display. On Linux, the request
+  answered with the CPU raster.
