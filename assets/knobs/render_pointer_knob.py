@@ -30,8 +30,13 @@ Everything the look layer depends on is render_knob.py's and must stay so: squar
 the frame's centre, the indicator at twelve in frame 0 and clockwise by 2 pi i / frames in frame i, and
 the half-width `margin` (1.4) reaches. Change --margin and change look::kKnobMargin (look/LookMetrics.h)
 with it; the frame count the look layer reads from the strip's height, so it needs no telling.
---size-scale draws the knob smaller inside that unchanged frame (0.8 here), which is how this knob is
-sized against the chicken head without touching the margin every other plugin's knob is pinned to.
+--size-scale draws the knob smaller inside that unchanged frame (0.85 here), without touching the margin
+every other plugin's knob is pinned to. It was 0.8 while this knob shared a grid with the chicken head;
+the Polysynth's panel has its own grid now. Do not raise it: 1.0 was tried first, and 0.9 after it,
+and each cuts the drop shadow off at the frame's edge, which leaves a faint hard line. The shadow falls
+toward the bottom right and is longest when the indicator points down or right, so it clips in only some
+frames (16 of 128 at 0.9, with alpha 46 in the last pixel row or column). At 0.85 every frame of the
+quantized strip has edge alpha 2 or less, as the committed 0.8 strip did.
 """
 import argparse
 import math
@@ -65,9 +70,9 @@ p.add_argument("--mark-from", type=float, default=-2.0, help="lowest y a mark fa
 p.add_argument("--mark-raised", action=argparse.BooleanOptionalAction, default=True,
                help="the mark stands proud of the top face rather than being cut into it")
 p.add_argument("--show-mark", action="store_true", help="render the material selection in false colour")
-# the knob's drawn size within the frame, independent of the look layer's geometry: 0.8 draws it a
-# fifth smaller without moving --margin, which look::kKnobMargin is pinned to.
-p.add_argument("--size-scale", type=float, default=0.8, help="the knob's drawn size, 1.0 = rim to margin")
+# the knob's drawn size within the frame, independent of the look layer's geometry: a value below 1 draws it
+# smaller without moving --margin, which look::kKnobMargin is pinned to.
+p.add_argument("--size-scale", type=float, default=0.85, help="the knob's drawn size, 1.0 = rim to margin")
 # The finish: a charcoal body and a cream indicator. The body can take a second, darker tone below
 # --base-top, for a knob whose step would otherwise be unreadable under a single flat grey; this one
 # does not need it (0.0 leaves nothing below the line) because its flutes and skirt carry the relief.
