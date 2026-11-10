@@ -10,6 +10,7 @@
 #include <string>
 
 #include "GpuDrawing.h"
+#include "GpuSwapInterval.h"
 #include "View.h"
 #include "Window.h"
 
@@ -88,6 +89,27 @@ TEST(GpuDrawing, TheGpuAskedForIsTriedOnlyWhereNothingRefusesItAndEachRefusalIsS
                 << "on the GPU exactly where nothing fell back";
         }
     }
+}
+
+TEST(GpuDrawing, TheSwapIntervalIsOneInFullScreenAndZeroWindowedUnlessTheEnvironmentSaysOtherwise)
+{
+    using reckless::window::SwapIntervalFor;
+    using reckless::window::SwapIntervalRequest;
+    using reckless::window::SwapIntervalRequestOf;
+    EXPECT_STREQ(reckless::window::kGpuSwapIntervalEnvironmentVariable, "RECKLESS_GPU_SWAP_INTERVAL");
+    EXPECT_EQ(SwapIntervalFor(SwapIntervalRequest::kAuto, true), 1);
+    EXPECT_EQ(SwapIntervalFor(SwapIntervalRequest::kAuto, false), 0);
+    EXPECT_EQ(SwapIntervalFor(SwapIntervalRequest::kNoWait, true), 0);
+    EXPECT_EQ(SwapIntervalFor(SwapIntervalRequest::kNoWait, false), 0);
+    EXPECT_EQ(SwapIntervalFor(SwapIntervalRequest::kEveryBlank, true), 1);
+    EXPECT_EQ(SwapIntervalFor(SwapIntervalRequest::kEveryBlank, false), 1);
+    EXPECT_EQ(SwapIntervalRequestOf(std::optional<std::string>("0")), SwapIntervalRequest::kNoWait);
+    EXPECT_EQ(SwapIntervalRequestOf(std::optional<std::string>("1")), SwapIntervalRequest::kEveryBlank);
+    for (const char *other : {"auto", "", "2", "fs1", "AUTO"})
+    {
+        EXPECT_EQ(SwapIntervalRequestOf(std::optional<std::string>(other)), SwapIntervalRequest::kAuto) << other;
+    }
+    EXPECT_EQ(SwapIntervalRequestOf(std::nullopt), SwapIntervalRequest::kAuto);
 }
 
 TEST(GpuDrawing, OnlyOffInTheEnvironmentTurnsTheGpuOff)

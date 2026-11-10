@@ -43,6 +43,17 @@ class GpuPresenter
         display's clock, not the swap. False where the GPU has been lost: the driver reset, or Skia's context abandoned.
         @return  true when the frame was presented and the GPU is still there */
     virtual bool Present() = 0;
+
+    /** Told whenever the window's full screen changes, and once the window is made if it is full screen already: a
+        back end with a swap interval presents with 1 while the window is full screen, where the compositor would
+        otherwise leave a tear, and 0 while it is windowed, where the compositor has already composed the frame
+        (docs/window/gpu-drawing.md, "Pacing, and the swap interval"). Takes effect at the next Present. Nothing for a
+        back end with no swap interval to set, which is the default.
+        @param is_full_screen  whether the window is the app's full screen */
+    virtual void SetFullScreen(bool is_full_screen)
+    {
+        static_cast<void>(is_full_screen);
+    }
 };
 
 /** What a back end's attempt at a presenter came to: the presenter, or null and why not. */

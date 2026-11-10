@@ -11,6 +11,7 @@
 #include "include/gpu/ganesh/GrDirectContext.h"
 
 #include "GpuPresenter.h"
+#include "GpuSwapInterval.h"
 
 namespace reckless::window
 {
@@ -23,10 +24,15 @@ class SkiaGpuPresenter : public GpuPresenter
     sk_sp<SkSurface> SurfaceOfSize(int width, int height) final;
     bool             BeginFrame() final;
     bool             Present() final;
+    void             SetFullScreen(bool is_full_screen) final;
 
   protected:
-    /** @param context  Skia's GPU context on the platform's context; not null */
-    explicit SkiaGpuPresenter(sk_sp<GrDirectContext> context) noexcept;
+    /** @param context  Skia's GPU context on the platform's context; not null
+        @param request  what decides the swap interval; the environment's word (SwapIntervalRequestOf) from a back end
+                        that reads it. A back end that gives its context an interval of 0 when it is made is in step
+                        with the presenter's first. */
+    explicit SkiaGpuPresenter(sk_sp<GrDirectContext> context,
+                              SwapIntervalRequest    request = SwapIntervalRequest::kAuto) noexcept;
 
     /** Skia's GPU resources let go while the context is current - and abandoned, so a surface someone still holds makes
         no GPU call after. A derived destructor calls it first, with its back buffer already released, and then releases
@@ -50,6 +56,12 @@ class SkiaGpuPresenter : public GpuPresenter
      */
     virtual void SwapBuffers() noexcept = 0;
 
+    /** The swap interval set on the platform's context, called with the context current and only when the interval
+       wanted has changed from the one last set (0 at the start). The default sets nothing, for a platform whose swap
+       has no interval to set (Metal's, EGL's today).
+        @param interval  0 to swap without waiting for the display, 1 to wait for a blank */
+    virtual void SetSwapInterval(int interval) noexcept;
+
     /** Whether the platform's API says the device was reset. The default, for an API that reports none, is no.
         @return  true when the driver reported a reset */
     virtual bool IsDeviceReset() const noexcept;
@@ -64,8 +76,22 @@ class SkiaGpuPresenter : public GpuPresenter
         return context_.get();
     }
 
+    /** The interval to present with now.
+        @return  0 or 1 (SwapIntervalFor) */
+    int SwapIntervalWanted() const noexcept
+    {
+        return SwapIntervalFor(swap_request_, is_full_screen_);
+    }
+
+    /** SetSwapInterval called with the interval wanted now, where it differs from the last one set. Present does this
+        before it swaps; it is here for a test that cannot swap. */
+    void ApplySwapInterval() noexcept;
+
   private:
-    sk_sp<GrDirectContext> context_;   ///< Skia's GPU context on the platform's.
-    sk_sp<SkSurface>       offscreen_; ///< the surface the views draw into, which keeps its pixels.
+    sk_sp<GrDirectContext> context_;               ///< Skia's GPU context on the platform's.
+    sk_sp<SkSurface>       offscreen_;             ///< the surface the views draw into, which keeps its pixels.
+    SwapIntervalRequest    swap_request_;          ///< what decides the interval.
+    bool                   is_full_screen_{false}; ///< the window is the app's full screen.
+    int                    swap_interval_{0};      ///< the interval last set.
 };
 } // namespace reckless::window

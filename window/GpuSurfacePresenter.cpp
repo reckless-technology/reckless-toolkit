@@ -15,8 +15,28 @@
 
 namespace reckless::window
 {
-SkiaGpuPresenter::SkiaGpuPresenter(sk_sp<GrDirectContext> context) noexcept : context_(std::move(context))
+SkiaGpuPresenter::SkiaGpuPresenter(sk_sp<GrDirectContext> context, SwapIntervalRequest request) noexcept
+    : context_(std::move(context)), swap_request_(request)
 {
+}
+
+void SkiaGpuPresenter::SetFullScreen(bool is_full_screen)
+{
+    is_full_screen_ = is_full_screen; // applied at the next Present, where the context is current
+}
+
+void SkiaGpuPresenter::SetSwapInterval(int) noexcept
+{
+}
+
+void SkiaGpuPresenter::ApplySwapInterval() noexcept
+{
+    const int wanted = SwapIntervalWanted();
+    if (wanted != swap_interval_)
+    {
+        SetSwapInterval(wanted);
+        swap_interval_ = wanted;
+    }
 }
 
 bool SkiaGpuPresenter::IsDeviceReset() const noexcept
@@ -88,6 +108,7 @@ bool SkiaGpuPresenter::Present()
     copy.setBlendMode(SkBlendMode::kSrc);
     offscreen_->draw(back_buffer->getCanvas(), 0, 0, SkSamplingOptions(), &copy);
     context_->flushAndSubmit(back_buffer.get(), GrSyncCpu::kNo);
+    ApplySwapInterval();
     SwapBuffers();
     return !IsLost();
 }
