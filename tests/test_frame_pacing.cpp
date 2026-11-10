@@ -946,6 +946,28 @@ TEST(CompositorReadings, OneReadingIsAnsweredWithOnlyWhereItIsTheModeReadMoreFin
     EXPECT_EQ(RateOfOneReading(59.94, 1.0), 59.94) << "and so does the hardware's default";
 }
 
+TEST(CompositorReadings, AnExactModeIsTheRationalAndNeverTheWholeHertz)
+{
+    using reckless::window::ExactModeHertz;
+    EXPECT_NEAR(ExactModeHertz(60000, 1001, 59.0), 59.94005994, 1.0e-6) << "the television rate Windows cuts to 59";
+    EXPECT_NEAR(ExactModeHertz(60000, 1001, 60.0), 59.94005994, 1.0e-6) << "or rounds up to 60";
+    EXPECT_NEAR(ExactModeHertz(59940, 1000, 59.0), 59.94, 1.0e-9) << "as the Legion5i's display configuration says it";
+    EXPECT_NEAR(ExactModeHertz(144000, 1000, 144.0), 144.0, 1.0e-9) << "a whole-hertz mode is its own rational";
+    EXPECT_NEAR(ExactModeHertz(60000, 1001, 0.0), 59.94005994, 1.0e-6)
+        << "the rational stands where the mode names no rate";
+    EXPECT_NEAR(ExactModeHertz(60000, 1001, 1.0), 59.94005994, 1.0e-6) << "and where it names the hardware's default";
+    EXPECT_EQ(ExactModeHertz(60000, 0, 59.0), 0.0) << "no denominator is no rate";
+    EXPECT_EQ(ExactModeHertz(0, 0, 59.0), 0.0) << "an unfilled rational";
+    EXPECT_EQ(ExactModeHertz(120000, 1001, 59.0), 0.0) << "a rational for another mode than the one named is refused";
+    EXPECT_EQ(ExactModeHertz(5, 1, 0.0), 0.0) << "and one no display has";
+    // The measured fault: a compositor stuck on 59.000 Hz agrees with the mode's whole hertz to within the hertz that
+    // RateOfOneReading and the steadiness test allow, so only the exact rate can tell it from the panel's 59.94.
+    const double exact = ExactModeHertz(60000, 1001, 59.0);
+    EXPECT_LT(std::fabs(exact - 59.0), reckless::window::kModeIsNamedWithinHertz)
+        << "the stuck reading passes the cross-check";
+    EXPECT_GT(exact - 59.0, 0.9) << "yet is 0.94 Hz, 1.6 %, below the panel";
+}
+
 TEST(CompositorReadings, AWindowOnAnotherMonitorDisagreesForGood)
 {
     // A window dragged to a 60 Hz monitor of a desktop the compositor reads at 240: the mode moves, the reading does

@@ -255,6 +255,31 @@ struct RefreshRateChoice
     number can mean, not a rate. */
 inline constexpr double kModeIsNamedWithinHertz = 1.0;
 
+/** The exact refresh rate of a display's mode, from the rational the platform keeps it in (Windows' QueryDisplayConfig
+    names 60000 / 1001, or 59940 / 1000), as against the whole hertz the mode's DEVMODE names it in. It is the one rate
+    that is the panel's whatever the compositor says: DwmGetCompositionTimingInfo was measured on 2026-11-09 reading
+    exactly 59.000 Hz (10000000 / 169491) for a whole run after a full-screen switch on a panel running at 59.94, which
+    a rate "within a hertz of the mode" cannot tell from the truth.
+    @param numerator   the rational's numerator
+    @param denominator the rational's denominator
+    @param whole_hertz the whole-hertz rate the same mode names, in hertz; 0 where it names none
+    @return            the rate in hertz; 0 where the rational is no rate, or is further than a whole hertz from the
+                       whole-hertz one (a rational for another mode than the one named) */
+inline double ExactModeHertz(std::uint32_t numerator, std::uint32_t denominator, double whole_hertz) noexcept
+{
+    if (denominator == 0)
+    {
+        return 0.0;
+    }
+    const double hertz = static_cast<double>(numerator) / static_cast<double>(denominator);
+    if (!IsBelievableRefreshRate(hertz) ||
+        (IsBelievableRefreshRate(whole_hertz) && std::fabs(hertz - whole_hertz) > kModeIsNamedWithinHertz))
+    {
+        return 0.0;
+    }
+    return hertz;
+}
+
 /** The rate of the panel, for a product that works its divisor out from it (ChildWindow::DisplayModeHertz): the mode of
     the window's display where that is believable, since it holds still where a compositor's reading wanders with what
    is being composed, and only where the mode names no rate the compositor's.

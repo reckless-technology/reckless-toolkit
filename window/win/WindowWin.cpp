@@ -416,29 +416,108 @@ CompositionTiming CompositionTimingNow() noexcept
     return read;
 }
 
-/** The refresh rate of the display `window` is on, from the mode that display is in. This is the one reading that is
-    the window's own display rather than the whole desktop's, so a window on a second monitor of another rate is
-    caught by cross-checking it against the compositor's and nowhere else.
+/** How often the mode of the window's display is read again while its clock runs, in seconds. A bound on how soon a
+    mode switch is noticed, not a rate: the read is a display-configuration query, kept off every frame's path. */
+inline constexpr double kDisplayModeReadAgainSeconds = 1.0;
+
+/** How far, as a fraction, an exact mode's period may move and still be the one being divided: the same rational read
+    twice is the same period to the last digit, so this only has to be wider than rounding. */
+inline constexpr double kExactPeriodHoldsStillWithin = 1.0e-4;
+
+/** The rate of the mode a display is in. */
+struct DisplayRate
+{
+    double hertz{0.0}; ///< the rate in hertz; 0 where Windows named none, or named the hardware's default.
+    bool   is_exact{
+        false}; ///< true where `hertz` is the mode's own rational (59.94), not the whole hertz of its DEVMODE.
+};
+
+/** The exact refresh rate of the display named `device`, from the active display configuration (QueryDisplayConfig),
+    which keeps a mode's rate as a rational: 60000 / 1001 where the DEVMODE says 59.
+    @param device       the GDI device name of the display (MONITORINFOEX::szDevice)
+    @param whole_hertz  the whole-hertz rate the display's DEVMODE names, in hertz
+    @return             the rate, in hertz; 0 where the configuration could not be read or names none for the display */
+double ExactRefreshHertzOfDevice(const wchar_t *device, double whole_hertz) noexcept
+{
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+    LONG                                 result = ERROR_INSUFFICIENT_BUFFER;
+    for (int attempt = 0; attempt < 3 && result == ERROR_INSUFFICIENT_BUFFER; ++attempt)
+    {
+        UINT32 path_count = 0;
+        UINT32 mode_count = 0;
+        if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count) != ERROR_SUCCESS)
+        {
+            return 0.0;
+        }
+        paths.assign(path_count, DISPLAYCONFIG_PATH_INFO{});
+        modes.assign(mode_count, DISPLAYCONFIG_MODE_INFO{});
+        result =
+            QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &path_count, paths.data(), &mode_count, modes.data(), nullptr);
+        if (result == ERROR_SUCCESS)
+        {
+            paths.resize(path_count);
+        }
+    }
+    if (result != ERROR_SUCCESS)
+    {
+        return 0.0;
+    }
+    for (const DISPLAYCONFIG_PATH_INFO &path : paths)
+    {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME name{};
+        name.header.type      = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        name.header.size      = sizeof(name);
+        name.header.adapterId = path.sourceInfo.adapterId;
+        name.header.id        = path.sourceInfo.id;
+        if (DisplayConfigGetDeviceInfo(&name.header) == ERROR_SUCCESS &&
+            std::wcscmp(name.viewGdiDeviceName, device) == 0)
+        {
+            return ExactModeHertz(path.targetInfo.refreshRate.Numerator, path.targetInfo.refreshRate.Denominator,
+                                  whole_hertz);
+        }
+    }
+    return 0.0;
+}
+
+/** The refresh rate of the display `window` is on, from the mode that display is in: the mode's exact rational where
+    the display configuration gives one that agrees with the DEVMODE, and the DEVMODE's whole hertz (which Windows cuts
+    59.94 down to 59 in) otherwise. This is the one reading that is the window's own display rather than the whole
+    desktop's, so a window on a second monitor of another rate is caught by cross-checking it against the compositor's
+    and nowhere else.
     @param window  the window
-    @return        the rate, in hertz; 0 where Windows named none, or named the hardware's default rather than a rate */
-double DisplayRefreshHertzOf(HWND window) noexcept
+    @return        the rate; `hertz` 0 where Windows named none, or named the hardware's default rather than a rate */
+DisplayRate DisplayRateOf(HWND window) noexcept
 {
     const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
     MONITORINFOEXW monitor_info{};
     monitor_info.cbSize = sizeof(monitor_info);
     if (monitor == nullptr || GetMonitorInfoW(monitor, reinterpret_cast<LPMONITORINFO>(&monitor_info)) == FALSE)
     {
-        return 0.0;
+        return {};
     }
     DEVMODEW mode{};
     mode.dmSize = sizeof(mode);
     if (EnumDisplaySettingsW(monitor_info.szDevice, ENUM_CURRENT_SETTINGS, &mode) == FALSE)
     {
-        return 0.0;
+        return {};
     }
     // 0 and 1 are Windows' answers for "the hardware's default", which is no rate: IsBelievableRefreshRate refuses
     // both, and the compositor's reading is then the only one.
-    return static_cast<double>(mode.dmDisplayFrequency);
+    const double whole = static_cast<double>(mode.dmDisplayFrequency);
+    if (const double exact = ExactRefreshHertzOfDevice(monitor_info.szDevice, whole); exact > 0.0)
+    {
+        return {exact, true};
+    }
+    return {whole, false};
+}
+
+/** The rate of the mode of the display `window` is on.
+    @param window  the window
+    @return        the rate, in hertz (DisplayRateOf); 0 where there is none */
+double DisplayRefreshHertzOf(HWND window) noexcept
+{
+    return DisplayRateOf(window).hertz;
 }
 
 /**
@@ -681,10 +760,25 @@ class WinDisplayClock
         FrameClock         clock;
         RefreshSteadiness  steadiness;
         CompositorReadings readings;
-        HMONITOR           display        = nullptr;
-        double             display_hertz  = 0.0;
-        double             period_divided = 0.0;
-        std::size_t        unsteady       = 0;
+        HMONITOR           display       = nullptr;
+        double             display_hertz = 0.0;
+        bool        is_display_exact     = false; // whether `display_hertz` is the mode's rational, not its whole hertz
+        double      display_read_seconds = 0.0;
+        double      period_divided       = 0.0;
+        std::size_t unsteady             = 0;
+        // The mode read again: its rational where the display configuration gives one, and, where it gives none for a
+        // moment (a mode being switched), the exact rate already held rather than the whole hertz Windows cuts it to.
+        const auto read_display = [&] {
+            const DisplayRate read = DisplayRateOf(window_);
+            display_read_seconds   = QpcSeconds();
+            if (!read.is_exact && is_display_exact && IsBelievableRefreshRate(read.hertz) &&
+                std::fabs(read.hertz - display_hertz) <= kModeIsNamedWithinHertz)
+            {
+                return; // the same mode, named in whole hertz this once
+            }
+            display_hertz    = read.hertz;
+            is_display_exact = read.is_exact;
+        };
         for (;;)
         {
             CompositionTiming timing         = CompositionTimingNow();
@@ -698,7 +792,14 @@ class WinDisplayClock
                 unsteady = 0;
                 steadiness.Forget();
                 readings.Forget();
-                display_hertz = DisplayRefreshHertzOf(window_);
+                is_display_exact = false;
+                read_display();
+            }
+            else if (QpcSeconds() - display_read_seconds >= kDisplayModeReadAgainSeconds)
+            {
+                // Once the mode's own rate is what is divided the compositor's period no longer shows a mode switch,
+                // so the mode is looked at again on a timer as well as when a period has moved.
+                read_display();
             }
             const bool is_set_aside = readings.Note(timing.hertz, display_hertz);
             // A reading that agrees with the mode but is wandering is no more a period to put a frame on than one that
@@ -711,16 +812,30 @@ class WinDisplayClock
                 timing.hertz          = display_hertz;
                 timing.period_seconds = 1.0 / display_hertz;
             }
+            // The mode's own rational is the panel's rate whatever the compositor says it is: the compositor was
+            // measured reading exactly 59.000 Hz for a whole run on a 59.94 Hz panel, a reading that agrees with the
+            // mode's whole hertz and so passes every cross-check. The compositor's last blank still anchors the grid
+            // (`is_on_the_mode` stays as it was); only the period divided is the mode's. Readings that disagree for
+            // good are another monitor's and stay believed.
+            const bool is_period_exact =
+                is_display_exact && IsBelievableRefreshRate(display_hertz) && !readings.does_disagree_for_good();
+            if (is_period_exact && !is_on_the_mode)
+            {
+                timing.hertz          = display_hertz;
+                timing.period_seconds = 1.0 / display_hertz;
+            }
             // A period further from the one being divided than one period read twice could be: the mode changed, or
-            // the window arrived on a display of another rate.
-            const bool has_period_moved =
-                timing.period_seconds > 0.0 && std::fabs(timing.period_seconds - period_divided) >
-                                                   kRefreshPeriodsHoldStillWithin * timing.period_seconds;
+            // the window arrived on a display of another rate. An exact period is the mode's alone and holds to far
+            // less than a read one does.
+            const double moved_within = is_period_exact ? kExactPeriodHoldsStillWithin : kRefreshPeriodsHoldStillWithin;
+            const bool   has_period_moved =
+                timing.period_seconds > 0.0 &&
+                std::fabs(timing.period_seconds - period_divided) > moved_within * timing.period_seconds;
             if (has_period_moved)
             {
                 // The rate to divide is read again rather than carried over - a mode change on the one display is
                 // caught here, and reading it only when something has moved keeps it off every frame's path.
-                display_hertz = DisplayRefreshHertzOf(window_);
+                read_display();
             }
             if (IsBelievableRefreshRate(display_hertz))
             {
@@ -1953,13 +2068,17 @@ class WinChildWindow final : public ChildWindow, public WinSurface
     {
         const CompositionTiming timing = CompositionTimingNow();
         DisplayClockReading     reading;
-        reading.has_clock     = timing.is_read;
-        reading.display_hertz = DisplayRefreshHertzOf(hwnd_);
+        reading.has_clock      = timing.is_read;
+        const DisplayRate rate = DisplayRateOf(hwnd_);
+        reading.display_hertz  = rate.hertz;
         // One reading is not enough to refuse on (CompositorReadings), and the clock's own thread goes on to judge it,
         // unless that thread has already found this display to disagree: asking again while that is still so is
-        // answered at once, and starts no clock to find it out a second time.
-        reading.compositor_hertz =
-            has_clock_found_disagreement_ ? timing.hertz : RateOfOneReading(timing.hertz, reading.display_hertz);
+        // answered at once, and starts no clock to find it out a second time. Where the mode's rate is exact the
+        // answer is that rate: the compositor's own reading is no finer, and was measured stuck at the whole hertz.
+        reading.compositor_hertz = has_clock_found_disagreement_ ? timing.hertz
+                                   : rate.is_exact && timing.hertz > 0.0
+                                       ? rate.hertz
+                                       : RateOfOneReading(timing.hertz, reading.display_hertz);
         return ChosenPacing(request_, reading);
     }
 
