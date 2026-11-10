@@ -186,6 +186,13 @@ child.SetFramePacing({reckless::window::FramePacing::kDisplayClock, divisor, 1})
   and one a hair over 60 taken up as it is would be a divisor of 2. Whole, each lands where it should: 30, 50, 59 and 60
   give 1; 75 to 120 give 2, 143 to 165 give 3, 239 and 240 give 4. `ModeHertz` in `tests/test_frame_pacing.cpp` holds
   these.
+- **On Windows the rate divided is the mode's exact rational where the display configuration gives one.** The compositor
+  (`DwmGetCompositionTimingInfo`) was measured on 2026-11-09 (Legion5i, 3840 x 2160 at 59.94 Hz) reading exactly
+  59.000 Hz (10000000 / 169491) for a whole run after a full-screen switch, and for stretches of others; that is within
+  a whole hertz of the DEVMODE's 59, so every cross-check passed it and Sentinel's frame log read `refresh_millihertz
+  59000` with 17 % to none of its frames tick-locked. `QueryDisplayConfig` keeps the same mode as 59940 / 1000
+  (`window::ExactModeHertz`), so that is the period divided, the compositor's last blank still anchors the grid, and
+  the mode is read again once a second (a switch no longer shows in the compositor's period) and when a period moves.
 - **`FramePacingState::display_hertz` is not the rate to work it out from.** It is what the window is dividing, for a
   product to report, and on Windows it is the compositor's own reading where that is steady: within a whole hertz of the
   mode (`window::RateOfOneReading` for the answer to `SetFramePacing`, `window::CompositorReadings` from then on), which
