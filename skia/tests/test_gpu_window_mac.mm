@@ -14,20 +14,24 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <tuple>
+#include <vector>
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkImageInfo.h"
 #include "include/gpu/ganesh/GrDirectContext.h"
 #include "include/gpu/ganesh/GrRecordingContext.h"
 
+#include "FramePacing.h"
 #include "GpuDrawingBackend.h"
 #include "LinkedLibrariesMac.h"
 #include "SkiaCanvas.h"
@@ -388,6 +392,208 @@ TEST(GpuWindow, DrawsAKnownFrameThroughMetalThatTheCanvasAndTheDrawableBothGiveB
     EXPECT_TRUE(AreTheKnownFrame(presented.quarters))
         << "the drawable handed to the display holds the frame, the right way up: " << TextOfPixels(presented.quarters);
     EXPECT_EQ(child->DrawingNow().drawing, Drawing::kGpu);
+}
+
+/** When each drawable actually reached the screen, which only the compositor knows: `presentedTime`, taken through
+    `addPresentedHandler:`, which is called on a thread of Metal's own and so is guarded. A drawable that was never
+    shown reports a presented time of zero, and is counted apart rather than quietly left out - that count is the
+    question "was a frame dropped?" asked directly. */
+class PresentTimes
+{
+  public:
+    PresentTimes()
+    {
+        reckless::window::WatchMetalPresents([this](id<CAMetalDrawable> drawable, id<MTLCommandQueue>) {
+            int index = 0;
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                index = asked_++;
+            }
+            [drawable addPresentedHandler:^(id<MTLDrawable> shown) {
+              const CFTimeInterval              at = shown.presentedTime;
+              const std::lock_guard<std::mutex> lock(mutex_);
+              if (at > 0.0)
+              {
+                  times_.push_back(at);
+              }
+              else
+              {
+                  never_shown_.push_back(index);
+              }
+            }];
+        });
+    }
+
+    ~PresentTimes()
+    {
+        reckless::window::WatchMetalPresents({});
+    }
+
+    PresentTimes(const PresentTimes &)            = delete;
+    PresentTimes &operator=(const PresentTimes &) = delete;
+
+    /** @return How many drawables were handed over to be shown. */
+    int asked() const
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return asked_;
+    }
+
+    /** @return Which of them, in the order they were handed over, were never shown. */
+    std::vector<int> never_shown() const
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<int>                  copy = never_shown_;
+        std::sort(copy.begin(), copy.end());
+        return copy;
+    }
+
+    /** @return When each one reached the screen, in the order they did, in seconds. */
+    std::vector<CFTimeInterval> times() const
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<CFTimeInterval>       copy = times_;
+        std::sort(copy.begin(), copy.end());
+        return copy;
+    }
+
+  private:
+    mutable std::mutex          mutex_;       ///< Metal calls the handler on its own thread.
+    std::vector<CFTimeInterval> times_;       ///< When each drawable was shown.
+    int                         asked_{0};    ///< How many were handed over.
+    std::vector<int>            never_shown_; ///< And which of those never reached the screen.
+};
+
+TEST(GpuWindow, ShowsEveryDrawableItIsGivenAndShowsThemOnTheDisplaysOwnBlanks)
+{
+    // **This is the tearing question asked where it can be answered.** A `CAMetalLayer` with `displaySyncEnabled`
+    // cannot tear: it has no torn present to make, so the failure it can have instead is dropping a drawable or
+    // showing one late. `presentedTime` is the compositor's own answer to when a frame reached the screen, which
+    // neither the frame log nor a screen capture can give, so it is what this asks. Two things are held: that every
+    // drawable handed over was shown - none dropped - and that the gaps between showings are whole multiples of one
+    // display period, which is what "on the blank" means.
+    GpuDrawingVariable unset("");
+    PresentTimes       shown;
+    constexpr int      kWidth  = 240;
+    constexpr int      kHeight = 160;
+    RECKLESS_SHOWN_HOST(host, kWidth, kHeight);
+    KnownFrame frame;
+    frame.SetBounds({kWidth, kHeight});
+    auto child = reckless::window::CreateChildWindow(host.Parent(), frame, kWidth, kHeight, 1.0f);
+    ASSERT_NE(child, nullptr);
+    const DrawingState state = child->SetDrawing(reckless::window::GpuDrawingRequest());
+    if (state.drawing != Drawing::kGpu)
+    {
+        GTEST_SKIP() << "no GPU to draw on here: " << reckless::window::TextOf(state.why);
+    }
+    // **It has to be asked to draw every frame, or there is no grid to read.** A window paints when something asks
+    // it to, so the display's own callback is what asks here - which is also how a product drives it
+    // (`SetFrameCallback`, and Sentinel's `GameFrame`). Long enough for a useful run of blanks at any rate a Mac has,
+    // and short enough not to hold the suite up.
+    // **Paced on the display's own clock, which is the path a product runs on.** Without this a window is on the
+    // platform timer (`WindowMac.mm`: the display tick is "empty until a product asks"), and what it presents then is
+    // that timer's cadence and not the display's - so a test that left it out would be measuring the wrong clock and
+    // reading the answer as the window's. A divisor of 1 asks for a frame every refresh, which is the strictest grid
+    // there is to hold the showings to; Sentinel itself asks for 2 at 120 Hz, because its tick is 60 Hz and two
+    // refreshes is one new frame (`app/frame_pacing.h`, `RefreshPeriodsFor`).
+    const reckless::window::FrameRequest     paced{reckless::window::FramePacing::kDisplayClock, 1, 1, 0};
+    const reckless::window::FramePacingState on = child->SetFramePacing(paced);
+    std::printf("[ gpu window ] paced on %s, a divisor of %d, the display read as %.3f Hz\n",
+                on.pacing == reckless::window::FramePacing::kDisplayClock ? "the display's clock" : "a timer",
+                on.refresh_divisor, on.display_hertz);
+    child->SetFrameCallback([&frame] { frame.Repaint(); });
+    RunFor(4.0, [&] { return shown.times().size() >= 90; });
+    child->SetFrameCallback(nullptr);
+    // A drawable handed over on the last callback is still on its way when the asking stops, and it is shown a
+    // refresh or two later. Waiting for it is the difference between "one was dropped" and "one had not arrived yet",
+    // and without the wait this reads as the first when it is the second.
+    const int handed_over = shown.asked();
+    RunFor(0.5, [&] {
+        return static_cast<int>(shown.times().size()) + static_cast<int>(shown.never_shown().size()) >= handed_over;
+    });
+    const std::vector<CFTimeInterval> at = shown.times();
+    if (at.size() < 8)
+    {
+        GTEST_SKIP() << "the window was shown " << at.size() << " times, too few to read a display's grid from ("
+                     << shown.asked() << " drawables handed over, " << shown.never_shown().size() << " never shown, "
+                     << frame.paints << " paints)";
+    }
+    // **The drawables that are never shown are the first ones handed over, and nothing after them.** They are
+    // handed over by the paints the window does as it is made, before its layer is on the screen to show them, so the
+    // compositor discards them; once it is showing, every drawable reaches the screen. How many there are depends on
+    // how fast they are asked for: one at a frame every second refresh, two at a frame every refresh, measured on
+    // jonny-macbook 2026-11-09 on a 120 Hz panel. So what is held here is not a count but a shape - that the dropped
+    // ones are an unbroken run from the very first, and few - because a drop *after* the window has settled is a
+    // frame a player loses and must fail, while the start-up's are the compositor doing what it must.
+    const std::vector<int> never = shown.never_shown();
+    std::string            dropped;
+    for (const int which : never)
+    {
+        dropped += " " + std::to_string(which);
+    }
+    std::printf("[ gpu window ] never shown, by the order handed over:%s (of %d)\n",
+                dropped.empty() ? " none" : dropped.c_str(), shown.asked());
+    std::fflush(stdout);
+    EXPECT_LE(never.size(), 4u) << "more than the window's first paints were dropped:" << dropped;
+    for (std::size_t place = 0; place < never.size(); ++place)
+    {
+        EXPECT_EQ(never[place], static_cast<int>(place))
+            << "drawable " << never[place] << " of " << shown.asked()
+            << " was handed over and never reached the screen, after the window had settled:" << dropped;
+    }
+
+    std::vector<double> gaps;
+    gaps.reserve(at.size() - 1);
+    for (std::size_t index = 1; index < at.size(); ++index)
+    {
+        gaps.push_back(at[index] - at[index - 1]);
+    }
+    // **The grid is the display's refresh, not the window's own cadence**, and taking the second for the first is a
+    // mistake that reads as a fault. A window need not draw every refresh: this one settles at a frame every second
+    // refresh of a 120 Hz panel, so the commonest gap is two periods, and judged against *that* a perfectly legal gap
+    // of one refresh or three is half a period out and reads as "shown off the blank". So the period is asked of the
+    // screen rather than inferred from the gaps.
+    NSView         *view     = ChildViewOf(host);
+    NSScreen       *screen   = view != nil && view.window.screen != nil ? view.window.screen : [NSScreen mainScreen];
+    const NSInteger a_second = screen != nil ? [screen maximumFramesPerSecond] : 0;
+    if (a_second <= 0)
+    {
+        GTEST_SKIP() << "the screen did not say its refresh rate, so there is no grid to hold the showings to";
+    }
+    const double period = 1.0 / static_cast<double>(a_second);
+    ASSERT_GT(period, 0.001) << "a display period of " << period * 1000.0 << " ms is not one";
+    ASSERT_LT(period, 0.1);
+    int    off_the_grid = 0;
+    double worst        = 0.0;
+    for (const double gap : gaps)
+    {
+        const double periods = gap / period;
+        const double stray   = std::fabs(periods - std::round(periods));
+        worst                = std::max(worst, stray);
+        if (stray > 0.25) // a quarter of a period either way is far more than a blank's own jitter
+        {
+            ++off_the_grid;
+            if (off_the_grid <= 6)
+            {
+                std::printf("[ gpu window ]   off the grid: %.3f ms = %.3f refreshes\n", gap * 1000.0, periods);
+            }
+        }
+    }
+    std::vector<double> sorted = gaps;
+    std::sort(sorted.begin(), sorted.end());
+    std::printf("[ gpu window ] %zu shown, %d never, a %ld Hz screen (%.3f ms), the commonest gap %.3f ms = %.2f "
+                "refreshes, worst stray %.3f of one\n",
+                at.size(), static_cast<int>(shown.never_shown().size()), static_cast<long>(a_second), period * 1000.0,
+                sorted[sorted.size() / 2] * 1000.0, sorted[sorted.size() / 2] / period, worst);
+    std::fflush(stdout);
+    // **One stray is allowed and a second is not**, which is where the evidence puts the line. Vsync off would put
+    // nearly every gap off the grid, not one, and a dropped drawable is caught above by its index, so one is no
+    // weaker a test of either. It is allowed because one appeared once in seven runs here on 2026-11-09 - a gap of
+    // half a refresh, on a machine that was also building at the time - and did not come back in the four runs after
+    // it. A test that fails one time in seven on sound hardware teaches a reader to ignore it.
+    EXPECT_LE(off_the_grid, 1) << off_the_grid << " of " << gaps.size()
+                               << " gaps between showings are not a whole number of display periods, the worst "
+                               << worst << " of one: frames shown off the display's blank";
 }
 
 TEST(GpuWindow, AScaleAndASizeChangeRebuildTheSurfaceAndTheDrawablesAndItGoesOnDrawing)
