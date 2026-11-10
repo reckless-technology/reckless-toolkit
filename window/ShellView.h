@@ -217,8 +217,10 @@ class ShellView final : public view::View
 
     /** The update check the settings' menu offers as its Updates submenu, which the shell polls from its frame while
         its panel is on a screen, and how a newer release's page opens.
-        @param checker   the process's checker (a product's, update::Shared() in vst-plugins' formats), outliving the
-                         shell; null for no submenu and no check
+        @param checker   the product's checker, outliving the shell; null for no submenu and no check. In
+                         vst-plugins' formats it is update::SharedFor(update::ProductOf<Core>()) - the core's own
+                         product where it declares one (a plugin released apart from the bundle, so that it checks
+                         its own manifest against its own version) and the bundle's otherwise
         @param open_url  opens a page in the person's browser */
     void SetUpdates(update::Checker *checker, std::function<void(const std::string &)> open_url)
     {
