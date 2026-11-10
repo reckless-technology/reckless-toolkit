@@ -145,7 +145,8 @@ class ChildWindow
         and macOS as its mode says. It is not the rate FramePacingState::display_hertz reports, which is the one being
         divided and moves as the compositor's readings do (docs/window/frame-pacing.md, "Choosing a divisor"). Asks the
         system each time, so read it as often as the display might have moved, about once a second, and not every frame.
-        @return  the rate, in hertz; 0 where nothing can say, as on a platform with no display clock, Linux among them
+        @return  the rate, in hertz; 0 where nothing can say, as on a platform with no display clock, or under Xvfb,
+       whose one mode names no timing
      */
     virtual double DisplayModeHertz() const
     {

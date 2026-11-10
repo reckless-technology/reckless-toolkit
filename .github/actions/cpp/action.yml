@@ -37,9 +37,9 @@ runs:
           tools="g++ cmake ninja pkg-config curl python3"
           packages=""
           if [ "$GUI" = "true" ]; then
-            apt_line="$apt_line xvfb libfreetype-dev libfontconfig1-dev libx11-dev libegl-dev"
+            apt_line="$apt_line xvfb libfreetype-dev libfontconfig1-dev libx11-dev libegl-dev libxpresent-dev"
             tools="$tools xvfb-run"
-            packages="freetype2 fontconfig x11 egl"
+            packages="freetype2 fontconfig x11 egl xpresent"
           fi
           find_missing() {
             missing=""

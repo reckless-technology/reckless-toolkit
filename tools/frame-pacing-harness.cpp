@@ -24,8 +24,8 @@
 //                             which of several invalid windows is painted first (Windows only)
 //
 // The display clock's measurement is Windows' alone. macOS's is a display link, whose ticks come from the window
-// server and are held by the child window's own suite; Linux has no display clock at all, and the platform-timer
-// run there measures the app loop's own deadline, which is what the toolkit paces on.
+// server and are held by the child window's own suite; Linux's is the X server's Present reports, held there too, and
+// the platform-timer run there measures the app loop's own deadline, which is what the toolkit paces on without it.
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -482,7 +482,7 @@ void ReportClock()
     }
 #else
     std::printf("  the steady clock, which is what the app loop keeps its deadline in\n");
-    std::printf("  there is no display clock on this platform (window/FramePacing.h says why)\n");
+    std::printf("  the display clock is not measured here (window/linux/DisplayClockLinux.h says what it is)\n");
 #endif
 }
 
@@ -828,7 +828,7 @@ void ReportDisplayClock()
     }
 #else
     std::printf("\nthe display clock is not measured here: macOS's is a display link, held by the child window's own "
-                "suite, and Linux has none\n");
+                "suite, and Linux's is the X server's Present reports, held there too\n");
 #endif
 }
 } // namespace

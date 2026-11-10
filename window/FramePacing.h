@@ -104,8 +104,8 @@ struct FrameRequest
         takes it rather than a whole refresh early - which is a refresh of input latency (docs/window/frame-pacing.md,
         "Leading the vertical blank"). 0, the default, runs the callback at the blank, as a window always has. Held
         between 0 and the frame period less a millisecond (LeadInForceMicroseconds), and read only where `pacing` asks
-        for the display's clock and the platform can lead it - Windows; FramePacingState::lead_microseconds says what
-        is in force. A frame that misses the blank it led is shown a whole refresh later, so the margin is the
+        for the display's clock and the platform can lead it - Windows and Linux; FramePacingState::lead_microseconds
+       says what is in force. A frame that misses the blank it led is shown a whole refresh later, so the margin is the
         product's to choose with care. */
     std::int32_t lead_microseconds{0};
 
@@ -145,7 +145,7 @@ struct FramePacingState
 
     /** The lead in force, in microseconds: how long before each vertical blank the frame callback runs, as
         LeadInForceMicroseconds held the one asked for. 0 on the platform timer, which knows no blank, and on a
-        platform whose display clock cannot lead - macOS and Linux (docs/window/frame-pacing.md says why). */
+        platform whose display clock cannot lead - macOS (docs/window/frame-pacing.md says why). */
     std::int32_t lead_microseconds{0};
 };
 
@@ -473,6 +473,50 @@ inline constexpr double kDisplayLinkSilentSeconds = 0.25;
 constexpr bool IsDisplayLinkSilent(double last_tick_seconds, double now_seconds) noexcept
 {
     return now_seconds - last_tick_seconds >= kDisplayLinkSilentSeconds;
+}
+
+/** The refresh rate a display mode's timing gives, in hertz: the pixel clock over the pixels one refresh scans, the
+    blanking included - which is how X's RandR describes a mode (XRRModeInfo), and how `xrandr` works its rate out. An
+    interlaced mode scans half its lines a refresh, and a double-scanned one each line twice.
+    @param pixel_clock_hertz  the pixel clock, in hertz
+    @param horizontal_total   the pixels of a line, its blanking included
+    @param vertical_total     the lines of a frame, its blanking included
+    @param is_interlaced      whether the mode is interlaced
+    @param is_double_scan     whether the mode scans each line twice
+    @return                   the rate, in hertz; 0 where the timing names none - a clock or a total of 0, as the one
+                              mode of an X server with no display behind it (Xvfb) has */
+constexpr double RefreshHertzOfModeTiming(double pixel_clock_hertz, int horizontal_total, int vertical_total,
+                                          bool is_interlaced, bool is_double_scan) noexcept
+{
+    double lines = static_cast<double>(vertical_total);
+    lines        = is_double_scan ? lines * 2.0 : lines;
+    lines        = is_interlaced ? lines / 2.0 : lines;
+    if (!(pixel_clock_hertz > 0.0) || horizontal_total <= 0 || !(lines > 0.0))
+    {
+        return 0.0;
+    }
+    return pixel_clock_hertz / (static_cast<double>(horizontal_total) * lines);
+}
+
+/** How far a display's own timestamp of a vertical blank may be from the clock a window waits on and still be taken
+    as a time on that clock, in seconds. X's Present extension stamps each blank on the X server's clock, which is the
+    window's own steady clock only where the server runs on the same machine; a server reached over the network stamps
+    on its own, which is anywhere at all. A bound on what a timestamp can mean, not a tuning number: a blank reported
+    is one just gone, so a stamp a whole second from now is no stamp of this clock's. */
+inline constexpr double kBlankStampIsOnTheClockWithinSeconds = 1.0;
+
+/** Where a reported vertical blank is put on the clock a window waits on: at its own timestamp where that is a time on
+    the same clock (kBlankStampIsOnTheClockWithinSeconds), and otherwise at the moment the report arrived, which is
+    later than the blank by however long the report took but is at least a time on the right clock.
+    @param stamp_seconds    the blank's timestamp, as the display reported it, in seconds
+    @param arrived_seconds  when the report arrived, on the window's clock, in seconds
+    @return                 the blank, on the window's clock */
+constexpr double BlankOnTheClock(double stamp_seconds, double arrived_seconds) noexcept
+{
+    const double apart = stamp_seconds - arrived_seconds;
+    const bool   is_on_the_clock =
+        apart <= kBlankStampIsOnTheClockWithinSeconds && apart >= -kBlankStampIsOnTheClockWithinSeconds;
+    return is_on_the_clock ? stamp_seconds : arrived_seconds;
 }
 
 /** The longest a frame stands back for other work on its window's thread (DoesFrameStandBack), in seconds. A bound on

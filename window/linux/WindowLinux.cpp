@@ -9,6 +9,9 @@
 // Where a product has asked for the GPU (ChildWindow::SetDrawing) and linked its back end, the child window's tree is
 // drawn into a surface on the GPU instead and presented with an EGL swap (GpuPresenterLinux.h), and nothing of the GPU
 // is touched until then; the popups stay on the CPU raster.
+// Where a product has asked for the display's clock (ChildWindow::SetFramePacing), the frame callback runs on the
+// blanks of the window's monitor as the X server's Present extension reports them, woken on a timerfd the same loop
+// watches (DisplayClockLinux.h); the loop's timer goes on running everything else.
 // Screen points are the root window's, opaque to the views.
 #include <fcntl.h>
 #include <poll.h>
@@ -47,6 +50,7 @@
 // it is asked for raw keys.
 #include <X11/XKBlib.h>
 
+#include "DisplayClockLinux.h"
 #include "GpuPresenterLinux.h"
 #include "X11Clipboard.h"
 
@@ -256,6 +260,7 @@ class LinuxConnection
     {
         loop_.reset(); // no callback after this
         clipboard_.reset();
+        clock_.reset(); // before the connection its Present selection is on
         if (dialog_pid_ > 0)
         {
             kill(dialog_pid_, SIGTERM);
@@ -281,6 +286,43 @@ class LinuxConnection
         tick_ = std::move(tick);
         return loop_->WatchFd(ConnectionNumber(display_), [this] { Pump(); }) &&
                loop_->StartTimer(kFrameMilliseconds, [this] { Tick(); });
+    }
+
+    /** The frame callback paced as `request` asks: on the blanks of `window`'s monitor where it asks for the display's
+        clock and the server and the monitor can give one (X11DisplayClock), and on the loop's timer otherwise, with the
+        reason. The clock is made the first time it is asked for and its timer watched on the loop from then; a host's
+        loop that will not watch it leaves the window on the timer.
+        @param request  what the product asks for
+        @param window   the window whose monitor is paced on
+        @return         what the frame callback is paced on */
+    FramePacingState SetFramePacing(const FrameRequest &request, ::Window window)
+    {
+        is_clock_asked_ = false;
+        if (clock_)
+        {
+            clock_->Stop();
+        }
+        if (request.pacing == FramePacing::kDisplayClock && !clock_)
+        {
+            clock_            = std::make_unique<x11::X11DisplayClock>(display_);
+            is_clock_watched_ = clock_->timer() >= 0 && loop_->WatchFd(clock_->timer(), [this] { RunDisplayFrame(); });
+        }
+        if (request.pacing != FramePacing::kDisplayClock || !is_clock_watched_)
+        {
+            pacing_ = ChosenPacing(request, DisplayClockReading{}); // not asked, or no clock the loop will wake on
+            return pacing_;
+        }
+        is_clock_asked_ = true;
+        return clock_->Start(window, request);
+    }
+
+    /** What the frame callback is paced on now: the display's clock's state where it was asked for, which says
+        where the display under the window has since stopped being one to divide, and otherwise the answer
+        SetFramePacing gave.
+        @return  the pacing in force */
+    FramePacingState FramePacingNow() const
+    {
+        return is_clock_asked_ ? clock_->state() : pacing_;
     }
 
     /** The display connection.
@@ -397,8 +439,13 @@ class LinuxConnection
     void Pump();
 
   private:
-    /** One frame tick: the window's frame callback, the calls deferred to it, the dialog's answer, the events. */
+    /** One frame tick: the window's frame callback, unless the display's clock runs it, then the calls deferred to
+        the tick, the dialog's answer and the events. */
     void Tick();
+
+    /** One frame of the display's clock: its timer read, the frame callback and the events with the repaints it asked
+        for, and the clock's next frame set (X11DisplayClock::Advance). */
+    void RunDisplayFrame();
 
     /** Reads what the file dialog has written; once it has closed, its path is given to the callback. */
     void PollDialog();
@@ -420,6 +467,11 @@ class LinuxConnection
     /** The CLIPBOARD selection's owner on this connection, made by the first copy the loop does not keep; null until
         then. */
     std::unique_ptr<x11::ClipboardOwner> clipboard_;
+    /** The display's clock, made the first time a product asks for it and kept; null until then. */
+    std::unique_ptr<x11::X11DisplayClock> clock_;
+    bool                                  is_clock_watched_{false}; ///< the loop watches the clock's timer
+    bool             is_clock_asked_{false}; ///< the last request asked for the clock, and the loop can wake on it
+    FramePacingState pacing_{};              ///< the answer to the last request, where it did not reach the clock
 };
 
 /** A view tree drawn in an X window on a shared connection: the raster, the drawing, the mouse and keys to a router,
@@ -1458,6 +1510,10 @@ void LinuxConnection::Pump()
     {
         XEvent event;
         XNextEvent(display_, &event);
+        if (clock_ && clock_->Handle(event))
+        {
+            continue; // a blank of the window's monitor, or a report of a present the GPU made
+        }
         if (clipboard_ && clipboard_->Handle(event))
         {
             continue; // a paste asking the copy this connection holds, or word that another copy took it
@@ -1502,7 +1558,7 @@ void LinuxConnection::Pump()
 
 void LinuxConnection::Tick()
 {
-    if (tick_)
+    if (tick_ && !(clock_ && clock_->is_running()))
     {
         tick_();
     }
@@ -1515,6 +1571,20 @@ void LinuxConnection::Tick()
     }
     PollDialog();
     Pump();
+}
+
+void LinuxConnection::RunDisplayFrame()
+{
+    if (!clock_ || !clock_->TakeWaking())
+    {
+        return;
+    }
+    if (tick_)
+    {
+        tick_();
+    }
+    Pump();
+    clock_->Advance();
 }
 
 void LinuxConnection::ChooseFile(const view::FileRequest &request, std::function<void(const std::string &)> picked)
@@ -1727,40 +1797,37 @@ class LinuxChildWindow final : public ChildWindow
         frame_ = std::move(frame);
     }
 
-    /** The platform's own timer, always, and the reason said: **there is no display clock to pace on here**, and the
-        toolkit does not pretend otherwise.
-
-        X hands a window's pixels over with XPutImage, which is a copy and not a presentation, so there is nothing to
-        put on a vertical blank and nothing that reports one. The two mechanisms that would report one are out of reach
-        for what they cost. GLX or EGL would need a GL context and a swap, which the CPU raster's path has not got and
-        which three shipped products' pixels do not go through - and the GPU path's swap, which has them, is told not to
-        wait for the display (an interval of 0), since a wait would hold the host's loop. The X11 Present extension
-        would need the view tree rastered into a Pixmap and handed over with PresentPixmap against a target media stream
-        count, which is a different present path, a new library on every consumer's link line, and a rewrite of the
-        dirty-rectangle handling this file is largely about - for phase alone, since the Linux loop's rate is already
-        right: the app's poll loop keeps its deadline in a steady clock and advances it by the period, which measured
-        16.000 ms with a standard deviation of 0.306 ms, where Windows' window timer measured 26.9 ms and 7.1 ms
-        (docs/window/frame-pacing.md). What display synchronisation would buy on Linux is phase, not rate, and the
-        honest answer until that is worth its cost is this one.
-        @param request  what the product asks for, which is read for nothing but its `pacing`
-        @return         the platform timer, with FramePacingFallback::kNoDisplayClock where the display's clock was
-                        asked for */
+    /** The frame callback on the blanks of the monitor the window is on, as the X server's Present extension reports
+        them, where a product asks for the display's clock and there is one: a frame every `refresh_divisor`th blank,
+        woken the request's lead before it (DisplayClockLinux.h, docs/window/frame-pacing.md). The rate divided is the
+        one the monitor's mode names (RandR). Where the server has no Present, or the mode names no timing - Xvfb, whose
+        Present answers from a timer of its own - the window stays on the loop's timer and says why.
+        @param request  what the product asks for
+        @return         what the window is paced on, and why where it fell back */
     FramePacingState SetFramePacing(const FrameRequest &request) override
     {
-        pacing_ = ChosenPacing(request, DisplayClockReading{}); // has_clock false: there is none to read
-        return pacing_;
+        return connection_->SetFramePacing(request, surface_->window());
     }
 
-    /** What the window is pacing on: the platform's timer, with the reason the display's clock was not to be had.
+    /** What the window is pacing on: the display's clock, or the timer and the reason, as SetFramePacing answered or as
+        the display under the window has since made it.
         @return  the pacing in force */
     FramePacingState FramePacingNow() const override
     {
-        return pacing_;
+        return connection_->FramePacingNow();
+    }
+
+    /** The refresh rate of the mode of the monitor the most of the window is on, as RandR names it, read afresh each
+        time; asks nothing of the display's clock.
+        @return  the rate, in hertz; 0 where nothing can say, as under Xvfb */
+    double DisplayModeHertz() const override
+    {
+        return x11::ModeHertzUnder(connection_->display(), surface_->window());
     }
 
     /** The window drawn as `request` asks: on the GPU through EGL where the request names the back end and it makes
-        one on this window, with the CPU raster and XPutImage otherwise (docs/window/gpu-drawing.md). The pacing is the
-        host loop's timer either way: the swap interval is 0, so a swap never waits for the display.
+        one on this window, with the CPU raster and XPutImage otherwise (docs/window/gpu-drawing.md). The swap interval
+        is 0, so a swap never waits for the display: the pacing is SetFramePacing's either way.
         @param request  what the product asks for; DrawingRequest{} for the CPU raster
         @return         what the window is drawing with, and why where it fell back */
     DrawingState SetDrawing(const DrawingRequest &request) override
@@ -1880,9 +1947,6 @@ class LinuxChildWindow final : public ChildWindow
     std::unique_ptr<LinuxConnection> connection_; ///< the connection, shared with the popups
     std::unique_ptr<ChildSurface>    surface_;    ///< the child's surface, dropped before the connection
     std::function<void()>            frame_;      ///< the frame callback; empty for none
-    /** What the window is pacing on: the platform's timer always, with the reason the display's clock was not to be
-        had where a product asked for it (SetFramePacing). */
-    FramePacingState pacing_{};
 };
 
 namespace
