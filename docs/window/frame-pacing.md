@@ -303,6 +303,15 @@ Xvfb's one mode names no timing, so there is no rate to divide and the window sa
 without Present says `kNoDisplayClock`. A variable-refresh panel is not looked for: on X11 a window is composited unless
 it flips full screen and opts in, so the mode is the rate the frames are composited at.
 
+**Under XWayland** the same clock runs, and is kept on purpose. XWayland answers Present from the Wayland compositor's
+own frames (from `wp_presentation` where the compositor offers it, else from its frame callbacks), and its RandR mode is
+one XWayland makes up for the output - 59.963 Hz on a 60 Hz panel, under both compositors measured - so the rate read is
+a little off. Nothing measured shows a cost from that, since each frame is pulled back onto the last blank reported, and
+the platform's timer in its place was worse under both
+([Under XWayland](#under-xwayland)). Whether the window can draw on a GPU there is the compositor's to say, not the
+toolkit's: an XWayland with no GPU path of its own has no DRI3, so EGL on X11 finds no GPU and the window draws on the
+CPU raster ([gpu-drawing.md](gpu-drawing.md#linux)).
+
 Neither library is linked. libXpresent and libXrandr are opened by name the first time a window is asked for the clock or
 its mode, as Windows' compositor calls are looked up from `dwmapi.dll`, so no consumer's link line changes and a window
 no one asks opens neither. Their headers are needed to build the clock (`libxpresent-dev`, which brings
@@ -641,6 +650,37 @@ frames, every one of them a single tick.
   standard deviation of 0.006 ms while the screen was being drawn, and each report within 0.2 ms of the last one's
   period. With the desktop idle the stamps spread to 0.6 to 0.8 ms - the panel's self-refresh, which a window being drawn
   does not leave it in.
+
+### Under XWayland
+
+The same machine and the same probe on 2026-11-10, with Sentinel run as an X client of XWayland under two Wayland
+compositors: Cinnamon 6.6's own experimental Wayland session (Muffin 6.6.3, XWayland 23.2.6) and Weston 13, each the
+seat's session. The platform's timer was had by hiding libXpresent from the window, so that it said `kNoDisplayClock`.
+One run a row unless it says otherwise; the same day's two Xorg runs at the top are the comparison.
+
+| Session | Drawn on | Paced on | Window | Spread between frames | Ticks not 1 | Frames over 25 ms |
+|---|---|---|---|---|---|---|
+| Cinnamon on Xorg | Intel / NVIDIA GPU | the display's clock | windowed / full screen | 0.04 to 0.08 ms | 0.00 to 0.06 % | 0 |
+| Cinnamon on Wayland | the CPU raster | the display's clock (Present from frame callbacks) | windowed / full screen, 2 / 2 | 1.37 to 3.31 ms | 0.4 to 3.4 % | 3 to 54 |
+| Cinnamon on Wayland | the CPU raster | the platform's timer | windowed / full screen | 4.49 to 4.80 ms | 7.1 to 18.9 % | 117 to 137 |
+| Weston 13 | Intel / NVIDIA GPU | **the display's clock** | windowed / full screen | **0.06 to 0.09 ms** | **0.00 %** | 0 |
+| Weston 13 | Intel / NVIDIA GPU | the platform's timer | windowed / full screen | 0.08 to 1.39 ms | 0.0 to 12.3 % | 0 |
+
+- **Present stays the clock under XWayland.** Even where the compositor has no `wp_presentation`, so XWayland's blanks
+  come from its frame callbacks, they beat the platform's timer by about three times in spread and ten times in ticks
+  off one; where it has (Weston) the clock is as good as Xorg's. Treating XWayland's Present as no display clock was
+  considered and is not done.
+- **The rate RandR names is XWayland's own.** Its mode read 59.963 Hz under both compositors, against the panel's
+  59.9993 Hz under Xorg and Weston's 60.0; the frames still averaged 16.666 ms apart, because each is pulled back onto
+  the last blank reported. Taking the period from the reported blanks instead would make the rate read true, and is
+  left until a compositor shows that it costs something.
+- **Cinnamon's Wayland session gives no X client a GPU.** Muffin 6.6.3 offers `zwp_linux_dmabuf_v1` at version 3
+  only - no main device - with no `wl_drm`, so XWayland cannot start glamor ("Failed to initialize glamor, falling back
+  to sw") and offers no DRI3. Mesa's EGL on X11 then gives llvmpipe, which the window turns down for the CPU raster, and
+  NVIDIA's EGL on X11 fails `eglInitialize`; both are the fallbacks working as meant. NVIDIA's GLX by PRIME offload does
+  still reach the P2000 there, but a GLX path beside EGL for one experimental session is not proposed: the CPU raster
+  holds 60 frames a second on it. Under Weston, which offers `linux-dmabuf` version 4, XWayland has DRI3 and both GPUs
+  draw.
 
 ## What is held, and where
 
