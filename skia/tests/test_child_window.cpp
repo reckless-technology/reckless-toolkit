@@ -42,6 +42,8 @@ TEST(ChildWindow, AUriListsFilePathsArePercentDecodedAndAStrayPercentIsItself)
 }
 
 #if defined(__linux__)
+#include <poll.h>
+
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -63,14 +65,15 @@ TEST(ChildWindow, AUriListsFilePathsArePercentDecodedAndAStrayPercentIsItself)
 
 namespace
 {
-/** The run loop a Linux host gives a plug-in's window, turned by the suite: the window's connection read and its timer
-    ticked on each turn. */
+/** The run loop a Linux host gives a plug-in's window, turned by the suite: every descriptor the window watches - its
+    connection, and its display clock's timer once it has one - read and its timer ticked on each turn, or either of
+    them alone. Each watch reads only what its descriptor holds, so one turned with nothing to read does nothing. */
 class TurnedLoop final : public reckless::window::RunLoop
 {
   public:
-    bool WatchFd(int, std::function<void()> ready) override
+    bool WatchFd(int fd, std::function<void()> ready) override
     {
-        ready_ = std::move(ready);
+        watches_.push_back({fd, std::move(ready)});
         return true;
     }
 
@@ -82,19 +85,58 @@ class TurnedLoop final : public reckless::window::RunLoop
 
     void Turn()
     {
-        if (ready_)
+        TurnWatches();
+        TurnTimer();
+    }
+
+    /** Every watch called back, whatever its descriptor holds. */
+    void TurnWatches()
+    {
+        for (std::size_t i = 0; i < watches_.size(); ++i)
         {
-            ready_(); // whatever the connection holds; nothing when it holds nothing
+            watches_[i].ready();
         }
+    }
+
+    /** Up to `milliseconds` waited for any watched descriptor to have something to read, then every watch called back:
+        what a host's loop does between its timer's ticks.
+        @param milliseconds  the longest wait */
+    void WaitOnWatches(int milliseconds)
+    {
+        std::vector<pollfd> descriptors;
+        for (const Watch &watch : watches_)
+        {
+            descriptors.push_back({watch.fd, POLLIN, 0});
+        }
+        poll(descriptors.data(), descriptors.size(), milliseconds);
+        TurnWatches();
+    }
+
+    /** The timer ticked, and nothing read. */
+    void TurnTimer()
+    {
         if (tick_)
         {
             tick_();
         }
     }
 
+    /** @return  how many descriptors the window has asked to be watched */
+    std::size_t watches() const noexcept
+    {
+        return watches_.size();
+    }
+
   private:
-    std::function<void()> ready_;
-    std::function<void()> tick_;
+    /** A descriptor watched, and what to call when it can be read. */
+    struct Watch
+    {
+        int                   fd;    ///< the descriptor
+        std::function<void()> ready; ///< called back on each turn
+    };
+
+    std::vector<Watch>    watches_; ///< every watch, in the order asked for
+    std::function<void()> tick_;    ///< the timer's callback
 };
 
 /** The panel, as far as a drop asks of one: it takes capture files anywhere, and writes down what it hears. */
@@ -1393,11 +1435,32 @@ TEST(ChildWindowFramePacing, PanelsThatFitARefreshPaintInOneOrderEveryRefresh)
 #endif
 
 #if !defined(_WIN32) && !defined(__APPLE__)
-TEST(ChildWindowFramePacing, SaysPlainlyThatThereIsNoDisplayClockOnX11)
+namespace
 {
-    // There is none, and the toolkit says so rather than faking a phase lock: X hands a window's pixels over with a
-    // copy, not a presentation, so nothing reports a vertical blank without a GL context or the Present extension -
-    // neither of which this present path has or cheaply could (window/linux/WindowLinux.cpp says why at length).
+/** Whether the X server the suite runs on has the Present extension, asked on a connection of the suite's own.
+    @return  true where it has */
+bool DoesTheServerHavePresent()
+{
+    Display *display = XOpenDisplay(nullptr);
+    if (display == nullptr)
+    {
+        return false;
+    }
+    int        opcode      = 0;
+    int        event_base  = 0;
+    int        error_base  = 0;
+    const bool has_present = XQueryExtension(display, "Present", &opcode, &event_base, &error_base) == True;
+    XCloseDisplay(display);
+    return has_present;
+}
+} // namespace
+
+TEST(ChildWindowFramePacing, IsOnTheDisplaysClockExactlyWhereTheServerHasPresentAndTheMonitorsModeNamesARate)
+{
+    // The two branches, told apart from the outside rather than by the window's own word: the suite asks the server
+    // whether it has Present, and the window what rate its monitor's mode names. On a desktop both are there and the
+    // window paces on its monitor's blanks; under Xvfb, CI's server, Present answers from a timer of its own and the
+    // mode names no timing, so the window stays on the loop's timer and says the rate is unknown.
     reckless::test::TestHostWindow top(240, 160);
     if (!top.Valid())
     {
@@ -1409,19 +1472,115 @@ TEST(ChildWindowFramePacing, SaysPlainlyThatThereIsNoDisplayClockOnX11)
     }
     reckless::view::View root;
     root.SetBounds({240, 160});
-    auto child =
-        reckless::window::CreateChildWindow(top.Parent(), root, 240, 160, 1.0f, std::make_unique<TurnedLoop>());
+    auto        loop  = std::make_unique<TurnedLoop>();
+    TurnedLoop &turns = *loop;
+    auto        child = reckless::window::CreateChildWindow(top.Parent(), root, 240, 160, 1.0f, std::move(loop));
     ASSERT_NE(child, nullptr);
     EXPECT_EQ(child->FramePacingNow().why, FramePacingFallback::kNotAsked) << "until someone asks";
+    const std::size_t watched    = turns.watches();
+    const double      mode_hertz = child->DisplayModeHertz();
+    EXPECT_TRUE(mode_hertz == 0.0 || reckless::window::IsBelievableRefreshRate(mode_hertz)) << mode_hertz;
+    EXPECT_EQ(child->FramePacingNow().why, FramePacingFallback::kNotAsked) << "reading the rate asks for nothing";
+    EXPECT_EQ(turns.watches(), watched) << "and watches nothing more";
 
     const FramePacingState asked = child->SetFramePacing({FramePacing::kDisplayClock, 4, 1, 5000});
-    HoldsWhicheverPacingItReached(asked, 4, "Linux, asked for a frame every fourth refresh, 5 ms ahead", 5000);
-    EXPECT_EQ(asked.why, FramePacingFallback::kNoDisplayClock) << "which is the honest answer on X11, not a rate";
-    EXPECT_EQ(child->FramePacingNow().why, FramePacingFallback::kNoDisplayClock) << "and it says the same again";
-    EXPECT_EQ(child->DisplayModeHertz(), 0.0) << "and names no rate for a product to work a divisor out from";
+    HoldsWhicheverPacingItReached(asked, 4, "Linux, asked for a frame every fourth refresh, 5 ms ahead", 5000, true);
+    const bool has_present = DoesTheServerHavePresent();
+    const bool has_rate    = reckless::window::IsBelievableRefreshRate(mode_hertz);
+    EXPECT_EQ(asked.pacing == FramePacing::kDisplayClock, has_present && has_rate)
+        << "Present " << has_present << ", the mode " << mode_hertz << " Hz: " << reckless::window::TextOf(asked.why);
+    if (asked.pacing == FramePacing::kDisplayClock)
+    {
+        EXPECT_DOUBLE_EQ(asked.display_hertz, mode_hertz) << "the rate divided is the mode's";
+        EXPECT_EQ(turns.watches(), watched + 1) << "and the clock's timer is watched on the window's loop";
+    }
+    else if (!has_present)
+    {
+        EXPECT_EQ(asked.why, FramePacingFallback::kNoDisplayClock) << "a server without Present has no clock";
+    }
+    else
+    {
+        EXPECT_EQ(asked.why, FramePacingFallback::kRefreshRateUnknown) << "a mode that names no timing has no rate";
+    }
+    EXPECT_EQ(child->FramePacingNow().pacing, asked.pacing) << "and it says the same again";
+    EXPECT_EQ(child->FramePacingNow().why, asked.why);
 
     const FramePacingState back = child->SetFramePacing({});
     EXPECT_EQ(back.why, FramePacingFallback::kNotAsked) << "a default request is a window asking for nothing";
+    EXPECT_EQ(child->FramePacingNow().why, FramePacingFallback::kNotAsked);
+    child.reset(); // before the window it sits in
+}
+
+TEST(ChildWindowFramePacing, TakesItsFramesFromWhicheverItIsPacedOnAndNeverFromBoth)
+{
+    // On the display's clock the frames come from the clock's timer, which the loop watches, and the loop's own timer
+    // runs everything else but no frame; on the loop's timer, the other way round. Turning each alone shows which, and
+    // that the window is never paced by both - which would be two frames a refresh, or frames on two phases.
+    reckless::test::TestHostWindow top(240, 160);
+    if (!top.Valid())
+    {
+        if (reckless::test::WindowRequired())
+        {
+            FAIL() << "the run promised a window and there is none";
+        }
+        GTEST_SKIP() << "no display to make a window on";
+    }
+    reckless::view::View root;
+    root.SetBounds({240, 160});
+    auto        loop  = std::make_unique<TurnedLoop>();
+    TurnedLoop &turns = *loop;
+    auto        child = reckless::window::CreateChildWindow(top.Parent(), root, 240, 160, 1.0f, std::move(loop));
+    ASSERT_NE(child, nullptr);
+    std::vector<std::chrono::steady_clock::time_point> frames;
+    child->SetFrameCallback([&] { frames.push_back(std::chrono::steady_clock::now()); });
+    const FramePacingState state       = child->SetFramePacing({FramePacing::kDisplayClock, 1, 1});
+    const bool             is_on_clock = state.pacing == FramePacing::kDisplayClock;
+
+    for (int turn = 0; turn < 30; ++turn)
+    {
+        turns.TurnTimer();
+    }
+    EXPECT_EQ(frames.size(), is_on_clock ? 0u : 30u) << "the loop's timer runs a frame only off the display's clock";
+
+    frames.clear();
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (std::chrono::steady_clock::now() < until)
+    {
+        turns.WaitOnWatches(5);
+    }
+    if (is_on_clock)
+    {
+        // Liveness, not a rate: half a second of a monitor of at least twenty hertz is ten frames.
+        EXPECT_GE(frames.size(), 10u) << "the display's clock wakes the frames by itself";
+        double sum     = 0.0;
+        double squares = 0.0;
+        for (std::size_t i = 1; i < frames.size(); ++i)
+        {
+            const double gap = std::chrono::duration<double, std::milli>(frames[i] - frames[i - 1]).count();
+            sum += gap;
+            squares += gap * gap;
+        }
+        const double count = static_cast<double>(frames.size() > 1 ? frames.size() - 1 : 1);
+        const double mean  = sum / count;
+        std::printf(
+            "[ frame pacing ] Linux, on the display's clock at %.4f Hz: %zu frames, %.3f ms apart, sd %.3f ms\n",
+            state.display_hertz, frames.size(), mean, std::sqrt(std::max(0.0, squares / count - mean * mean)));
+    }
+    else
+    {
+        EXPECT_TRUE(frames.empty()) << "off the display's clock, nothing the loop watches runs a frame";
+    }
+
+    child->SetFramePacing({});
+    frames.clear();
+    turns.WaitOnWatches(50);
+    turns.WaitOnWatches(50);
+    EXPECT_TRUE(frames.empty()) << "back on the loop's timer, the clock wakes nothing";
+    for (int turn = 0; turn < 5; ++turn)
+    {
+        turns.TurnTimer();
+    }
+    EXPECT_EQ(frames.size(), 5u) << "and the timer runs every frame";
     child.reset(); // before the window it sits in
 }
 #endif

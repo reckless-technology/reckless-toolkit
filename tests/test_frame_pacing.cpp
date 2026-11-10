@@ -192,7 +192,7 @@ TEST(ChosenPacingFallback, ARequestOutOfRangeIsRefusedBeforeAnythingIsRead)
 TEST(ChosenPacingFallback, EachThingAPlatformCannotGiveIsItsOwnReason)
 {
     EXPECT_EQ(ChosenPacing(Asking(1), DisplayClockReading{}).why, FramePacingFallback::kNoDisplayClock)
-        << "Linux: there is no vertical blank to be had with a copy for a present";
+        << "an X server without Present: nothing reports a vertical blank";
 
     EXPECT_EQ(ChosenPacing(Asking(1), GoodReading(0.0, 0.0)).why, FramePacingFallback::kRefreshRateUnknown);
     EXPECT_EQ(ChosenPacing(Asking(1), GoodReading(5.0, 0.0)).why, FramePacingFallback::kRefreshRateNotBelievable);
@@ -775,6 +775,36 @@ TEST(DisplayLinkSilence, ALinkThatHasStoppedIsToldFromOneThatIsTicking)
     EXPECT_TRUE(IsDisplayLinkSilent(10.0, 1000.0));
     EXPECT_GE(kDisplayLinkSilentSeconds, 4.0 / 20.0)
         << "more than a few ticks of the slowest refresh a display can have";
+}
+
+TEST(ModeTiming, ARefreshRateIsThePixelClockOverThePixelsOneRefreshScans)
+{
+    using reckless::window::RefreshHertzOfModeTiming;
+    // jonny-precision's panel as RandR names it, 1920 x 1080 in 2080 x 1142 at 142.52 MHz: 59.9993 Hz, not 60.
+    EXPECT_NEAR(RefreshHertzOfModeTiming(142.52e6, 2080, 1142, false, false), 59.99933, 1.0e-5);
+    // CEA 1080p60 at 148.5 MHz in 2200 x 1125 is 60 exactly, and its 1080i a field every refresh at the same rate.
+    EXPECT_DOUBLE_EQ(RefreshHertzOfModeTiming(148.5e6, 2200, 1125, false, false), 60.0);
+    EXPECT_DOUBLE_EQ(RefreshHertzOfModeTiming(74.25e6, 2200, 1125, true, false), 60.0) << "interlaced: half the lines";
+    EXPECT_DOUBLE_EQ(RefreshHertzOfModeTiming(25.175e6, 800, 525, false, true), 25.175e6 / (800.0 * 1050.0))
+        << "double-scanned: every line twice";
+    // Xvfb's one mode: a size, and no timing at all.
+    EXPECT_EQ(RefreshHertzOfModeTiming(0.0, 0, 0, false, false), 0.0);
+    EXPECT_EQ(RefreshHertzOfModeTiming(142.52e6, 0, 1142, false, false), 0.0);
+    EXPECT_EQ(RefreshHertzOfModeTiming(142.52e6, 2080, 0, false, false), 0.0);
+    EXPECT_EQ(RefreshHertzOfModeTiming(-1.0, 2080, 1142, false, false), 0.0);
+}
+
+TEST(BlankStamps, AStampOnTheWindowsClockIsTakenAndOneFromAnotherClockIsNot)
+{
+    using reckless::window::BlankOnTheClock;
+    using reckless::window::kBlankStampIsOnTheClockWithinSeconds;
+    EXPECT_DOUBLE_EQ(BlankOnTheClock(100.0, 100.0006), 100.0) << "a blank just gone, stamped on this machine";
+    EXPECT_DOUBLE_EQ(BlankOnTheClock(100.0009, 100.0), 100.0009) << "stamped at the blank's end, ahead of its report";
+    EXPECT_DOUBLE_EQ(BlankOnTheClock(100.0 - kBlankStampIsOnTheClockWithinSeconds, 100.0),
+                     100.0 - kBlankStampIsOnTheClockWithinSeconds);
+    EXPECT_DOUBLE_EQ(BlankOnTheClock(5.0e6, 100.0), 100.0) << "a server on another machine: its report's arrival";
+    EXPECT_DOUBLE_EQ(BlankOnTheClock(0.0, 100.0), 100.0) << "and a stamp of nothing at all";
+    EXPECT_GE(kBlankStampIsOnTheClockWithinSeconds, 1.0 / 20.0) << "wider than the slowest believable refresh";
 }
 
 TEST(FrameStandsBack, AFrameInFlightIsTakenForLostOnlyAfterTheBound)

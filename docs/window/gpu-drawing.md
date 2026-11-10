@@ -159,10 +159,16 @@ machine, display and PresentMon, 30 s a run, 2026-11-09 17:19 (`fs-0` and `win-0
 
 ### Linux
 
-The EGL window ([below](#egl-on-x11-on-linux)) presents with an interval of 0 in full screen as well, and has the same
-tearing risk. It is **unchanged**: a Linux session is to evaluate the same change (an interval of 1 in the window
-manager's full screen) with its own measurement. macOS's Metal drawable is paced by the display link and is not
-changed either.
+The EGL window ([below](#egl-on-x11-on-linux)) **keeps an interval of 0, windowed and full screen alike**, on a Linux
+session's evaluation of Windows' change (jonny-precision, 2026-11-09, both GPUs, windowed and full screen, Sentinel's
+frame log): an interval of 1 did not make `eglSwapBuffers` wait - it returned in about 0.5 ms at 0 and at 1, Mesa and
+NVIDIA both queueing the frame - so it gave the loop no clock and took nothing from the judder, which was the timer's
+pacing; and Cinnamon's Muffin composites full-screen windows too (`unredirect-fullscreen-windows` false), so nothing
+reaches the panel part-way through a refresh whatever the interval. What did take the judder away was pacing the frame
+callback on the display's own clock, which Linux now has from the X server's Present extension
+([frame-pacing.md](frame-pacing.md#what-this-measured-on-linux)): every frame one tick, its wakes 0.05 ms apart. A desktop
+that does unredirect a full-screen window could tear at 0, and is the case to measure before changing it. macOS's
+Metal drawable is paced by the display link and is not changed either.
 
 ### What it did live (2026-11-07, swap interval 0)
 
@@ -354,8 +360,9 @@ image needs `libegl-dev` (`.github/actions/cpp/action.yml`, `tools/setup-dev.sh`
    `GL_NONE` (OpenGL 4.6 core, 17.4.1 and 18.2.1), and binding a surface after does not change them. NVIDIA keeps to
    that, and until they were set every frame went nowhere and the window read back black; Mesa starts them at
    `GL_BACK` regardless.
-6. **Skia's context on the assembled interface, and a swap interval of 0** (full screen tears with it, as the "Linux" note above says; unchanged here until a Linux session has measured it): the frame callback runs on the host loop's
-   16 ms timer, and a swap that waited for the blank would hold that loop, which every window on it shares.
+6. **Skia's context on the assembled interface, and a swap interval of 0** (the "Linux" note above says why it stays
+   0): the frame callback runs on the host's loop - on the display's clock where a product asks for it, on the loop's
+   timer otherwise - and a swap that waited for the blank would hold that loop, which every window on it shares.
 7. **The present** is the shared seam's: the views' surface copied over the window's framebuffer 0, wrapped bottom-up
    at the window surface's own size (`eglQuerySurface`, which follows the X window's even when the server has not yet
    reported a resize), and `eglSwapBuffers`. A 24-bit visual's buffer has no alpha, so it is wrapped as RGB8.

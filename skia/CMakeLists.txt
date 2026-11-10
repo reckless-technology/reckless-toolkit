@@ -179,7 +179,10 @@ elseif(WIN32)
 else()
     find_package(X11 REQUIRED)
     set(RECKLESS_WINDOW_SOURCE "${RECKLESS_TOOLKIT_DIR}/window/linux/WindowLinux.cpp" CACHE INTERNAL "")
-    set(reckless_window_system X11::X11)
+    # libXpresent and libXrandr, the display's clock (window/linux/DisplayClockLinux.h), are opened by name at run time
+    # and never linked; only their headers are needed, and a build without them has no clock. dlopen is libc's from
+    # glibc 2.34, libdl's before it.
+    set(reckless_window_system X11::X11 ${CMAKE_DL_LIBS})
 endif()
 # The platform's libraries ride on the window's interface, linked here, where X11's imported target was found: a
 # module takes the window from its own directory (reckless_module_window), where that target is not known.
