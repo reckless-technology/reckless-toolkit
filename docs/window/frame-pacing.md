@@ -253,7 +253,7 @@ swap chain, so **a DXGI waitable swap chain is out of reach** - reaching one mea
 chain, a per-frame upload of Skia's raster or a move to Skia's D3D backend outright, and redoing the child-window,
 popup, DPI and dirty-rectangle handling that `window/win/WindowWin.cpp` is mostly about. It would also change the
 pixels three shipped products draw. A window a product has asked to draw on the GPU ([gpu-drawing.md](gpu-drawing.md))
-does present - Ganesh on WGL and `SwapBuffers` - but with a swap interval of 0, so its swap does not wait for the blank
+does present - Ganesh on WGL and `SwapBuffers` - but with a swap interval of 0 while windowed (1 in full screen), so its swap does not wait for the blank
 either, and it is paced by this same clock: the clock stays the one clock, and the swap only hands the frame to the
 compositor as `SetDIBitsToDevice` did ([gpu-drawing.md](gpu-drawing.md#pacing-and-the-swap-interval) says why). So the
 clock is the nearest honest thing to a present: a

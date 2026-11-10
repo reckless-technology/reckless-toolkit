@@ -89,16 +89,82 @@ never draw into one another's.
 
 ## Pacing, and the swap interval
 
-**The swap interval is 0.** The frame callback is already paced on the display's own clock
-([frame-pacing.md](frame-pacing.md)): a waitable timer snapped to the compositor's vertical blank, with a lead the
-product chooses, on a thread of the window's own that posts each frame to the window. A swap interval of 1 would make
-`SwapBuffers` wait for a blank as well - a second clock beside the first, holding the window's thread for up to a
-refresh while it waited, and throwing away the lead, which exists to finish the frame just before the blank rather than
-a refresh early. With 0 the swap does not wait, the frame reaches the compositor as soon as the GPU has drawn it, and
-the compositor shows it at the next blank, which is what the CPU raster's `SetDIBitsToDevice` has always done.
-`wglSwapIntervalEXT` is asked for 0 where the driver has it.
+**The swap interval is 1 in full screen and 0 in a window** (Jonny's brief, 2026-11-09, on the measurement below). The
+frame callback is already paced on the display's own clock ([frame-pacing.md](frame-pacing.md)): a waitable timer
+snapped to the compositor's vertical blank, with a lead the product chooses, on a thread of the window's own that posts
+each frame to the window.
 
-### What it did live
+- **Windowed, 0.** DWM composes the window, so a frame is never torn whatever the swap does, and a swap that waited for
+  a blank as well would be a second clock beside the first, holding the window's thread for up to a refresh while it
+  waited and throwing away the lead, which exists to finish the frame just before the blank rather than a refresh early.
+  With 0 the swap does not wait, the frame reaches the compositor as soon as the GPU has drawn it, and the compositor
+  shows it at the next blank, as the CPU raster's `SetDIBitsToDevice` has always done.
+- **Full screen, 1.** A full-screen window is borderless over its monitor, and PresentMon reports it presented with
+  tearing allowed when the swap interval is 0: a frame can reach the display part-way through a refresh, and 10 % of the
+  display's changes were not on exactly one refresh (table below). With 1 the swap waits for the blank and every change
+  is on exactly one refresh.
+
+The app's window tells its child window when it enters or leaves full screen (`ChildWindow::SetFullScreen`, which
+`RunApp` calls from the window's own `full_screen_changed`, so the presenter is told the window's own state, not a poll
+of whether it covers its monitor), the child tells its presenter (`GpuPresenter::SetFullScreen`), and the presenter
+sets `wglSwapIntervalEXT` before the next swap, only when the interval has changed (`SkiaGpuPresenter::Present`;
+`SwapIntervalFor` in `window/GpuSwapInterval.h` is the rule). A window that is full screen when its GPU is made, or made
+again after a loss, is told as it is made.
+
+`RECKLESS_GPU_SWAP_INTERVAL` overrides it, for diagnosis: `0` (never wait), `1` (always wait) or `auto`, which is the
+default and also what anything unrecognised or unset means.
+
+### Interval 1 in full screen, measured
+
+This **replaces** the earlier text, from 2026-11-08, which kept the interval at 0 on the grounds that a swap that waited
+was a second clock, and which recorded an interval of 1 as worse. That test ran during an unexplained stall period on
+the machine and does not stand. The A/B below was taken the next day with PresentMon.
+
+`Legion5i` (RTX 4070 Laptop), one 3840 x 2160 display at 59.94 Hz, Sentinel full screen with scripted play, about 30 s a
+run, 2026-11-09, PresentMon for the present mode, `AllowsTearing` and the display's changes, and Sentinel's frame log
+for the ticks (analyser: `tear-ab.py`, in the session's scratchpad, not in a repository):
+
+| WGL swap interval | Tearing allowed | Display changes on exactly 1 refresh | Stalls > 25 ms | Ticks not 1 | Present-to-display latency p50 |
+|---|---|---|---|---|---|
+| 0 (until now) | yes | 90 % | 109 (max 550 ms) | 0.7 % | 1.3 ms |
+| 1 always | no | 100 % | 0 | 0 % | 31 ms |
+| **1 in full screen, 0 windowed** | **no** | **100 %** | **0** | **0 %** | **15 ms** |
+
+Interval 1 removes the tearing and the stalls, at the price of latency in full screen (15 ms at p50, against the 1.3 ms
+of a frame let through torn). Interval 1 on a window the compositor already composes without tearing buys nothing and
+costs the second clock, so windowed stays at 0.
+
+### The change itself, proved in Sentinel
+
+This toolkit change overlaid on Sentinel `2ec215f2` (a probe build, `-DSENTINEL_LATENCY_PROBE=ON`; full screen from the
+tenth frame by `SENTINEL_PROBE_FULL_SCREEN`, scripted play by `SENTINEL_PROBE_PLAY`, a copy of the settings file), same
+machine, display and PresentMon, 30 s a run, 2026-11-09 17:19 (`fs-0` and `win-0` are the same binary with
+`RECKLESS_GPU_SWAP_INTERVAL=0`, the control):
+
+| Run | Present mode | Tearing allowed | Sync interval | Display changes not on exactly 1 refresh | Stalls > 25 ms | Ticks not 1 | Present-to-display p50 |
+|---|---|---|---|---|---|---|---|
+| Full screen, auto | Hardware: Legacy Flip | 0 | 1 | 0 of 1,793 | 0 | 0 of 2,019 | 31.3 ms |
+| Full screen, `=0` | Hardware: Legacy Flip | 1 | 0 | 206 of 1,796 (11.5 %) | 0 | 0 of 2,022 | 0.8 ms |
+| Windowed, auto | Composed: Copy with GPU GDI | 0 | -1 | 0 of 1,793 | 0 | 3 of 2,023 | 31.5 ms |
+| Windowed, `=0` | Composed: Copy with GPU GDI | 0 | -1 | 6 of 1,794 | 0 | 0 of 2,031 | 31.5 ms |
+
+- Full screen presents with tearing off and interval 1 under the default, on every one of its frames, and with tearing on
+  and interval 0 when the variable asks for 0. Windowed is composed and reads the same under both (PresentMon
+  reports no sync interval, -1, for the compositor's copy), so the default does not change a windowed window.
+- This run's full-screen latency under interval 1 was 31 ms, not the 15 ms of the experiment's table above, and its
+  interval-0 run had no stalls where that one had 109; both are one 30 s run each, and a session that measures latency
+  should take more than one.
+- The three windowed frames with no tick (3 of 2,023) are not in the control's run; a windowed window's swap is the
+  same under both, and one 30 s run each does not say whether they are more than the run's own noise.
+
+### Linux
+
+The EGL window ([below](#egl-on-x11-on-linux)) presents with an interval of 0 in full screen as well, and has the same
+tearing risk. It is **unchanged**: a Linux session is to evaluate the same change (an interval of 1 in the window
+manager's full screen) with its own measurement. macOS's Metal drawable is paced by the display link and is not
+changed either.
+
+### What it did live (2026-11-07, swap interval 0)
 
 Measured on `Legion5i` (RTX 4070 Laptop, GL 4.6.0 NVIDIA 610.62), 2026-11-07 from 23:24 to 23:29 Pacific time, one
 3840 x 2160 display at 59.941 Hz, with Sentinel's live route (its `docs/app/motion.md`: a probed build, scripted play
@@ -136,9 +202,8 @@ the control that differs from the GPU run in nothing but the drawing. One round,
   is the softer for it. At 150 % the two CPU-raster runs, one path in two builds, differ by 1.2 ms in their means, so one
   round does not separate the GPU from the CPU raster there.
 - **Tearing was not measured.** Desktop Duplication hands over whole frames the compositor composed, before they are
-  scanned out, so it cannot see a tear; nor can the frame log. Whether a full-screen GL window with a swap interval of 0
-  tears is for an eye or a camera, or for PresentMon, whose present mode says whether the window was composed or flipped
-  independently.
+  scanned out, so it cannot see a tear; nor can the frame log. PresentMon did, on 2026-11-09, and found it (the table
+  above in "Interval 1 in full screen, measured").
 
 ## Size, scale, full screen, another monitor
 
@@ -289,7 +354,7 @@ image needs `libegl-dev` (`.github/actions/cpp/action.yml`, `tools/setup-dev.sh`
    `GL_NONE` (OpenGL 4.6 core, 17.4.1 and 18.2.1), and binding a surface after does not change them. NVIDIA keeps to
    that, and until they were set every frame went nowhere and the window read back black; Mesa starts them at
    `GL_BACK` regardless.
-6. **Skia's context on the assembled interface, and a swap interval of 0**: the frame callback runs on the host loop's
+6. **Skia's context on the assembled interface, and a swap interval of 0** (full screen tears with it, as the "Linux" note above says; unchanged here until a Linux session has measured it): the frame callback runs on the host loop's
    16 ms timer, and a swap that waited for the blank would hold that loop, which every window on it shares.
 7. **The present** is the shared seam's: the views' surface copied over the window's framebuffer 0, wrapped bottom-up
    at the window surface's own size (`eglQuerySurface`, which follows the X window's even when the server has not yet

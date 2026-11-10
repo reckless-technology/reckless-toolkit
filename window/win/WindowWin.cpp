@@ -1412,7 +1412,8 @@ class WinSurface : public view::Host
             drawing_.why     = made.why;
             return false;
         }
-        gpu_             = std::move(made.presenter);
+        gpu_ = std::move(made.presenter);
+        gpu_->SetFullScreen(is_full_screen_);
         drawing_.drawing = Drawing::kGpu;
         drawing_.why     = DrawingFallback::kNone;
         return true;
@@ -1467,6 +1468,7 @@ class WinSurface : public view::Host
         rastered and handed to SetDIBitsToDevice exactly as it always was. Declared before `surface_`, which may be on
         it and so goes first. */
     std::unique_ptr<GpuPresenter> gpu_;
+    bool                          is_full_screen_{false}; ///< the app told the window it is full screen.
     sk_sp<SkSurface>              surface_; ///< Skia's surface the tree is drawn into: over the raster, or on the GPU.
     /** The back end the GPU was asked for with, to make it again with when it is lost; null until a product asks. */
     const GpuBackend     *gpu_backend_{nullptr};
@@ -1804,6 +1806,15 @@ class WinChildWindow final : public ChildWindow, public WinSurface
         ResizeRaster();
         SetWindowPos(hwnd_, nullptr, 0, 0, pixel_width_, pixel_height_, SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE);
         InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+
+    void SetFullScreen(bool is_full_screen) override
+    {
+        is_full_screen_ = is_full_screen; // for a GPU made later: MakeGpu tells it
+        if (gpu_)
+        {
+            gpu_->SetFullScreen(is_full_screen);
+        }
     }
 
     void SetFrameCallback(std::function<void()> frame) override

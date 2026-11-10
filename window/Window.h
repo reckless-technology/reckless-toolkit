@@ -80,6 +80,17 @@ class ChildWindow
         @param scale  window units per design pixel: 1 is the design size, 0.5 to 2 for a shell's range */
     virtual void SetScale(float scale) = 0;
 
+    /** Told by the app whenever its window enters or leaves full screen (RunApp does, from the window's own state), so
+        a window that presents on the GPU can swap in step with the display while nothing composes it, and without
+        waiting while the compositor does (docs/window/gpu-drawing.md, "Pacing, and the swap interval"). Nothing on a
+        window with no GPU presenter to tell, which is the default; Windows' WGL presenter is the only one that acts on
+        it so far.
+        @param is_full_screen  whether the app's window is full screen */
+    virtual void SetFullScreen(bool is_full_screen)
+    {
+        static_cast<void>(is_full_screen);
+    }
+
     /** Runs `frame` once a frame until replaced or the window goes, on whatever the window is paced by
         (SetFramePacing): the platform's own window timer unless a product has asked for the display's clock. The
         platform timer's rate is not the display's and is not promised - it is about sixty a second on macOS and

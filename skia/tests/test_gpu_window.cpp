@@ -24,6 +24,8 @@
 #include "include/gpu/ganesh/GrRecordingContext.h"
 
 #include "GpuDrawingBackend.h"
+#include "GpuSurfacePresenter.h"
+#include "GpuSwapInterval.h"
 #include "SkiaCanvas.h"
 #include "View.h"
 #include "Window.h"
@@ -627,6 +629,82 @@ TEST(GpuWindow, TheEnvironmentTurnsTheGpuOffAndTheWindowSaysSoAndDrawsOnTheCpuRa
     EXPECT_FALSE(frame.is_on_gpu) << "the views are drawn on the CPU raster";
     EXPECT_TRUE(frame.has_pixels_in_memory) << "whose pixels a view may write by hand";
     EXPECT_TRUE(AreTheKnownFrame(frame.canvas_pixels)) << TextOfPixels(frame.canvas_pixels);
+}
+
+namespace
+{
+/** A presenter with no GL behind it, to see what interval the shared half asks its back end for: every
+    SetSwapInterval is recorded, in the order made. */
+class RecordingPresenter final : public reckless::window::SkiaGpuPresenter
+{
+  public:
+    explicit RecordingPresenter(reckless::window::SwapIntervalRequest request) : SkiaGpuPresenter(nullptr, request)
+    {
+    }
+
+    /** What Present does before it swaps. */
+    void Apply()
+    {
+        ApplySwapInterval();
+    }
+
+    std::vector<int> intervals; ///< each interval set, in order.
+
+  private:
+    bool MakeCurrent() const noexcept override
+    {
+        return true;
+    }
+
+    sk_sp<SkSurface> BackBuffer(int, int) override
+    {
+        return nullptr;
+    }
+
+    void SwapBuffers() noexcept override
+    {
+    }
+
+    void SetSwapInterval(int interval) noexcept override
+    {
+        intervals.push_back(interval);
+    }
+};
+} // namespace
+
+TEST(GpuWindow, ThePresenterAsksForIntervalOneInFullScreenAndZeroWindowed)
+{
+    using reckless::window::SwapIntervalRequest;
+    RecordingPresenter presenter(SwapIntervalRequest::kAuto);
+    presenter.Apply();
+    EXPECT_TRUE(presenter.intervals.empty()) << "windowed is the 0 the context starts with: nothing to set";
+    presenter.SetFullScreen(true);
+    presenter.Apply();
+    presenter.Apply();
+    EXPECT_EQ(presenter.intervals, std::vector<int>({1})) << "set once, when full screen began";
+    presenter.SetFullScreen(false);
+    presenter.Apply();
+    EXPECT_EQ(presenter.intervals, std::vector<int>({1, 0})) << "and back when it ended";
+    presenter.SetFullScreen(false);
+    presenter.Apply();
+    EXPECT_EQ(presenter.intervals.size(), 2u) << "told the same again, nothing set again";
+}
+
+TEST(GpuWindow, TheEnvironmentOverridesTheIntervalWhateverTheWindowDoes)
+{
+    using reckless::window::SwapIntervalRequest;
+    RecordingPresenter always_one(SwapIntervalRequest::kEveryBlank);
+    always_one.Apply();
+    always_one.SetFullScreen(true);
+    always_one.Apply();
+    always_one.SetFullScreen(false);
+    always_one.Apply();
+    EXPECT_EQ(always_one.intervals, std::vector<int>({1})) << "1 windowed too, set once";
+
+    RecordingPresenter always_zero(SwapIntervalRequest::kNoWait);
+    always_zero.SetFullScreen(true);
+    always_zero.Apply();
+    EXPECT_TRUE(always_zero.intervals.empty()) << "0 in full screen, which the context already has";
 }
 
 TEST(GpuWindow, TheGpuAskedForWithNoBackEndIsAnsweredNotLinked)
