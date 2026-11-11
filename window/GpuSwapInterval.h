@@ -16,7 +16,10 @@ inline constexpr const char *kGpuSwapIntervalEnvironmentVariable = "RECKLESS_GPU
 /** What decides the swap interval. */
 enum class SwapIntervalRequest
 {
-    kAuto,      ///< 1 while the window is full screen, 0 while it is windowed (the default).
+    /// The default: 1 while the window is full screen, 0 while it is windowed, where the back end sets an interval
+    /// at all - WGL alone. EGL on Linux keeps 0 in both, and Metal's drawable is paced by the display link
+    /// (docs/window/gpu-drawing.md, "Pacing, and the swap interval").
+    kAuto,
     kNoWait,    ///< 0 always.
     kEveryBlank ///< 1 always.
 };

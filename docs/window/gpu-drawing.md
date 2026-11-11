@@ -89,7 +89,8 @@ never draw into one another's.
 
 ## Pacing, and the swap interval
 
-**The swap interval is 1 in full screen and 0 in a window** (Jonny's brief, 2026-11-09, on the measurement below). The
+**On Windows the swap interval is 1 in full screen and 0 in a window** (Jonny's brief, 2026-11-09, on the measurement
+below); Linux's EGL keeps 0 in both and macOS's Metal is paced by its display link ([Linux](#linux), below). The
 frame callback is already paced on the display's own clock ([frame-pacing.md](frame-pacing.md)): a waitable timer
 snapped to the compositor's vertical blank, with a lead the product chooses, on a thread of the window's own that posts
 each frame to the window.
@@ -169,6 +170,13 @@ callback on the display's own clock, which Linux now has from the X server's Pre
 ([frame-pacing.md](frame-pacing.md#what-this-measured-on-linux)): every frame one tick, its wakes 0.05 ms apart. A desktop
 that does unredirect a full-screen window could tear at 0, and is the case to measure before changing it. macOS's
 Metal drawable is paced by the display link and is not changed either.
+
+Measured again across a toggle (jonny-precision, 2026-11-10, both GPUs, Sentinel at one frame a refresh, each frame
+followed from its tick through `eglSwapBuffers`, the X server's copy and Muffin's composite to the blank Muffin's flip
+went out at): the swap returned in 0.4 to 0.6 ms windowed and full screen, flat in 50-frame blocks either side of the
+change, so no queue of swaps builds at 0. What set the latency was the compositor's own phase: Muffin composites about
+5 to 7 ms after each blank, and a frame whose copy lands before that is on the glass at the next blank, one after
+it a refresh later - tick to glass is the product's lead plus one refresh, whatever the interval.
 
 ### What it did live (2026-11-07, swap interval 0)
 
