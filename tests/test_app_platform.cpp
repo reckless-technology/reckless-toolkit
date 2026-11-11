@@ -442,6 +442,57 @@ TEST(AppPlatform, AWindowGoesFullScreenOverItsDisplayAndComesBackToItsOwnPlaceAn
 #endif
 }
 
+#if defined(_WIN32)
+// A window's place put back where it was read from, and the screens' areas in the same pixels: on Windows both are
+// the virtual desktop's physical pixels (the process is per-monitor DPI aware), the window rectangle's top left
+// against each monitor's work area. Skipped where the session has no monitor to enumerate - a runner that is a
+// service on a window station that shows nothing - and failed, as the window suites are, where a window is required.
+TEST(AppPlatform, AWindowsPositionReadAndPutBackLandsWhereItWasAndIsOnAScreenArea)
+{
+    const std::unique_ptr<reckless::app::AppPlatform> platform = PlatformOrNull();
+    REQUIRE_PLATFORM(platform);
+    const std::vector<reckless::gfx::RectI> areas = platform->ScreenAreas();
+    if (areas.empty())
+    {
+        if (reckless::test::WindowRequired())
+        {
+            FAIL() << "a window was promised, and the session has no monitor";
+        }
+        GTEST_SKIP() << "no monitor in this session (a service's window station)";
+    }
+    reckless::app::WindowOptions options;
+    options.title                                          = "Reckless Platform Test";
+    options.width                                          = 320;
+    options.height                                         = 200;
+    options.constrain                                      = [](reckless::gfx::PointF proposed) { return proposed; };
+    const std::unique_ptr<reckless::app::AppWindow> window = platform->OpenWindow(options);
+    ASSERT_NE(window, nullptr);
+    RunFor(*platform, 0.3);
+
+    const std::pair<int, int> place = window->Position();
+    const bool is_on_an_area = std::any_of(areas.begin(), areas.end(), [&place](const reckless::gfx::RectI &area) {
+        return place.first >= area.x() && place.first < area.x() + area.width() && place.second >= area.y() &&
+               place.second < area.y() + area.height();
+    });
+    EXPECT_TRUE(is_on_an_area) << "the window's top left " << place.first << "," << place.second
+                               << " is inside one of the screens' work areas";
+
+    EXPECT_TRUE(window->SetPosition(place.first, place.second));
+    EXPECT_EQ(window->Position(), place) << "read and put back, it lands where it was";
+    const auto hwnd = static_cast<HWND>(window->Handle());
+    RECT       frame{};
+    GetWindowRect(hwnd, &frame);
+    EXPECT_EQ(std::make_pair(static_cast<int>(frame.left), static_cast<int>(frame.top)), place)
+        << "Position is the window rectangle's top left, which is what SetPosition places";
+
+    const std::pair<int, int> moved{place.first + 24, place.second + 16};
+    EXPECT_TRUE(window->SetPosition(moved.first, moved.second));
+    EXPECT_EQ(window->Position(), moved);
+    EXPECT_TRUE(window->SetPosition(place.first, place.second));
+    EXPECT_EQ(window->Position(), place) << "and put back again";
+}
+#endif
+
 #if defined(__linux__)
 TEST(AppPlatform, WithNoDisplayThePlatformSaysItCannotTellTheLargestContentRatherThanEndingTheProcess)
 {
