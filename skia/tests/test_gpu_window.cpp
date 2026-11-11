@@ -23,6 +23,8 @@
 #include "include/gpu/ganesh/GrDirectContext.h"
 #include "include/gpu/ganesh/GrRecordingContext.h"
 
+#include "GpuPresenter.h"
+
 #include "GpuDrawingBackend.h"
 #include "GpuSurfacePresenter.h"
 #include "GpuSwapInterval.h"
@@ -1388,3 +1390,38 @@ TEST(GpuWindow, ThisSuiteLinksTheEglBackEndAndLoadsLibEgl)
 #endif
 }
 #endif
+
+// The interface's own default (window/GpuPresenter.h): a back end that takes no back buffer early is asked on every
+// frame and does nothing, so Windows and Linux are unchanged until each is measured and a product that calls it is
+// no worse off than one that does not. Needs no GPU: the presenter here is a stub.
+TEST(GpuPresenterDefault, APresenterThatTakesNoBackBufferEarlyIsAskedAndDoesNothing)
+{
+    class TakesNoneEarly final : public reckless::window::GpuPresenter
+    {
+      public:
+        sk_sp<SkSurface> SurfaceOfSize(int, int) override
+        {
+            return nullptr;
+        }
+
+        bool BeginFrame() override
+        {
+            return true;
+        }
+
+        bool Present() override
+        {
+            ++presents;
+            return true;
+        }
+
+        int presents = 0;
+    };
+
+    TakesNoneEarly presenter;
+    presenter.AcquireBackBuffer();
+    presenter.AcquireBackBuffer();
+    EXPECT_EQ(presenter.presents, 0) << "asking for one early is not a present";
+    EXPECT_TRUE(presenter.Present());
+    EXPECT_EQ(presenter.presents, 1) << "and the present takes its own back buffer, as it always did";
+}

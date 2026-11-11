@@ -385,6 +385,44 @@ is there at a lead of 0 too - a frame woken at the blank begins 0.43 ms after it
 frame missed nothing at any lead, but at 2 ms three paints in 589 finished after the blank they were woken for: a
 2 ms lead leaves too little for a half-millisecond wake with a millisecond's tail.
 
+### The back buffer is taken before the frame, not at the present
+
+**A lead moves when the frame wakes; this moves when it waits.** Acquiring a back buffer blocks while the display has
+none free, and on a display the frames saturate - full screen with one frame drawn on every refresh - that wait is
+most of a refresh. Taken at the present, where it used to be, it falls **between the product sampling its input and
+the picture reaching the glass**, and the player pays it as input lag. So the window asks the presenter for one
+**before it runs the frame callback** (`GpuPresenter::AcquireBackBuffer`, `window/EarlyBackBuffer.h`), and the same
+wait falls before the input is sampled instead.
+
+Measured on `jonny-macbook` (Apple M1 Pro, macOS 27), full screen with a frame on every refresh, 1,000 frames a run
+joined frame by frame against the product's own log, 2026-11-10:
+
+| | tick to glass, p50 | p99 | interval sd | late frames |
+|---|---|---|---|---|
+| **60 Hz panel**, as it was | 49.26 ms | 49.92 | 0.676 | 0 |
+| **60 Hz panel**, taken first | **33.26** | 34.47 | 0.659 | 0 |
+| **120 Hz panel**, as it was | 36.21 | 38.05 | 0.083 | 0 |
+| **120 Hz panel**, taken first | **32.42** | 34.81 | 0.697 | 2 |
+
+The 60 Hz panel's 33.27 ms is what the same window measures when it is **not** saturated (33.79 at one frame every
+other refresh), so the whole penalty is recovered; and nothing is given up for it - no buffer, and a spread that did
+not worsen. Two things it is not: it is not a lead, which the Mac does not apply at all (`WithoutLead`), and it is
+not the drawable count - keeping two rather than three took **16 ms off the 120 Hz panel and added 16 to the 60 Hz
+one**, which is why the pool is still three.
+
+**And it costs the ordinary case nothing measurable**, which took six runs to say rather than one. A window full
+screen on the 120 Hz panel at one frame every other refresh - what a player is in, where nothing ever waits for a
+drawable - read 17.17 ms before the change and 19.11 after it on the first pair, which looked like a regression of
+a quarter of a refresh. Three pairs run back to back from one build, the arms alternating, say otherwise: **17.22
+against 17.04, 17.25 against 17.11, and 19.97 against 15.75**, the taken-first arm never the worse of a pair. The
+baseline itself moves by 2.8 ms between runs, so on this machine **a difference under about 3 ms on that case is
+not resolvable by single runs**, and the first pair's 2 ms was the run and not the change.
+
+**macOS alone does this today.** The default on `GpuPresenter` does nothing, so Windows and Linux present exactly as
+they did; each wants the same measurement on its own presenter before its window asks. The figures above are one
+machine, idle and on mains, one run per configuration: late-frame counts of 0 to 2 in a thousand are not a
+robustness measurement, and nothing here says what this does on a busy machine.
+
 ## Several windows on one thread
 
 A plug-in's editors all live on the host's one UI thread, so a thread with a dozen panels on it is an ordinary thing to

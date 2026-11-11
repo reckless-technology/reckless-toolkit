@@ -22,6 +22,7 @@ SkiaGpuPresenter::SkiaGpuPresenter(sk_sp<GrDirectContext> context, SwapIntervalR
 
 void SkiaGpuPresenter::SetFullScreen(bool is_full_screen)
 {
+    early_back_buffer_.Release();     // the surface is remade either way; a buffer of the old one cannot be shown
     is_full_screen_ = is_full_screen; // applied at the next Present, where the context is current
 }
 
@@ -51,6 +52,7 @@ bool SkiaGpuPresenter::IsLost() const noexcept
 
 void SkiaGpuPresenter::ShutDownSkia(bool is_current) noexcept
 {
+    early_back_buffer_.Release(); // before the context goes, so the back end has its drawable back
     offscreen_.reset();
     if (context_)
     {
@@ -72,6 +74,7 @@ sk_sp<SkSurface> SkiaGpuPresenter::SurfaceOfSize(int width, int height)
     if (!offscreen_ || offscreen_->width() != width || offscreen_->height() != height)
     {
         offscreen_.reset();
+        early_back_buffer_.Release(); // one taken at the old size can no longer be presented
         // RGBA, as the GPU holds it, premultiplied as the CPU raster is; drawn top-down, as the views lay it out.
         offscreen_ =
             SkSurfaces::RenderTarget(context_.get(), skgpu::Budgeted::kNo,
@@ -86,6 +89,16 @@ sk_sp<SkSurface> SkiaGpuPresenter::SurfaceOfSize(int width, int height)
     return offscreen_;
 }
 
+void SkiaGpuPresenter::AcquireBackBuffer()
+{
+    if (!offscreen_ || !MakeCurrent() || context_->abandoned())
+    {
+        return;
+    }
+    const gfx::PointI size{offscreen_->width(), offscreen_->height()};
+    early_back_buffer_.TakeNow(size, [this, size] { return BackBuffer(size.x, size.y); });
+}
+
 bool SkiaGpuPresenter::BeginFrame()
 {
     return MakeCurrent() && !context_->abandoned();
@@ -95,9 +108,15 @@ bool SkiaGpuPresenter::Present()
 {
     if (!offscreen_ || !MakeCurrent() || context_->abandoned())
     {
+        early_back_buffer_.Release();
         return !IsLost();
     }
-    const sk_sp<SkSurface> back_buffer = BackBuffer(offscreen_->width(), offscreen_->height());
+    const gfx::PointI size{offscreen_->width(), offscreen_->height()};
+    sk_sp<SkSurface>  back_buffer = early_back_buffer_.ForPresent(size);
+    if (!back_buffer)
+    {
+        back_buffer = BackBuffer(size.x, size.y); // none taken early, or one of another size let go
+    }
     if (!back_buffer)
     {
         return !IsLost();

@@ -5,10 +5,12 @@
 #include <gtest/gtest.h>
 
 #include <functional>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
 
+#include "EarlyBackBuffer.h"
 #include "GpuDrawing.h"
 #include "GpuSwapInterval.h"
 #include "View.h"
@@ -231,4 +233,84 @@ TEST(GpuDrawing, ASoftwareGlIsNamedByItsRenderer)
     EXPECT_FALSE(IsSoftwareRenderer("AMD Radeon Pro 5500M OpenGL Engine"));
     EXPECT_FALSE(IsSoftwareRenderer(""));
     EXPECT_FALSE(IsSoftwareRenderer(nullptr));
+}
+
+// ---- The back buffer taken before the frame (window/EarlyBackBuffer.h) -------------------------------------------
+//
+// The rules for holding one between the taking and the present, which need no GPU: a frame that never presented
+// keeps its buffer rather than taking a second, a resize lets one go because it can no longer be shown, and a
+// present empties the holder either way. A std::shared_ptr<int> stands in for a back end's surface.
+
+namespace
+{
+using StandIn = std::shared_ptr<int>;
+using Held    = reckless::window::EarlyBackBuffer<StandIn>;
+using reckless::gfx::PointI;
+
+/** A surface the stand-in can tell apart. @param which what to call it @return the stand-in */
+StandIn Made(int which)
+{
+    return std::make_shared<int>(which);
+}
+} // namespace
+
+TEST(EarlyBackBuffer, HoldsNothingUntilOneIsTakenAndSaysTheSizeItWasTakenAt)
+{
+    Held held;
+    EXPECT_FALSE(held.holds());
+    EXPECT_EQ(held.size(), (PointI{0, 0}));
+    held.TakeNow({640, 480}, [] { return Made(1); });
+    EXPECT_TRUE(held.holds());
+    EXPECT_EQ(held.size(), (PointI{640, 480}));
+}
+
+TEST(EarlyBackBuffer, AFrameThatNeverPresentedKeepsItsBufferRatherThanTakingASecond)
+{
+    Held held;
+    int  taken = 0;
+    held.TakeNow({640, 480}, [&] {
+        ++taken;
+        return Made(1);
+    });
+    held.TakeNow({640, 480}, [&] {
+        ++taken;
+        return Made(2);
+    });
+    EXPECT_EQ(taken, 1) << "two of the pool's three would be held for one frame";
+    EXPECT_EQ(*held.ForPresent({640, 480}), 1) << "and it is the one already taken that is presented";
+}
+
+TEST(EarlyBackBuffer, ASizeChangeLetsTheOldOneGoBecauseItCannotBeShown)
+{
+    Held held;
+    held.TakeNow({640, 480}, [] { return Made(1); });
+    const StandIn watched = held.ForPresent({640, 480});
+    held.TakeNow({640, 480}, [] { return Made(1); });
+    held.TakeNow({800, 600}, [] { return Made(2); }); // a resize between one frame and the next
+    EXPECT_EQ(held.size(), (PointI{800, 600}));
+    EXPECT_EQ(*held.ForPresent({800, 600}), 2);
+}
+
+TEST(EarlyBackBuffer, APresentEmptiesTheHolderWhetherOrNotTheSizeStillFits)
+{
+    Held held;
+    held.TakeNow({640, 480}, [] { return Made(1); });
+    EXPECT_EQ(*held.ForPresent({640, 480}), 1);
+    EXPECT_FALSE(held.holds()) << "presented, so the holder is empty";
+
+    held.TakeNow({640, 480}, [] { return Made(2); });
+    EXPECT_EQ(held.ForPresent({800, 600}), nullptr) << "a resize since: nothing to present, and the caller takes one";
+    EXPECT_FALSE(held.holds()) << "and the one that cannot be shown is let go rather than kept";
+}
+
+TEST(EarlyBackBuffer, ReleaseGivesTheBufferBackAndATakeThatAnswersNothingHoldsNothing)
+{
+    Held held;
+    held.TakeNow({640, 480}, [] { return Made(1); });
+    held.Release();
+    EXPECT_FALSE(held.holds());
+    EXPECT_EQ(held.size(), (PointI{0, 0}));
+    held.TakeNow({640, 480}, [] { return StandIn{}; }); // the back end had none free within its own timeout
+    EXPECT_FALSE(held.holds()) << "nothing was taken, so nothing is held and no size is claimed";
+    EXPECT_EQ(held.size(), (PointI{0, 0}));
 }
