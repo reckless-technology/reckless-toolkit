@@ -44,6 +44,15 @@ class GpuPresenter
         @return  true when the frame was presented and the GPU is still there */
     virtual bool Present() = 0;
 
+    /** The back buffer taken now, before the product's frame runs, where a back end can: acquiring one blocks while
+        the display has none free, and taken at the present that wait falls between the product sampling its input
+        and the picture reaching the glass. **Taken here it falls before the input is sampled instead**, which is
+        worth a refresh of input lag on a display the frames saturate (EarlyBackBuffer.h,
+        docs/window/frame-pacing.md). Doing nothing is correct: the present takes one as it always did. */
+    virtual void AcquireBackBuffer()
+    {
+    }
+
     /** Told whenever the window's full screen changes, and once the window is made if it is full screen already: a
         back end with a swap interval presents with 1 while the window is full screen, where the compositor would
         otherwise leave a tear, and 0 while it is windowed, where the compositor has already composed the frame

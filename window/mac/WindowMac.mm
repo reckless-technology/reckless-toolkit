@@ -1422,6 +1422,13 @@ class MacChildWindow final : public ChildWindow, public MacSurface
         frames_.Advance(tick_seconds);
         // Back onto the display's own grid, so a period that wanders a little is followed rather than drifted from.
         frames_.MoveNextFrameTo(OnTheRefreshGrid(frames_.next_frame_seconds(), tick_seconds, period));
+        // **The back buffer before the frame, not at the present.** Taking one blocks while the display has none
+        // free, and on a display the frames saturate that is most of a refresh: taken here the wait falls before
+        // the product samples its input rather than between the sample and the glass (EarlyBackBuffer.h).
+        if (gpu_)
+        {
+            gpu_->AcquireBackBuffer();
+        }
         if (frame_)
         {
             frame_();

@@ -10,6 +10,7 @@
 #include "include/core/SkSurface.h"
 #include "include/gpu/ganesh/GrDirectContext.h"
 
+#include "EarlyBackBuffer.h"
 #include "GpuPresenter.h"
 #include "GpuSwapInterval.h"
 
@@ -24,7 +25,12 @@ class SkiaGpuPresenter : public GpuPresenter
     sk_sp<SkSurface> SurfaceOfSize(int width, int height) final;
     bool             BeginFrame() final;
     bool             Present() final;
+    void             AcquireBackBuffer() final;
     void             SetFullScreen(bool is_full_screen) final;
+
+  private:
+    /// The back buffer taken before the frame was drawn, held until that frame is presented (EarlyBackBuffer.h).
+    EarlyBackBuffer<sk_sp<SkSurface>> early_back_buffer_;
 
   protected:
     /** @param context  Skia's GPU context on the platform's context; not null
