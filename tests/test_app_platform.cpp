@@ -20,6 +20,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include "AppPlatform.h"
@@ -34,6 +35,20 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#endif
+
+#if defined(__linux__)
+#include <dlfcn.h>
+// Xlib last: its macros (None, Bool, Status, True) would reach into the headers above.
+#include <X11/Xatom.h>
+#include <X11/Xlib.h>
+#if __has_include(<X11/extensions/Xrandr.h>)
+#include <X11/extensions/Xrandr.h>
+/// Whether this build can set RandR's monitors up for the screens' test: RandR's header was there to build against.
+#define RECKLESS_TEST_MONITORS 1
+#else
+#define RECKLESS_TEST_MONITORS 0
+#endif
 #endif
 
 namespace
@@ -446,10 +461,151 @@ TEST(AppPlatform, WithNoDisplayThePlatformSaysItCannotTellTheLargestContentRathe
         options.width  = 320;
         options.height = 200;
         EXPECT_EQ(platform->LargestContent(options), (reckless::gfx::PointI{0, 0}));
+        EXPECT_TRUE(platform->ScreenAreas().empty()) << "no display, so no screens to name";
     }
     if (had)
     {
         setenv("DISPLAY", kept.c_str(), 1);
     }
+}
+
+namespace
+{
+/** Whether a window manager runs on `display`: one that says it is there (_NET_SUPPORTING_WM_CHECK on the root).
+    @param display  a connection of the test's own
+    @return         true on a person's desktop; false on xvfb-run's bare server */
+bool HasWindowManager(Display *display)
+{
+    Atom           type   = 0;
+    int            format = 0;
+    unsigned long  items  = 0;
+    unsigned long  after  = 0;
+    unsigned char *data   = nullptr;
+    const bool     has =
+        XGetWindowProperty(display, DefaultRootWindow(display), XInternAtom(display, "_NET_SUPPORTING_WM_CHECK", False),
+                           0, 1, False, XA_WINDOW, &type, &format, &items, &after, &data) == Success &&
+        data != nullptr && items == 1;
+    if (data != nullptr)
+    {
+        XFree(data);
+    }
+    return has;
+}
+} // namespace
+
+TEST(AppPlatform, AWindowPutBackWhereItStandsStaysAndOnePutElsewhereGoesThere)
+{
+    // SetPosition is Position's exact inverse - on Linux the client area's top left - so a place read and put back is
+    // where the window stood, under a window manager that draws a title bar over it as under none, and a place inside
+    // the main display's area is where the window goes, once the window manager has placed it.
+    const std::unique_ptr<reckless::app::AppPlatform> platform = PlatformOrNull();
+    REQUIRE_PLATFORM(platform);
+    reckless::app::WindowOptions options;
+    options.title                                          = "Reckless Platform Test";
+    options.width                                          = 320;
+    options.height                                         = 200;
+    const std::unique_ptr<reckless::app::AppWindow> window = platform->OpenWindow(options);
+    ASSERT_NE(window, nullptr);
+    RunFor(*platform, 0.5); // shown, and placed by any window manager
+    const std::pair<int, int> stood = window->Position();
+    ASSERT_TRUE(window->SetPosition(stood.first, stood.second));
+    RunFor(*platform, 0.5);
+    EXPECT_EQ(window->Position(), stood) << "a place read and put back is where it was";
+
+    const std::vector<reckless::gfx::RectI> areas = platform->ScreenAreas();
+    ASSERT_FALSE(areas.empty()) << "a display has at least one screen";
+    const reckless::gfx::RectI main_area = areas.front();
+    const std::pair<int, int>  target{main_area.x() + main_area.width() / 4, main_area.y() + main_area.height() / 4};
+    ASSERT_NE(target, stood) << "a place to go that is not where the window stands";
+    ASSERT_TRUE(window->SetPosition(target.first, target.second));
+    EXPECT_TRUE(RunUntil(*platform, [&window, target] { return window->Position() == target; }))
+        << "where it went: " << window->Position().first << ", " << window->Position().second;
+}
+
+TEST(AppPlatform, TheScreensAreRandrsMonitorsThePrimaryFirstEachHeldToWhatTheWindowManagerLeaves)
+{
+    const std::unique_ptr<reckless::app::AppPlatform> platform = PlatformOrNull();
+    REQUIRE_PLATFORM(platform);
+    Display *const display = XOpenDisplay(nullptr);
+    ASSERT_NE(display, nullptr);
+    const ::Window                          root = DefaultRootWindow(display);
+    const reckless::gfx::RectI              whole{0, 0, DisplayWidth(display, DefaultScreen(display)),
+                                                  DisplayHeight(display, DefaultScreen(display))};
+    const std::vector<reckless::gfx::RectI> areas = platform->ScreenAreas();
+    ASSERT_FALSE(areas.empty()) << "a server with RandR 1.5 names its monitors";
+    if (HasWindowManager(display))
+    {
+        // A person's desktop, whose monitors and panels are the person's: only read. Each area is a part of the root.
+        for (const reckless::gfx::RectI &area : areas)
+        {
+            EXPECT_FALSE(area.IsEmpty());
+            EXPECT_TRUE(whole.Contains(area))
+                << area.x() << ", " << area.y() << " " << area.width() << " x " << area.height();
+        }
+        XCloseDisplay(display);
+        return;
+    }
+    // xvfb-run's bare server: one monitor over the whole screen, and no window manager to take a panel off it.
+    EXPECT_EQ(areas, (std::vector<reckless::gfx::RectI>{whole}));
+#if RECKLESS_TEST_MONITORS
+    // Two monitors set up within it, the left the primary, as two panels side by side are, and a window manager's
+    // word on what its panels leave said on the root as one would say it: the left display's own work area, as Mutter
+    // and Muffin publish one display by display, and the desktop's one, 40 pixels off the bottom. A monitor set up
+    // lasts as long as the connection that set it up, so all of it goes with this connection at the end.
+    void *const library = dlopen("libXrandr.so.2", RTLD_NOW | RTLD_LOCAL);
+    const auto  set_monitor =
+        reinterpret_cast<decltype(&XRRSetMonitor)>(library != nullptr ? dlsym(library, "XRRSetMonitor") : nullptr);
+    if (set_monitor == nullptr)
+    {
+        XCloseDisplay(display);
+        GTEST_SKIP() << "no libXrandr to set monitors up with";
+    }
+    const int                  half = whole.width() / 2;
+    const reckless::gfx::RectI left{0, 0, half, whole.height()};
+    const reckless::gfx::RectI right{half, 0, whole.width() - half, whole.height()};
+    for (const auto &[name, area, is_primary] :
+         {std::tuple{"RecklessTestLeft", left, true}, std::tuple{"RecklessTestRight", right, false}})
+    {
+        XRRMonitorInfo monitor{};
+        monitor.name    = XInternAtom(display, name, False);
+        monitor.primary = is_primary ? True : False;
+        monitor.x       = area.x();
+        monitor.y       = area.y();
+        monitor.width   = area.width();
+        monitor.height  = area.height();
+        monitor.mwidth  = area.width() / 4; // a millimetre a monitor must have, at about 100 dpi
+        monitor.mheight = area.height() / 4;
+        set_monitor(display, root, &monitor);
+    }
+    XSync(display, False);
+    std::vector<reckless::gfx::RectI> named = platform->ScreenAreas();
+    ASSERT_EQ(named.size(), 3u) << "the two set up and the screen's own";
+    EXPECT_EQ(named.front(), left) << "the primary first";
+    EXPECT_NE(std::find(named.begin(), named.end(), right), named.end());
+    EXPECT_NE(std::find(named.begin(), named.end(), whole), named.end());
+
+    const reckless::gfx::RectI left_work{0, 0, half, whole.height() - 100};
+    const reckless::gfx::RectI desktop_work{0, 0, whole.width(), whole.height() - 40};
+    const auto                 say = [display, root](const char *name, reckless::gfx::RectI area) {
+        const long values[4] = {area.x(), area.y(), area.width(), area.height()};
+        XChangeProperty(display, root, XInternAtom(display, name, False), XA_CARDINAL, 32, PropModeReplace,
+                        reinterpret_cast<const unsigned char *>(values), 4);
+    };
+    say("_GTK_WORKAREAS_D0", left_work);
+    say("_NET_WORKAREA", desktop_work);
+    XSync(display, False);
+    named = platform->ScreenAreas();
+    XDeleteProperty(display, root, XInternAtom(display, "_GTK_WORKAREAS_D0", False));
+    XDeleteProperty(display, root, XInternAtom(display, "_NET_WORKAREA", False));
+    XCloseDisplay(display); // and the monitors with it
+    ASSERT_EQ(named.size(), 3u);
+    EXPECT_EQ(named.front(), left_work) << "the left display's own work area, which only it lies wholly inside";
+    EXPECT_NE(std::find(named.begin(), named.end(), right.Intersection(desktop_work)), named.end())
+        << "the right display has none of its own: the part of the desktop's work area on it";
+    EXPECT_NE(std::find(named.begin(), named.end(), desktop_work), named.end())
+        << "and the screen's own monitor the same, not the left display's area that lies inside it";
+#else
+    XCloseDisplay(display);
+#endif
 }
 #endif

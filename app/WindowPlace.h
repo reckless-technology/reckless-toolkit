@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 #include <span>
+#include <vector>
 
 #include "Geometry.h"
 
@@ -176,5 +177,52 @@ inline gfx::RectI CentredOver(gfx::RectI owner, gfx::PointI size, std::span<cons
     const gfx::RectI  frame{owner.CentreX() - size.x / 2, owner.CentreY() - size.y / 2, size.x, size.y};
     const gfx::RectI *area = AreaFor(owner, areas);
     return area != nullptr ? MovedOnto(frame, area->Reduced(kInset)) : frame;
+}
+
+/** Each display's usable area - what the panels and docks leave of it - from what a desktop that names its displays
+    separately from its work areas says, as X11's does: the displays' rectangles, any work areas the window manager
+    gives display by display (a Mutter-line one's _GTK_WORKAREAS), and the one work area it gives for the whole desktop
+    (_NET_WORKAREA). A per-display work area belongs to the smallest display it lies wholly inside, and a display
+    takes the largest of its own; with none, the part of it the desktop's work area covers, which is exact where every
+   panel is on an edge of the desktop's bounding box and too small on the display a panel is not on where it is not;
+   with neither, all of it, as with no window manager.
+    @param displays            the displays' rectangles, in one space with y down, in the order to answer them in
+    @param display_work_areas  the window manager's work areas display by display, in any order; empty for none
+    @param desktop_work_area   the window manager's work area for the whole desktop; empty for none
+    @return                    each display's usable area, one per display, in the displays' order */
+inline std::vector<gfx::RectI> UsableAreas(std::span<const gfx::RectI> displays,
+                                           std::span<const gfx::RectI> display_work_areas, gfx::RectI desktop_work_area)
+{
+    const auto size = [](gfx::RectI rectangle) {
+        return static_cast<std::int64_t>(rectangle.width()) * static_cast<std::int64_t>(rectangle.height());
+    };
+    // Each work area to the smallest display it lies inside: a display that covers others, as RandR's monitor for a
+    // whole screen covers two set up within it, takes none of theirs.
+    std::vector<const gfx::RectI *> own(displays.size(), nullptr);
+    for (const gfx::RectI &area : display_work_areas)
+    {
+        std::size_t owner = displays.size();
+        for (std::size_t index = 0; index < displays.size(); ++index)
+        {
+            if (!area.IsEmpty() && displays[index].Contains(area) &&
+                (owner == displays.size() || size(displays[index]) < size(displays[owner])))
+            {
+                owner = index;
+            }
+        }
+        if (owner < displays.size() && (own[owner] == nullptr || size(area) > size(*own[owner])))
+        {
+            own[owner] = &area;
+        }
+    }
+    std::vector<gfx::RectI> usable;
+    usable.reserve(displays.size());
+    for (std::size_t index = 0; index < displays.size(); ++index)
+    {
+        const gfx::RectI covered =
+            desktop_work_area.IsEmpty() ? gfx::RectI{} : displays[index].Intersection(desktop_work_area);
+        usable.push_back(own[index] != nullptr ? *own[index] : (covered.IsEmpty() ? displays[index] : covered));
+    }
+    return usable;
 }
 } // namespace reckless::app

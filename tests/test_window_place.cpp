@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <vector>
 
 #include "WindowPlace.h"
 
@@ -13,6 +14,7 @@ namespace
 using reckless::app::DesignWithinPixels;
 using reckless::app::FittedDesignContent;
 using reckless::app::PixelsOfDesign;
+using reckless::app::UsableAreas;
 using reckless::gfx::PointI;
 using reckless::gfx::RectI;
 
@@ -95,4 +97,54 @@ TEST(WindowPlace, AKeptSizeThatDoesNotFitIsTheMostWhosePixelsStandOnTheArea)
 TEST(WindowPlace, AFittedSideIsNeverLessThanOne)
 {
     EXPECT_EQ(FittedDesignContent({885, 615}, kDecoration, RectI{0, 0, 10, 10}, 1.25f), (PointI{1, 1}));
+}
+
+TEST(WindowPlace, ADisplayTakesTheWorkAreaTheWindowManagerGivesItAloneWhereThereIsOne)
+{
+    // Two displays side by side, the right one taller, and a panel along the bottom of the left one only. A window
+    // manager of Mutter's line says so display by display, in an order of its own; the desktop's one work area has to
+    // take the panel's height off the whole desktop's bottom, which leaves the right display short.
+    const std::vector<RectI> displays{{0, 0, 1920, 1080}, {1920, 0, 2560, 1440}};
+    const std::vector<RectI> display_work_areas{{1920, 0, 2560, 1440}, {0, 0, 1920, 1040}};
+    const RectI              desktop_work_area{0, 0, 4480, 1040};
+    EXPECT_EQ(UsableAreas(displays, display_work_areas, desktop_work_area),
+              (std::vector<RectI>{{0, 0, 1920, 1040}, {1920, 0, 2560, 1440}}))
+        << "each display's own, matched by where it lies, in the displays' order";
+}
+
+TEST(WindowPlace, WithNoneDisplayByDisplayADisplayIsThePartOfTheDesktopsWorkAreaOnIt)
+{
+    const std::vector<RectI> displays{{0, 0, 1920, 1080}, {1920, 0, 1920, 1080}};
+    EXPECT_EQ(UsableAreas(displays, {}, RectI{0, 32, 3840, 1048}),
+              (std::vector<RectI>{{0, 32, 1920, 1048}, {1920, 32, 1920, 1048}}))
+        << "a panel across the top of both";
+    // A work area that misses a display altogether - stale, or a desktop larger than its displays - leaves it whole
+    // rather than empty, since an empty area places nothing.
+    EXPECT_EQ(UsableAreas(displays, {}, RectI{0, 0, 1920, 1080}),
+              (std::vector<RectI>{{0, 0, 1920, 1080}, {1920, 0, 1920, 1080}}));
+}
+
+TEST(WindowPlace, WithNoWindowManagerEveryDisplayIsUsableWhole)
+{
+    const std::vector<RectI> displays{{0, 0, 640, 1024}, {640, 0, 640, 1024}};
+    EXPECT_EQ(UsableAreas(displays, {}, RectI{}), displays);
+    EXPECT_TRUE(UsableAreas({}, {}, RectI{}).empty()) << "no displays, no areas";
+}
+
+TEST(WindowPlace, AWorkAreaBelongsToTheSmallestDisplayItLiesInside)
+{
+    // A display that covers two others, as RandR's monitor for a whole screen does beside two set up within it, takes
+    // its own area, not a smaller display's that also lies inside it; and a work area lying across two displays
+    // belongs to the one that holds both.
+    const std::vector<RectI> displays{{0, 0, 640, 1024}, {640, 0, 640, 1024}, {0, 0, 1280, 1024}};
+    const std::vector<RectI> display_work_areas{{0, 0, 640, 1000}, {0, 0, 1280, 1000}, {600, 0, 100, 100}};
+    EXPECT_EQ(UsableAreas(displays, display_work_areas, RectI{}),
+              (std::vector<RectI>{{0, 0, 640, 1000}, {640, 0, 640, 1024}, {0, 0, 1280, 1000}}));
+}
+
+TEST(WindowPlace, ADisplayOverOthersWithNoWorkAreaOfItsOwnIsNotGivenTheirs)
+{
+    const std::vector<RectI> displays{{0, 0, 640, 1024}, {640, 0, 640, 1024}, {0, 0, 1280, 1024}};
+    EXPECT_EQ(UsableAreas(displays, std::vector<RectI>{{0, 0, 640, 1000}}, RectI{}),
+              (std::vector<RectI>{{0, 0, 640, 1000}, {640, 0, 640, 1024}, {0, 0, 1280, 1024}}));
 }
