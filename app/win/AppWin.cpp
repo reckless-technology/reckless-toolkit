@@ -334,16 +334,19 @@ BOOL CALLBACK AddWorkArea(HMONITOR monitor, HDC, LPRECT, LPARAM areas)
     info.cbSize = sizeof(info);
     if (GetMonitorInfoW(monitor, &info))
     {
-        const RECT &r = info.rcWork;
-        reinterpret_cast<std::vector<gfx::RectI> *>(areas)->push_back(
-            {static_cast<int>(r.left), static_cast<int>(r.top), static_cast<int>(r.right - r.left),
-             static_cast<int>(r.bottom - r.top)});
+        const RECT      &r          = info.rcWork;
+        auto            &list       = *reinterpret_cast<std::vector<gfx::RectI> *>(areas);
+        const bool       is_primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0;
+        const gfx::RectI area{static_cast<int>(r.left), static_cast<int>(r.top), static_cast<int>(r.right - r.left),
+                              static_cast<int>(r.bottom - r.top)};
+        list.insert(is_primary ? list.begin() : list.end(), area); // the primary monitor's first
     }
     return TRUE;
 }
 
 /** The work area of every monitor.
-    @return the work areas, in screen pixels, in the order the system enumerates the monitors */
+    @return the work areas, in screen pixels, the primary monitor's first and the rest in the order the system
+            enumerates them */
 std::vector<gfx::RectI> WorkAreas()
 {
     std::vector<gfx::RectI> areas;
@@ -558,6 +561,34 @@ class WinWindow final : public AppWindow
         RECT r{};
         GetWindowRect(hwnd_, &r);
         return {static_cast<int>(r.left), static_cast<int>(r.top)};
+    }
+
+    /** The window rectangle's top left put where `Position` reads it from, so a position read and put back lands where
+        it was. Both are in screen pixels of the virtual desktop: the process being per-monitor DPI aware
+        (BecomeDpiAware), `GetWindowRect`, `SetWindowPos` and every monitor's rectangle (ScreenAreas) are in the same
+        physical pixels, whatever a monitor's scaling. The size is left alone, so a window put on a monitor of
+        another DPI is sized for it by WM_DPICHANGED, which may move its top left to where Windows suggests: the
+        position is put again after, so the window ends where it was asked to. A full-screen or minimised window is
+        left alone: its place is the one it comes back to.
+        @param x  the left of the window rectangle, in screen pixels
+        @param y  the top of the window rectangle, in screen pixels
+        @return   true where the window was placed */
+    bool SetPosition(int x, int y) override
+    {
+        if (IsIconic(hwnd_) || is_full_screen_)
+        {
+            return false;
+        }
+        constexpr UINT flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
+        if (!SetWindowPos(hwnd_, nullptr, x, y, 0, 0, flags))
+        {
+            return false;
+        }
+        if (Position() != std::pair<int, int>{x, y}) // a change of DPI moved it to where Windows suggested
+        {
+            SetWindowPos(hwnd_, nullptr, x, y, 0, 0, flags);
+        }
+        return true;
     }
 
     void BringToFront() override
@@ -1128,6 +1159,14 @@ class WinPlatform final : public AppPlatform
             // Under the queue's lock, so never once Close has returned: the window outlives every wake.
             posts_->SetWake([window = messages_] { PostMessageW(window, kPosted, 0, 0); });
         }
+    }
+
+    /** Every monitor's work area - what the task bar and docked toolbars leave of it - in the screen pixels
+        `Position` is in, the primary monitor's first.
+        @return  the work areas, in screen pixels */
+    std::vector<gfx::RectI> ScreenAreas() const override
+    {
+        return WorkAreas();
     }
 
     /** Close the posts' queue, kill every timer and destroy the message-only window the app's timers and calls ride
