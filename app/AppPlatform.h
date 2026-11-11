@@ -272,8 +272,9 @@ class AppPlatform
 
     /** Every display's usable area - what a menu bar, a taskbar or a dock leaves of it - y down from the top of the
         main display, in the platform's units, **the main display's first**. A platform that cannot enumerate its
-        displays answers with none, and a caller that wanted to choose one must then leave the window where it is:
-        Linux's X11 window layer answers none until it is taught RandR.
+        displays answers with none, and a caller that wanted to choose one must then leave the window where it is.
+        On Linux the space is X's root window, whose top left is the main display's where that display is the top left
+        one, and the areas are RandR's monitors held to what the window manager says its panels leave.
         @return  the areas, or none where the platform cannot say */
     virtual std::vector<gfx::RectI> ScreenAreas() const
     {

@@ -143,3 +143,37 @@ screen there is.
 had, to the pixel); Linux's runs the same suite under `xvfb-run` in CI, which has no window manager, so it is the
 fallback that CI proves and the window manager's path that a desktop does; a Mac's is AppKit's animation into a space,
 which the suite does not run, a machine's spaces being the person's.
+
+## Placing a window, and naming the screens
+
+`AppWindow::SetPosition` puts a window's top left where it is asked, the exact inverse of `AppWindow::Position` on the
+same platform, so a place read and put back is where the window stood. `AppPlatform::ScreenAreas` names every display's
+usable area - what its panels, docks and bars leave - the main display's first. Together they move a window to another
+display: a point inside that display's area places it there. A platform that cannot do either answers false and none,
+and a caller must then leave the window where it is.
+
+| Platform | Placed | The screens |
+|---|---|---|
+| macOS | the frame's top left (`setFrameOrigin:`, against Cocoa's y-up); refused while full screen or minimised | each `NSScreen`'s `visibleFrame`, y down, the main screen's first |
+| Linux | the **client area's** top left, as `Position` reads it (`XTranslateCoordinates`): the size hints given the place as an asked one (`USPosition`) with static gravity, then `XMoveWindow`; refused while full screen or minimised (`WM_STATE` iconic) | RandR's monitors (`XRRGetMonitors`, RandR 1.5), the primary first, each held to what the window manager says its panels leave of it |
+
+**What a window manager says on Linux.** X knows the monitors; only the window manager knows the panels. EWMH's
+`_NET_WORKAREA` is one rectangle for the whole desktop, which is exact where every panel sits on an edge of the
+desktop's bounding box, and too small for a display that has no panel where another display's panel sits. So a
+window manager's work areas display by display come first where it publishes them: Mutter and Muffin (GNOME's and
+Cinnamon's) publish `_GTK_WORKAREAS_D<desktop>`, each area belonging to the smallest display it lies inside
+(`UsableAreas` in [WindowPlace.h](../../app/WindowPlace.h)). A display with none of its own takes the part of
+`_NET_WORKAREA` on it, and with no window manager at all, as under `xvfb-run`, all of it. libXrandr is opened by name,
+as the display clock opens it, so no product's link line changes; a server without RandR 1.5 names no screens.
+
+**A move is asked, not made.** A window manager has the last word on where a window goes, and may keep it on its work
+area or move it on; `SetPosition`'s true says the move was asked, and `Position` says where the window went once the
+window manager has placed it. Static gravity is what makes the point the client area's under a window manager that
+draws a title bar over the window; Muffin honours it (Cinnamon 6.6 on jonny-precision: a window at 800, 440 put back
+read 800, 440, and one put at 480, 260 read 480, 260), as a window manager following ICCCM does.
+
+**What the suites prove.** The rules that pick a display's area are held without a display (`tests/test_window_place.cpp`).
+On Linux the platform suite (`tests/test_app_platform.cpp`) puts a window back where it stands and moves it, and under
+`xvfb-run`, which has no window manager, sets two RandR monitors up within the screen with a panel's work areas on the
+root, and holds the order and each display's area; on a person's desktop it only reads them, the monitors and panels
+being the person's. A move between two real panels wants a second screen, and is measured rather than asserted.
