@@ -316,6 +316,18 @@ class LinuxConnection
         return clock_->Start(window, request);
     }
 
+    /** The display's clock stopped where it paces `window`, so that Present's selection on it is freed while the
+        window is still there: the clock is the connection's and outlives the window by a step, and freed after the
+        window's destruction its selection was a BadWindow at every close of a window on the display's clock.
+        @param window  the window about to be destroyed */
+    void StopClockOn(::Window window)
+    {
+        if (clock_ && clock_->window() == window)
+        {
+            clock_->Stop();
+        }
+    }
+
     /** What the frame callback is paced on now: the display's clock's state where it was asked for, which says
         where the display under the window has since stopped being one to divide, and otherwise the answer
         SetFramePacing gave.
@@ -942,6 +954,7 @@ class LinuxSurface : public view::Host
         gpu_.reset();
         DestroyImage();
         XFreeGC(display_, gc_);
+        connection_.StopClockOn(window_); // Present's selection freed while the window it is on is still there
         XDestroyWindow(display_, window_);
         XFlush(display_);
     }

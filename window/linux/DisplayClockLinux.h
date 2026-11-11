@@ -340,6 +340,12 @@ class X11DisplayClock
 #endif
     }
 
+    /** @return  the window paced: the one Present's selection is on while the clock runs; 0 before any Start */
+    ::Window window() const noexcept
+    {
+        return window_;
+    }
+
     /** @return  true while the window's frames are woken by this clock */
     bool is_running() const noexcept
     {

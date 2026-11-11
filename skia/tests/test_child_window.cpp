@@ -1511,6 +1511,97 @@ TEST(ChildWindowFramePacing, IsOnTheDisplaysClockExactlyWhereTheServerHasPresent
     child.reset(); // before the window it sits in
 }
 
+namespace
+{
+/** How many X errors the process heard, and of them the Present extension's, while CountedXErrors held the handler. */
+int g_x_errors       = 0;
+int g_present_errors = 0; ///< The errors whose request was the Present extension's.
+int g_present_opcode = 0; ///< The Present extension's major opcode on this server; 0 where it has none.
+
+/** An X error counted rather than ending the process, as Xlib's own handler would.
+    @param display  the connection it came on
+    @param error    the error
+    @return         0, as Xlib ignores */
+int CountXError(Display *display, XErrorEvent *error)
+{
+    (void)display;
+    ++g_x_errors;
+    if (g_present_opcode != 0 && error->request_code == g_present_opcode)
+    {
+        ++g_present_errors;
+    }
+    return 0;
+}
+
+/** The process's X error handler counting, for as long as it lives: the handler is the process's, so it hears the
+    errors of every connection, the child window's own included, and the suite runs on one thread. */
+class CountedXErrors
+{
+  public:
+    CountedXErrors()
+    {
+        g_x_errors       = 0;
+        g_present_errors = 0;
+        Display *display = XOpenDisplay(nullptr);
+        if (display != nullptr)
+        {
+            int event_base = 0;
+            int error_base = 0;
+            if (XQueryExtension(display, "Present", &g_present_opcode, &event_base, &error_base) != True)
+            {
+                g_present_opcode = 0;
+            }
+            XCloseDisplay(display);
+        }
+        previous_ = XSetErrorHandler(CountXError);
+    }
+
+    ~CountedXErrors()
+    {
+        XSetErrorHandler(previous_);
+    }
+
+    CountedXErrors(const CountedXErrors &)            = delete;
+    CountedXErrors &operator=(const CountedXErrors &) = delete;
+
+  private:
+    XErrorHandler previous_{nullptr}; ///< The handler before, put back.
+};
+} // namespace
+
+TEST(ChildWindowFramePacing, AWindowClosedOnTheDisplaysClockAsksNothingOfTheWindowItWas)
+{
+    // The clock's Present selection is on the window, and the clock is the window's connection's, which outlives the
+    // window by a step: the window is destroyed first, and a clock still running then freed its selection on a window
+    // that was gone - a BadWindow on Present's SelectInput at every close of a window paced on the display. The window
+    // stops the clock on itself before it is destroyed. Under Xvfb, whose mode names no rate, the clock never runs, so
+    // the case is a desktop's; this says so rather than pass on nothing.
+    reckless::test::TestHostWindow top(240, 160);
+    if (!top.Valid())
+    {
+        if (reckless::test::WindowRequired())
+        {
+            FAIL() << "the run promised a window and there is none";
+        }
+        GTEST_SKIP() << "no display to make a window on";
+    }
+    const CountedXErrors errors;
+    reckless::view::View root;
+    root.SetBounds({240, 160});
+    auto child =
+        reckless::window::CreateChildWindow(top.Parent(), root, 240, 160, 1.0f, std::make_unique<TurnedLoop>());
+    ASSERT_NE(child, nullptr);
+    const bool is_on_the_clock =
+        child->SetFramePacing({FramePacing::kDisplayClock, 1, 1}).pacing == FramePacing::kDisplayClock;
+    child.reset(); // the window, its connection and the clock, on the clock where it runs
+    EXPECT_EQ(g_present_errors, 0) << "nothing asked of Present about a window that is gone";
+    EXPECT_EQ(g_x_errors, 0) << "and no other error either";
+    if (!is_on_the_clock)
+    {
+        GTEST_SKIP() << "the display's clock does not run here (Xvfb's mode names no rate), so a desktop proves this";
+    }
+}
+
 TEST(ChildWindowFramePacing, TakesItsFramesFromWhicheverItIsPacedOnAndNeverFromBoth)
 {
     // On the display's clock the frames come from the clock's timer, which the loop watches, and the loop's own timer
