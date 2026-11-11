@@ -188,3 +188,22 @@ TEST(FakeAppPlatform, RunRunsTheCallsAfterTheCurrentEventAndQuitFromOneEndsIt)
     EXPECT_EQ(platform.Run(), 0);
     EXPECT_EQ(ran, 2);
 }
+
+TEST(FakeAppPlatform, APlatformThatCannotPlaceAWindowOrNameItsScreensSaysSoAndMovesNothing)
+{
+    // **The defaults are what a caller choosing a display meets on a platform that has not implemented them**, and
+    // they must leave the window exactly where it is rather than guess: SetPosition answers false and does nothing,
+    // ScreenAreas names none, and a caller that wanted screen 1 has nowhere to put the window and must not try.
+    // The fake implements neither, so it inherits both, which is the case under test.
+    FakeAppPlatform              platform;
+    reckless::app::WindowOptions options;
+    options.width                                          = 320;
+    options.height                                         = 200;
+    options.position                                       = std::pair<int, int>{40, 50};
+    const std::unique_ptr<reckless::app::AppWindow> window = platform.OpenWindow(options);
+    ASSERT_NE(window, nullptr);
+    EXPECT_EQ(window->Position(), (std::pair<int, int>{40, 50}));
+    EXPECT_FALSE(window->SetPosition(900, 700)) << "a window that cannot be placed says so";
+    EXPECT_EQ(window->Position(), (std::pair<int, int>{40, 50})) << "and has not moved";
+    EXPECT_TRUE(platform.ScreenAreas().empty()) << "a platform that cannot enumerate its displays names none";
+}

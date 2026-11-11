@@ -47,8 +47,31 @@ class AppWindow
 
     /** The window's top left on the desktop, y down from the top of the main display, in the platform's units: where
         it stands, or where it stood before it was minimised.
+        **What "the window" means here differs by platform, and always has**: macOS answers the window's frame
+        (`[NSWindow frame]`, the title bar included) and Windows the window rectangle (`GetWindowRect`, its border
+        included), while Linux answers the **client area's** top left (`XTranslateCoordinates` of the window itself).
+        So the same window reports a y that differs by the height of its title bar between Linux and the other two.
+        `SetPosition` is the exact inverse of this on each platform, so a place read and put back lands where it was;
+        a caller that needs the content's own corner on every platform must allow for the frame itself.
         @return  the x and the y of the top left, in the platform's units */
     virtual std::pair<int, int> Position() const = 0;
+
+    /** The window's top left put where it is asked for, **the exact inverse of `Position`** on the same platform -
+        so what it names differs between Linux's client area and macOS's and Windows' frame, as `Position` says. Y is
+        down from the top of the main display, in the platform's units. **This is how a window is moved to another
+        display**: a point
+        inside that display's area (AppPlatform::ScreenAreas) places it there, and the platform follows with the
+        display's scale and, on a window paced by the display's clock, its refresh. Nothing is done for a window that
+        is full screen or minimised, nor by a platform that cannot place a window.
+        @param x  the left, in the platform's units
+        @param y  the top, y down from the top of the main display
+        @return   true where the window was placed */
+    virtual bool SetPosition(int x, int y)
+    {
+        (void)x;
+        (void)y;
+        return false;
+    }
 
     /** Brought in front of the app's other windows and given the keyboard, restored first where it was minimised,
         shaded or on another desktop. */
@@ -250,6 +273,16 @@ class AppPlatform
     /** The run loop a child window in one of these windows runs on: the app's loop on Linux, where the child window
         has none of its own; null elsewhere.
         @return  the loop, owned by the caller, or null where the child window brings its own */
+    /** Every display's usable area - what a menu bar, a taskbar or a dock leaves of it - y down from the top of the
+        main display, in the platform's units, **the main display's first**. A platform that cannot enumerate its
+        displays answers with none, and a caller that wanted to choose one must then leave the window where it is:
+        Linux's X11 window layer answers none until it is taught RandR.
+        @return  the areas, or none where the platform cannot say */
+    virtual std::vector<gfx::RectI> ScreenAreas() const
+    {
+        return {};
+    }
+
     virtual std::unique_ptr<window::RunLoop> ChildLoop() = 0;
 
     /** `tick` every `milliseconds`, until the platform goes.

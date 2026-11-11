@@ -647,6 +647,24 @@ class MacWindow final : public AppWindow
                 static_cast<int>(std::lround(MainScreenHeight() - NSMaxY(frame)))};
     }
 
+    /** The window's top left placed, Cocoa's y running up from the main screen's bottom where the argument's runs
+        down from its top. A full-screen window is left alone: it stands over a screen of its own, and the place it
+        would come back to is the one it was put at.
+        @param x  the left, in points
+        @param y  the top, y down from the top of the main screen
+        @return   true where the window was placed */
+    bool SetPosition(int x, int y) override
+    {
+        if (IsFullScreen() || window_.miniaturized)
+        {
+            return false;
+        }
+        const NSRect frame = [window_ frame];
+        [window_ setFrameOrigin:NSMakePoint(static_cast<CGFloat>(x),
+                                            MainScreenHeight() - static_cast<CGFloat>(y) - frame.size.height)];
+        return true;
+    }
+
     void BringToFront() override
     {
         if (window_.miniaturized)
@@ -873,6 +891,14 @@ class MacPlatform final : public AppPlatform
               }
             });
         });
+    }
+
+    /** Every screen's usable area - what the menu bar and the Dock leave of it - y down from the top of the main
+        screen, the main screen's first, as `[NSScreen screens]` orders them.
+        @return  the areas, in points */
+    std::vector<gfx::RectI> ScreenAreas() const override
+    {
+        return VisibleAreas();
     }
 
     /** Close the posts' queue, invalidate every timer the app made and drop the application delegate. */
