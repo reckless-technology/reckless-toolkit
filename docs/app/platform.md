@@ -156,6 +156,7 @@ and a caller must then leave the window where it is.
 |---|---|---|
 | macOS | the frame's top left (`setFrameOrigin:`, against Cocoa's y-up); refused while full screen or minimised | each `NSScreen`'s `visibleFrame`, y down, the main screen's first |
 | Linux | the **client area's** top left, as `Position` reads it (`XTranslateCoordinates`): the size hints given the place as an asked one (`USPosition`) with static gravity, then `XMoveWindow`; refused while full screen or minimised (`WM_STATE` iconic) | RandR's monitors (`XRRGetMonitors`, RandR 1.5), the primary first, each held to what the window manager says its panels leave of it |
+| Windows | the window rectangle's top left (`SetWindowPos` with no size, z-order or activation change), as `Position` reads it (`GetWindowRect`); put again if a `WM_DPICHANGED` moved it; refused while full screen or minimised | each monitor's work area (`GetMonitorInfo`'s `rcWork`, through `EnumDisplayMonitors`), the primary's first |
 
 **What a window manager says on Linux.** X knows the monitors; only the window manager knows the panels. EWMH's
 `_NET_WORKAREA` is one rectangle for the whole desktop, which is exact where every panel sits on an edge of the
@@ -165,6 +166,11 @@ Cinnamon's) publish `_GTK_WORKAREAS_D<desktop>`, each area belonging to the smal
 (`UsableAreas` in [WindowPlace.h](../../app/WindowPlace.h)). A display with none of its own takes the part of
 `_NET_WORKAREA` on it, and with no window manager at all, as under `xvfb-run`, all of it. libXrandr is opened by name,
 as the display clock opens it, so no product's link line changes; a server without RandR 1.5 names no screens.
+
+**What space Windows is in.** The process is per-monitor DPI aware (`BecomeDpiAware`), so `GetWindowRect`,
+`SetWindowPos` and every monitor's rectangle are in the same physical pixels of the virtual desktop, whatever a
+monitor's scaling; nothing is converted. A window put on a monitor of another DPI is sized for it by `WM_DPICHANGED`,
+which may move its top left to where Windows suggests, so `SetPosition` puts the position again after.
 
 **A move is asked, not made.** A window manager has the last word on where a window goes, and may keep it on its work
 area or move it on; `SetPosition`'s true says the move was asked, and `Position` says where the window went once the
@@ -177,3 +183,7 @@ On Linux the platform suite (`tests/test_app_platform.cpp`) puts a window back w
 `xvfb-run`, which has no window manager, sets two RandR monitors up within the screen with a panel's work areas on the
 root, and holds the order and each display's area; on a person's desktop it only reads them, the monitors and panels
 being the person's. A move between two real panels wants a second screen, and is measured rather than asserted.
+
+On Windows the platform suite reads a real window's place, holds it to a work area, puts it back and moves it by an
+offset and back; it skips where the session has no monitor, as a runner that is a service on a window station that
+shows nothing has none. A move between two monitors of different DPI wants a second screen, and is not asserted.
