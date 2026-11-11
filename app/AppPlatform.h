@@ -270,9 +270,6 @@ class AppPlatform
         return {0, 0};
     }
 
-    /** The run loop a child window in one of these windows runs on: the app's loop on Linux, where the child window
-        has none of its own; null elsewhere.
-        @return  the loop, owned by the caller, or null where the child window brings its own */
     /** Every display's usable area - what a menu bar, a taskbar or a dock leaves of it - y down from the top of the
         main display, in the platform's units, **the main display's first**. A platform that cannot enumerate its
         displays answers with none, and a caller that wanted to choose one must then leave the window where it is:
@@ -283,6 +280,9 @@ class AppPlatform
         return {};
     }
 
+    /** The run loop a child window in one of these windows runs on: the app's loop on Linux, where the child window
+        has none of its own; null elsewhere.
+        @return  the loop, owned by the caller, or null where the child window brings its own */
     virtual std::unique_ptr<window::RunLoop> ChildLoop() = 0;
 
     /** `tick` every `milliseconds`, until the platform goes.
