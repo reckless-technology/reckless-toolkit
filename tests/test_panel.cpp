@@ -421,6 +421,7 @@ class FakePresets final : public view::PresetModel
 {
   public:
     std::vector<std::string>         names{"Bright", "Squash"};
+    std::vector<std::string>         categories; ///< parallel to names, or empty for a model with no categories
     std::string                      current{"Squash"};
     bool                             modified{true};
     std::vector<std::string>         log;
@@ -433,6 +434,11 @@ class FakePresets final : public view::PresetModel
         listed = names;
         ++listings;
         return names;
+    }
+
+    std::vector<std::string> Categories() const override
+    {
+        return categories;
     }
 
     std::string Current() const override
@@ -1150,6 +1156,118 @@ TEST(SeriesPanel, APresetsRowLoadsThePresetItShowedAndWhatGoesWrongIsSaid)
     ASSERT_NE(plate.dialog(), nullptr) << "what went wrong, said over the panel";
     EXPECT_EQ(plate.dialog()->question(), f.presets.problem);
     EXPECT_EQ(plate.button().text(), "Squash") << "still on the preset";
+}
+
+namespace
+{
+/** Every preset row in a menu, however deep, as "id:text" in menu order, with a "[group]" before a submenu's rows. */
+void FlattenPresetRows(const std::vector<view::MenuItem> &items, std::vector<std::string> &out)
+{
+    for (const auto &item : items)
+    {
+        if (!item.submenu.empty())
+        {
+            out.push_back("[" + item.text + "]");
+            FlattenPresetRows(item.submenu, out);
+        }
+        else if (item.id >= 1 && item.id < panel::PresetPlateView::kSave)
+        {
+            out.push_back(std::to_string(item.id) + ":" + item.text + (item.ticked ? "*" : ""));
+        }
+    }
+}
+
+std::vector<std::string> PresetRows(const std::vector<view::MenuItem> &items)
+{
+    std::vector<std::string> rows;
+    FlattenPresetRows(items, rows);
+    return rows;
+}
+} // namespace
+
+TEST(SeriesPanel, AModelWithNoCategoriesGetsTheFlatMenuItIsGivenToday)
+{
+    // The default Categories() is empty, and an all-empty list or one only past kMaxPresets is the same flat menu.
+    Fixture f;
+    EXPECT_TRUE(f.presets.view::PresetModel::Categories().empty()) << "the base class's default: no categories";
+    const auto p     = f.Open<RowPanel>();
+    auto      &plate = p->presets();
+    const auto flat  = plate.MenuItems();
+    EXPECT_EQ(PresetRows(flat), (std::vector<std::string>{"1:Bright", "2:Squash*"}));
+    for (const auto &item : flat)
+    {
+        EXPECT_TRUE(item.submenu.empty()) << item.text;
+    }
+    const auto sameItems = [](const std::vector<view::MenuItem> &a, const std::vector<view::MenuItem> &b) {
+        if (a.size() != b.size())
+        {
+            return false;
+        }
+        for (std::size_t i = 0; i < a.size(); ++i)
+        {
+            if (a[i].text != b[i].text || a[i].id != b[i].id || a[i].enabled != b[i].enabled ||
+                a[i].ticked != b[i].ticked || a[i].separator != b[i].separator || !a[i].submenu.empty() ||
+                !b[i].submenu.empty())
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+    f.presets.categories = {"", ""};
+    EXPECT_TRUE(sameItems(flat, plate.MenuItems())) << "every entry empty: item for item, id for id";
+    f.presets.names.resize(1001, "More");
+    f.presets.categories.assign(1001, "");
+    f.presets.categories[1000] = "Hidden"; // the 1001st preset, past kMaxPresets
+    const auto beyond          = plate.MenuItems();
+    for (const auto &item : beyond)
+    {
+        EXPECT_TRUE(item.submenu.empty()) << "a category with no row on the menu leaves no submenu: " << item.text;
+    }
+}
+
+TEST(SeriesPanel, CategoriesGroupPresetsIntoSubmenusWithTheirIdsUnmoved)
+{
+    Fixture f;
+    f.presets.names      = {"Pad A", "Lead A", "Pad B", "Bass A", "Lead B", "Pad C"};
+    f.presets.categories = {"Pads", "Leads", "Pads", "Bass", "Leads", "Pads"};
+    f.presets.current    = "Lead B";
+    const auto p         = f.Open<RowPanel>();
+    const auto items     = p->presets().MenuItems();
+    ASSERT_GE(items.size(), 3u);
+    EXPECT_EQ(items[0].text, "Pads") << "in the order the categories first appear";
+    EXPECT_EQ(items[1].text, "Leads");
+    EXPECT_EQ(items[2].text, "Bass");
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        EXPECT_EQ(items[i].id, 0) << "a group is not itself chosen";
+        EXPECT_TRUE(items[i].enabled);
+    }
+    EXPECT_EQ(PresetRows(items), (std::vector<std::string>{"[Pads]", "1:Pad A", "3:Pad B", "6:Pad C", "[Leads]",
+                                                           "2:Lead A", "5:Lead B*", "[Bass]", "4:Bass A"}))
+        << "ids are index + 1 whatever the row's place; Names() order within a group; the tick inside its submenu";
+    EXPECT_FALSE(items[0].submenu[0].ticked);
+    EXPECT_TRUE(items[1].submenu[1].ticked);
+    p->presets().Choose(5);
+    EXPECT_EQ(f.presets.log, (std::vector<std::string>{"load Lead B"})) << "the id still loads Names()[id - 1]";
+}
+
+TEST(SeriesPanel, UncategorisedPresetsStayAtTheTopBeforeTheGroups)
+{
+    Fixture f;
+    f.presets.names      = {"Init", "Pad A", "Plain", "Pad B"};
+    f.presets.categories = {"", "Pads", "", "Pads"};
+    f.presets.current    = "Plain";
+    const auto p         = f.Open<RowPanel>();
+    const auto items     = p->presets().MenuItems();
+    EXPECT_EQ(PresetRows(items), (std::vector<std::string>{"1:Init", "3:Plain*", "[Pads]", "2:Pad A", "4:Pad B"}));
+    EXPECT_EQ(items[0].text, "Init") << "top level, in Names() order";
+    EXPECT_EQ(items[1].text, "Plain");
+    EXPECT_EQ(items[2].text, "Pads");
+    // A categories list shorter than Names() leaves the rest uncategorised.
+    f.presets.categories = {"Pads"};
+    EXPECT_EQ(PresetRows(p->presets().MenuItems()),
+              (std::vector<std::string>{"2:Pad A", "3:Plain*", "4:Pad B", "[Pads]", "1:Init"}));
 }
 
 TEST(SeriesPanel, AClickOnThePlateOpensItsMenuUnderIt)
