@@ -199,14 +199,61 @@ class PresetPlateView final : public view::View
         {
             items.push_back(Separator());
         }
-        const auto names   = model_->Names();
-        const auto current = model_->Current();
-        listed_            = true;
-        for (std::size_t i = 0; i < std::min(names.size(), kMaxPresets); ++i)
-        {
+        const auto names             = model_->Names();
+        const auto current           = model_->Current();
+        listed_                      = true;
+        const auto        categories = model_->Categories();
+        const std::size_t shown      = std::min(names.size(), kMaxPresets);
+        const auto        categoryOf = [&](std::size_t i) -> const std::string        &{
+            static const std::string none;
+            return i < categories.size() ? categories[i] : none;
+        };
+        // Row ids are index + 1 wherever the row ends up, so grouping never moves what Load receives.
+        const auto presetRow = [&](std::size_t i) {
             view::MenuItem item = Item(static_cast<int>(i) + 1, names[i]);
             item.ticked         = names[i] == current;
-            items.push_back(std::move(item));
+            return item;
+        };
+        bool isGrouped = false;
+        for (std::size_t i = 0; i < shown && !isGrouped; ++i)
+        {
+            isGrouped = !categoryOf(i).empty();
+        }
+        if (!isGrouped)
+        {
+            for (std::size_t i = 0; i < shown; ++i)
+            {
+                items.push_back(presetRow(i));
+            }
+        }
+        else
+        {
+            // Uncategorised presets first, then one submenu per category in order of first appearance.
+            std::vector<view::MenuItem> groups;
+            std::vector<std::string>    groupNames;
+            for (std::size_t i = 0; i < shown; ++i)
+            {
+                const std::string &category = categoryOf(i);
+                if (category.empty())
+                {
+                    items.push_back(presetRow(i));
+                    continue;
+                }
+                auto found = std::find(groupNames.begin(), groupNames.end(), category);
+                if (found == groupNames.end())
+                {
+                    groupNames.push_back(category);
+                    view::MenuItem group;
+                    group.text = category;
+                    groups.push_back(std::move(group));
+                    found = groupNames.end() - 1;
+                }
+                groups[static_cast<std::size_t>(found - groupNames.begin())].submenu.push_back(presetRow(i));
+            }
+            for (auto &group : groups)
+            {
+                items.push_back(std::move(group));
+            }
         }
         if (!names.empty())
         {

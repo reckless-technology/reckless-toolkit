@@ -36,6 +36,16 @@ class PresetModel
         @return  the names, in the menu's order */
     virtual std::vector<std::string> Names() const = 0;
 
+    /** The category of each preset, parallel to Names(): the same length and order. The PRESETS menu groups presets
+        of one category into a submenu, in the order the categories first appear; an empty entry is uncategorised and
+        stays at the top level, before the groups. A model that returns none, or only empty entries, gets the flat
+        menu.
+        @return  one category per name in Names(), or an empty vector for a model with no categories */
+    virtual std::vector<std::string> Categories() const
+    {
+        return {};
+    }
+
     /** The preset the plugin is on, or empty for none.
         @return  its name, or an empty string for none */
     virtual std::string Current() const = 0;
