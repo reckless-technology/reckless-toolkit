@@ -1437,6 +1437,19 @@ TEST(ChildWindowFramePacing, PanelsThatFitARefreshPaintInOneOrderEveryRefresh)
 #if !defined(_WIN32) && !defined(__APPLE__)
 namespace
 {
+/** Whether this build can use Present at all: the headers window/linux/DisplayClockLinux.h needs were there to build
+    against. Where they were not (a machine without libxpresent-dev) that file compiles the fallback alone, and a window
+    has no display clock whatever the server offers; the same test the window's own build makes, so the two agree.
+    @return  true where the build can ask Present for blanks */
+constexpr bool CanThisBuildUsePresent()
+{
+#if __has_include(<X11/extensions/Xpresent.h>) && __has_include(<X11/extensions/Xrandr.h>)
+    return true;
+#else
+    return false;
+#endif
+}
+
 /** Whether the X server the suite runs on has the Present extension, asked on a connection of the suite's own.
     @return  true where it has */
 bool DoesTheServerHavePresent()
@@ -1485,7 +1498,9 @@ TEST(ChildWindowFramePacing, IsOnTheDisplaysClockExactlyWhereTheServerHasPresent
 
     const FramePacingState asked = child->SetFramePacing({FramePacing::kDisplayClock, 4, 1, 5000});
     HoldsWhicheverPacingItReached(asked, 4, "Linux, asked for a frame every fourth refresh, 5 ms ahead", 5000, true);
-    const bool has_present = DoesTheServerHavePresent();
+    // A server's Present is of use only to a build that can speak it: one compiled without the Present headers has no
+    // display clock to offer whatever the server has, and says so.
+    const bool has_present = CanThisBuildUsePresent() && DoesTheServerHavePresent();
     const bool has_rate    = reckless::window::IsBelievableRefreshRate(mode_hertz);
     EXPECT_EQ(asked.pacing == FramePacing::kDisplayClock, has_present && has_rate)
         << "Present " << has_present << ", the mode " << mode_hertz << " Hz: " << reckless::window::TextOf(asked.why);
@@ -1496,7 +1511,8 @@ TEST(ChildWindowFramePacing, IsOnTheDisplaysClockExactlyWhereTheServerHasPresent
     }
     else if (!has_present)
     {
-        EXPECT_EQ(asked.why, FramePacingFallback::kNoDisplayClock) << "a server without Present has no clock";
+        EXPECT_EQ(asked.why, FramePacingFallback::kNoDisplayClock)
+            << "no Present to use, in the build or on the server, so no clock";
     }
     else
     {
