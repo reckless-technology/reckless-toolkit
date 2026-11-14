@@ -16,7 +16,8 @@
 // The rate is the mode's and nothing else: an X server with no monitor behind it - Xvfb, or a window on no monitor at
 // all - still answers PresentNotifyMSC, from a timer of its own about sixty times a second, but its mode names no
 // timing, so there is no rate to divide and the window stays on the platform's timer and says so
-// (FramePacingFallback::kRefreshRateUnknown). An X server without Present says kNoDisplayClock.
+// (FramePacingFallback::kRefreshRateUnknown) - which is said too by a build without the headers below, since the
+// question is the server's, asked of Xlib itself. An X server without Present says kNoDisplayClock.
 //
 // Neither library is linked: libXpresent and libXrandr are opened by name the first time a window is asked for the
 // display's clock or its rate, as Windows' compositor calls are looked up from dwmapi.dll - so no consumer's link line
@@ -264,6 +265,15 @@ class X11DisplayClock
         has_present_ = calls.HasPresent() &&
                        calls.present_query_extension(display_, &present_opcode_, &event_base, &error_base) == True;
 #endif
+        if (display_ != nullptr)
+        {
+            // Asked of Xlib itself, which needs neither header nor library: a build that cannot use Present still says
+            // truly whether the server has it.
+            int opcode                = 0;
+            int event                 = 0;
+            int error                 = 0;
+            does_server_have_present_ = XQueryExtension(display_, "Present", &opcode, &event, &error) == True;
+        }
         timer_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     }
 
@@ -296,12 +306,12 @@ class X11DisplayClock
     FramePacingState Start(::Window window, const FrameRequest &request)
     {
         Stop();
-        window_  = window;
-        request_ = request;
-        DisplayClockReading reading;
-        reading.has_clock     = has_present_ && timer_ >= 0;
-        reading.display_hertz = reading.has_clock ? ModeHertzUnder(display_, window_) : 0.0;
-        state_                = ChosenPacing(request_, reading);
+        window_                                   = window;
+        request_                                  = request;
+        const bool                can_use_present = has_present_ && timer_ >= 0;
+        const DisplayClockReading reading = X11ClockReading(can_use_present, does_server_have_present_, timer_ >= 0,
+                                                            can_use_present ? ModeHertzUnder(display_, window_) : 0.0);
+        state_                            = ChosenPacing(request_, reading);
         if (state_.pacing != FramePacing::kDisplayClock)
         {
             return state_;
@@ -518,22 +528,23 @@ class X11DisplayClock
         timerfd_settime(timer_, 0, &never, nullptr);
     }
 
-    Display             *display_;               ///< the window's connection
-    ::Window             window_{0};             ///< the window paced
-    FrameRequest         request_{};             ///< the product's request
-    FramePacingState     state_{};               ///< what the window is paced on, or last fell back to
-    FrameClock           clock_;                 ///< the schedule, on the blanks themselves
-    int                  timer_{-1};             ///< the timerfd each frame is woken on; -1 where it could not be made
-    bool                 has_present_{false};    ///< the server has Present, and libXpresent was found
-    bool                 is_running_{false};     ///< the frames are being woken
-    bool                 has_blank_{false};      ///< a blank has been reported since the schedule started
-    [[maybe_unused]] int present_opcode_{0};     ///< Present's major opcode, which its events carry
-    [[maybe_unused]] XID events_{0};             ///< the Present event selection on the window; 0 for none
-    std::uint32_t        serial_{0};             ///< the serial of the last NotifyMSC asked
-    double               period_seconds_{0.0};   ///< the mode's refresh period, the grid's
-    double               blank_seconds_{0.0};    ///< the last blank reported, on the steady clock
-    double               heard_seconds_{0.0};    ///< when a blank was last heard of, or last asked for again
-    double               mode_read_{0.0};        ///< when the mode was last read
+    Display             *display_;            ///< the window's connection
+    ::Window             window_{0};          ///< the window paced
+    FrameRequest         request_{};          ///< the product's request
+    FramePacingState     state_{};            ///< what the window is paced on, or last fell back to
+    FrameClock           clock_;              ///< the schedule, on the blanks themselves
+    int                  timer_{-1};          ///< the timerfd each frame is woken on; -1 where it could not be made
+    bool                 has_present_{false}; ///< the server has Present, and libXpresent was found
+    bool                 does_server_have_present_{false}; ///< the server answers a query for Present, found or not
+    bool                 is_running_{false};               ///< the frames are being woken
+    bool                 has_blank_{false};                ///< a blank has been reported since the schedule started
+    [[maybe_unused]] int present_opcode_{0};               ///< Present's major opcode, which its events carry
+    [[maybe_unused]] XID events_{0};                       ///< the Present event selection on the window; 0 for none
+    std::uint32_t        serial_{0};                       ///< the serial of the last NotifyMSC asked
+    double               period_seconds_{0.0};             ///< the mode's refresh period, the grid's
+    double               blank_seconds_{0.0};              ///< the last blank reported, on the steady clock
+    double               heard_seconds_{0.0};              ///< when a blank was last heard of, or last asked for again
+    double               mode_read_{0.0};                  ///< when the mode was last read
     double               woke_on_the_grid_{0.0}; ///< the last waking plus the lead: the clock's own time for it
 };
 } // namespace x11

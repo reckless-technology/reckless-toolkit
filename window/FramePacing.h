@@ -343,6 +343,27 @@ inline RefreshRateChoice ChosenRefreshRate(const DisplayClockReading &reading) n
     return {is_compositor_believable ? reading.compositor_hertz : reading.display_hertz, FramePacingFallback::kNone};
 }
 
+/** What an X11 window can say about its display clock (X11DisplayClock::Start), from the four facts it has: kept apart
+    from Xlib so that every combination of them is testable on any machine, whatever X server it has or is built
+    against. The server answering Present is what makes a clock exist at all, whether or not this build can talk to it:
+    a server with Present whose mode names no rate is `kRefreshRateUnknown`, and only a server without Present is
+    `kNoDisplayClock`. The rate is read only where Present can really be used, so a build that cannot ask for the
+    blanks never divides a rate it cannot wake on.
+    @param can_use_present          the build and the machine can ask Present for blanks (its headers and libXpresent)
+    @param does_server_have_present the server answered a query for the Present extension
+    @param is_timer_made            the timer the frames are woken on could be made
+    @param mode_hertz               the rate of the mode under the window, 0 where it names none; read only where
+                                    `can_use_present`
+    @return                         the reading `ChosenPacing` decides from */
+inline DisplayClockReading X11ClockReading(bool can_use_present, bool does_server_have_present, bool is_timer_made,
+                                           double mode_hertz) noexcept
+{
+    DisplayClockReading reading;
+    reading.has_clock     = is_timer_made && (can_use_present || does_server_have_present);
+    reading.display_hertz = reading.has_clock && can_use_present ? mode_hertz : 0.0;
+    return reading;
+}
+
 /** The pacing a window ends up on: the whole of the fallback decision, in the order it is made, from the product's
     request and what the platform could say. The platform does the reading and the waiting; this says whether there is
     anything to wait on, and the lead it would keep (LeadInForceMicroseconds) - which a platform whose clock cannot

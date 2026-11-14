@@ -1159,3 +1159,32 @@ TEST(FrameStandsBack, AThreadWithRoomRunsEveryFrameOnItsOwnTick)
     }
     EXPECT_GT(run.host_timers, 0);
 }
+
+TEST(X11ClockReading, ASeverWithPresentButNoRateIsRateUnknownWhateverTheBuildCanDo)
+{
+    for (const bool can_use_present : {true, false})
+    {
+        const FramePacingState state = ChosenPacing(Asking(1), X11ClockReading(can_use_present, true, true, 0.0));
+        EXPECT_EQ(state.pacing, FramePacing::kPlatformTimer);
+        EXPECT_EQ(state.why, FramePacingFallback::kRefreshRateUnknown) << "Present answers; no rate to divide";
+    }
+}
+
+TEST(X11ClockReading, OnlyAServerWithoutPresentOrATimerThatCouldNotBeMadeIsNoDisplayClock)
+{
+    EXPECT_EQ(ChosenPacing(Asking(1), X11ClockReading(false, false, true, 0.0)).why,
+              FramePacingFallback::kNoDisplayClock);
+    EXPECT_EQ(ChosenPacing(Asking(1), X11ClockReading(true, true, false, 60.0)).why,
+              FramePacingFallback::kNoDisplayClock);
+}
+
+TEST(X11ClockReading, ARealDisplayWithARateIsPacedAndABuildThatCannotUsePresentNeverDividesOne)
+{
+    const FramePacingState paced = ChosenPacing(Asking(1), X11ClockReading(true, true, true, 60.0));
+    EXPECT_EQ(paced.pacing, FramePacing::kDisplayClock);
+    EXPECT_DOUBLE_EQ(paced.display_hertz, 60.0);
+
+    const FramePacingState unusable = ChosenPacing(Asking(1), X11ClockReading(false, true, true, 60.0));
+    EXPECT_EQ(unusable.pacing, FramePacing::kPlatformTimer) << "no way to wait on the blanks, so no pacing on them";
+    EXPECT_EQ(unusable.why, FramePacingFallback::kRefreshRateUnknown);
+}
