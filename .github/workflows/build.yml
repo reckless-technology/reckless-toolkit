@@ -363,6 +363,7 @@ jobs:
         env:
           CONSUMER_VST_PLUGINS_DEPLOY_KEY: ${{ secrets.CONSUMER_VST_PLUGINS_DEPLOY_KEY }}
           CONSUMER_SENTINEL_DEPLOY_KEY: ${{ secrets.CONSUMER_SENTINEL_DEPLOY_KEY }}
+          ARCADE_READ_KEY: ${{ secrets.ARCADE_READ_KEY }}
           JOBS: ${{ steps.cpp.outputs.jobs }}
         run: >
           tools/check-consumers.sh build/ci-toolkit-consumers "${{ steps.cpp.outputs.deps }}/consumers"
