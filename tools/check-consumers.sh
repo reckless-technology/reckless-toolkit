@@ -27,7 +27,20 @@ fetch=$(cd "$2" && pwd)
 python=$3
 jobs=${JOBS:-$(nproc 2> /dev/null || sysctl -n hw.ncpu)}
 
-# product | default branch | deploy key's variable | public or private | configure arguments | targets built
+# product | default branch | deploy key's variable | public or private | configure arguments | targets built |
+# private dependencies
+#
+# A private dependency is a repository the product itself builds against and that its own checkout does not carry (for
+# Sentinel, the reckless-arcade library). Each is named as
+#   repository:secret variable:product's CMake variable:file that pins it:variable in that file
+# and several are separated by semicolons. It is cloned into $work/deps/<product>/<repository> at the commit the
+# product pins - read as the 40 hex digits of the `set(<variable> "...")` line in the file, from the product's own head,
+# never the dependency's main - and handed over as -D<CMake variable>=<that directory>.
+#
+# **Each dependency is its own clone, in its own git call, with only its own key as the ssh identity.** Do not offer two
+# deploy keys on one ssh command: GitHub authenticates a connection by the first key it recognises and then authorises it
+# only against that key's repository, so the other repository answers "Repository not found" depending on the order of
+# the keys. A dependency whose secret this run lacks skips its product, as a missing product key does.
 #
 # A public consumer is cloned over https and needs no key. A private one is read through its own read-only deploy
 # key, whose private half is this repository's secret - and a fork's pull request is given no secrets, so from a
@@ -37,7 +50,7 @@ products=(
     "amphitheater-chess|main|CONSUMER_AMPHITHEATER_DEPLOY_KEY|public|-DCMAKE_BUILD_TYPE=Release -DAMPHITHEATER_BUILD_TESTS=ON|amphitheater_gui"
     "knect4|main|CONSUMER_KNECT4_DEPLOY_KEY|public|-DCMAKE_BUILD_TYPE=Release -DKNECT4_BUILD_TESTS=ON|knect4_gui"
     "sudoku|main|CONSUMER_SUDOKU_DEPLOY_KEY|public|-DCMAKE_BUILD_TYPE=Release -DSUDOKU_BUILD_TESTS=ON|sudoku_gui"
-    "sentinel|main|CONSUMER_SENTINEL_DEPLOY_KEY|private|-DCMAKE_BUILD_TYPE=Release|Sentinel"
+    "sentinel|main|CONSUMER_SENTINEL_DEPLOY_KEY|private|-DCMAKE_BUILD_TYPE=Release|Sentinel|reckless-arcade:ARCADE_READ_KEY:SENTINEL_ARCADE_DIR:cmake/arcade.cmake:SENTINEL_ARCADE_COMMIT"
 )
 
 key_dir=$(mktemp -d)
@@ -46,7 +59,7 @@ trap 'rm -rf "$key_dir"' EXIT
 failed=()
 summary=()
 for entry in "${products[@]}"; do
-    IFS='|' read -r product branch key_variable visibility configure targets <<< "$entry"
+    IFS='|' read -r product branch key_variable visibility configure targets dependencies <<< "$entry"
     # A private consumer with no key: from a fork's pull request, where GitHub passes no secrets. Skipped and
     # said so, rather than failed on a clone that cannot succeed; the public consumers below still run, so an
     # outside contributor's change is still held to three of the four.
@@ -54,6 +67,19 @@ for entry in "${products[@]}"; do
         echo "::notice::$product is private and this run has no key for it (a fork's pull request is given none);" \
             "skipped - the public consumers are still checked"
         summary+=("$product: skipped, no key for a private consumer")
+        continue
+    fi
+    missing_dependency_key=
+    if [ -n "$dependencies" ]; then
+        IFS=';' read -r -a dependency_list <<< "$dependencies"
+        for dependency in "${dependency_list[@]}"; do
+            IFS=':' read -r _ dependency_key_variable _ <<< "$dependency"
+            if [ -z "${!dependency_key_variable:-}" ]; then missing_dependency_key=$dependency_key_variable; fi
+        done
+    fi
+    if [ -n "$missing_dependency_key" ]; then
+        echo "::notice::$product needs $missing_dependency_key, which this run does not have; skipped"
+        summary+=("$product: skipped, no key for a private dependency")
         continue
     fi
     source_dir="$work/src/$product"
@@ -93,8 +119,39 @@ for entry in "${products[@]}"; do
         ln -s "$toolkit" "$source_dir/external/reckless-toolkit"
         echo "$product at $(git -C "$source_dir" log -1 --format='%h %s'), pinning the toolkit at $(git -C "$source_dir" ls-tree HEAD external/reckless-toolkit | awk '{print substr($3, 1, 7)}')"
         echo "toolkit at $(git -C "$toolkit" log -1 --format='%h %s')"
+        dependency_arguments=()
+        if [ -n "$dependencies" ]; then
+            IFS=';' read -r -a dependency_list <<< "$dependencies"
+            for dependency in "${dependency_list[@]}"; do
+                IFS=':' read -r dependency_repository dependency_key_variable dependency_cmake_variable                     dependency_pin_file dependency_pin_variable <<< "$dependency"
+                pin=$(grep -Eo "set\($dependency_pin_variable +\"[0-9a-f]{40}\"" "$source_dir/$dependency_pin_file" |
+                    grep -Eo '[0-9a-f]{40}' | head -n 1)
+                if [ -z "$pin" ]; then
+                    echo "::error::$product's $dependency_pin_file has no 40-digit commit on its set($dependency_pin_variable ...) line"
+                    exit 1
+                fi
+                dependency_dir="$work/deps/$product/$dependency_repository"
+                dependency_key="$key_dir/$product-$dependency_repository"
+                (umask 077; printf '%s
+' "${!dependency_key_variable}" > "$dependency_key")
+                # Its own git calls, with this dependency's key alone (see the table's comment above).
+                dependency_ssh="ssh -i $dependency_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+                if [ ! -d "$dependency_dir/.git" ]; then
+                    rm -rf "$dependency_dir"
+                    mkdir -p "$dependency_dir"
+                    git -C "$dependency_dir" init --quiet
+                    git -C "$dependency_dir" remote add origin "git@github.com:reckless-technology/$dependency_repository.git"
+                fi
+                if [ "$(git -C "$dependency_dir" rev-parse -q --verify HEAD 2> /dev/null || true)" != "$pin" ]; then
+                    GIT_SSH_COMMAND="$dependency_ssh" git -C "$dependency_dir" fetch --quiet --depth 1 origin "$pin"
+                    git -C "$dependency_dir" checkout --quiet --force --detach FETCH_HEAD
+                fi
+                echo "$dependency_repository at $(git -C "$dependency_dir" log -1 --format='%h %s'), the commit $product pins"
+                dependency_arguments+=("-D$dependency_cmake_variable=$dependency_dir")
+            done
+        fi
         # shellcheck disable=SC2086 # the configure's arguments are words
-        cmake -S "$source_dir" -B "$build_dir" -G Ninja $configure -DFETCHCONTENT_UPDATES_DISCONNECTED=ON \
+        cmake -S "$source_dir" -B "$build_dir" -G Ninja $configure "${dependency_arguments[@]}" -DFETCHCONTENT_UPDATES_DISCONNECTED=ON \
             "-DFETCHCONTENT_BASE_DIR=$fetch/$product" "-DPython3_EXECUTABLE=$python"
         # shellcheck disable=SC2086 # the targets are words
         cmake --build "$build_dir" -j "$jobs" --target $targets
