@@ -284,13 +284,26 @@ is measured on a real card or PipeWire's `default`, never here; the suite's 256 
 
 ## What each runner needs
 
-- **reckless-ci-lin-0 and reckless-ci-lin-1**: the ALSA and JACK headers, `jackd` (`jackd2`), `setfacl` (`acl`), the
+The pool, checked against the organisation's runner list on 2026-11-15: reckless-ci-lin-0 (carrying a second runner
+service, lin-0-alt), reckless-ci-mac-0, reckless-ci-win-0 (carrying a second service, win-0-b), and jonny-macbook,
+which carries no default labels and is reached only by `mac-pool`. Two services on one machine share that machine's
+packages and its devices, so each machine is listed once. These are the machines the private consumers' jobs land
+on; the toolkit's own jobs run on GitHub's hosted images, which is why the suite exercises a real device in
+vst-plugins rather than here.
+
+- **reckless-ci-lin-0**: the ALSA and JACK headers, `jackd` (`jackd2`), `setfacl` (`acl`), the
   loopback card loaded and its nodes open to the job's user. `tools/audio-test-devices.sh` checks each by name and
   provides it with the runner's passwordless sudo - lin-0's `runner` is not in the `audio` group, so it gives that user
   an ACL entry on the loopback card's own nodes, each run, since the nodes are made afresh when the module loads - or
-  stops with the command for a person. The card stays loaded until the machine restarts.
-- **reckless-ci-win-0 and reckless-ci-win-1**: nothing - the ASIO test driver registers itself in-process.
+  stops with the command for a person. The card stays loaded until the machine restarts. **Since lin-2 was removed on
+  2026-11-15 this is the pool's only Linux machine, so its loopback card is the pool's only one**: a device suite has
+  no second card to land on, and a killed run leaves a substream open for the next run to inherit, so
+  `/proc/asound/card*/pcm*/sub0/status` is worth reading before a run rather than after a failure.
+- **reckless-ci-win-0**: nothing - the ASIO test driver registers itself in-process. Its two runner services share
+  the one audio device, so two jobs that want it are staged rather than run beside each other.
 - **reckless-ci-mac-0**: nothing - its default output, the Mac mini's speakers, written with silence.
+- **jonny-macbook**: nothing of its own, but it answers `mac-pool`, so a macOS job asking for that label may land
+  here instead of on mac-0 and must not assume the Mac mini's devices.
 
 ## Running it by hand
 
