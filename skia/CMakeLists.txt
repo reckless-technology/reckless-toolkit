@@ -284,7 +284,9 @@ if(RECKLESS_TOOLKIT_BUILD_TESTS)
         target_compile_options(reckless_child_window_test PRIVATE -fobjc-arc)
     endif()
     add_test(NAME child_window COMMAND reckless_child_window_test)
-    set_tests_properties(child_window PROPERTIES LABELS window RESOURCE_LOCK display)
+    # TIMEOUT: a window suite once hung for two hours with no bound (vst-plugins CI, 2026-11-16). Twice the slowest run
+    # measured in green CI of this repository and vst-plugins on Linux, Windows and macOS (12.98 s, on Windows (MSVC) in this repository's run 43642585588), 25.96 s, rounded up to 30.
+    set_tests_properties(child_window PROPERTIES LABELS window RESOURCE_LOCK display TIMEOUT 30)
 
     # The child window drawn on the GPU (tests/test_gpu_window.cpp), apart from the window's own suite because it links
     # the GPU's back end, which that suite must not: it holds a window that carries none of it. On Windows, a known
@@ -308,7 +310,9 @@ if(RECKLESS_TOOLKIT_BUILD_TESTS)
         target_compile_options(reckless_gpu_window_test PRIVATE -fobjc-arc)
     endif()
     add_test(NAME gpu_window COMMAND reckless_gpu_window_test)
-    set_tests_properties(gpu_window PROPERTIES LABELS window RESOURCE_LOCK display)
+    # TIMEOUT: a window suite once hung for two hours with no bound (vst-plugins CI, 2026-11-16). Twice the slowest run
+    # measured in green CI of this repository and vst-plugins on Linux, Windows and macOS (8.52 s, on macOS in this repository's run 43642585588 (vst-plugins' Windows peaks at 8.00 s)), 17.04 s, rounded up to 20.
+    set_tests_properties(gpu_window PROPERTIES LABELS window RESOURCE_LOCK display TIMEOUT 20)
     if(RECKLESS_WINDOW_GPU_EGL)
         # Linux's half holds that the back end it links is EGL's, and loads libEGL (the window suite's control).
         target_compile_definitions(reckless_gpu_window_test PRIVATE RECKLESS_GPU_EGL)

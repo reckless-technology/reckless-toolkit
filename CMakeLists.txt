@@ -770,8 +770,11 @@ inline constexpr EmbeddedFile kEmbeddedFiles[] = {
         add_executable(reckless_app_platform_test tests/test_app_platform.cpp)
         target_link_libraries(reckless_app_platform_test PRIVATE reckless_app_platform reckless_toolkit_test_support
                                                                  reckless_warnings GTest::gtest_main)
+        # TIMEOUT: a window suite once hung for two hours with no bound (vst-plugins CI, 2026-11-16). Sized as twice the
+        # slowest run measured over this repository's and vst-plugins' green CI on Linux, Windows and macOS (1.81 s,
+        # app_platform on Linux; run 43642585588 and others), 3.62 s, rounded up to 5. clipboard and app_menu use the same.
         add_test(NAME app_platform COMMAND reckless_app_platform_test)
-        set_tests_properties(app_platform PROPERTIES LABELS window RESOURCE_LOCK display)
+        set_tests_properties(app_platform PROPERTIES LABELS window RESOURCE_LOCK display TIMEOUT 5)
 
         # The clipboard written and read back: the system's only where it is no person's (CI, or
         # RECKLESS_TEST_CLIPBOARD=1), a pasteboard of the suite's own on macOS, and on Linux the CLIPBOARD selection's
@@ -787,7 +790,7 @@ inline constexpr EmbeddedFile kEmbeddedFiles[] = {
             target_compile_options(reckless_clipboard_test PRIVATE -fobjc-arc)
         endif()
         add_test(NAME clipboard COMMAND reckless_clipboard_test)
-        set_tests_properties(clipboard PROPERTIES LABELS window RESOURCE_LOCK display)
+        set_tests_properties(clipboard PROPERTIES LABELS window RESOURCE_LOCK display TIMEOUT 5)
 
         # The menu bar on this build's platform: the bar a Windows window carries and its keys, a child window handing
         # on what its views do not take; the drawn bar and a key press on Linux, on a display; the screen's bar and the
@@ -803,7 +806,7 @@ inline constexpr EmbeddedFile kEmbeddedFiles[] = {
             target_compile_options(reckless_app_menu_test PRIVATE -fobjc-arc)
         endif()
         add_test(NAME app_menu COMMAND reckless_app_menu_test)
-        set_tests_properties(app_menu PROPERTIES LABELS window RESOURCE_LOCK display)
+        set_tests_properties(app_menu PROPERTIES LABELS window RESOURCE_LOCK display TIMEOUT 5)
     endif()
 endif()
 
