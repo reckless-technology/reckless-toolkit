@@ -317,7 +317,7 @@ endif()
 # off, in reckless_audio_decoders (core/AudioDecoders.c); their configuration is defined on that target and handed to
 # AudioFiles.cpp with their headers, as SYSTEM includes so the toolkit's warnings stay on the toolkit's code. Both are
 # PIC with their symbols hidden, as the plug-in binaries they may go into are compiled.
-add_library(reckless_audio_decoders STATIC core/AudioDecoders.c)
+add_library(reckless_audio_decoders STATIC core/AudioDecoders.c core/VorbisCrcTable.cpp)
 target_include_directories(reckless_audio_decoders SYSTEM PUBLIC "${dr_libs_SOURCE_DIR}" "${stb_SOURCE_DIR}")
 target_compile_definitions(reckless_audio_decoders PUBLIC
     DR_FLAC_NO_STDIO
@@ -326,10 +326,13 @@ target_compile_definitions(reckless_audio_decoders PUBLIC
     DR_MP3_FLOAT_OUTPUT
     STB_VORBIS_NO_STDIO
     STB_VORBIS_NO_PUSHDATA_API)
-target_compile_options(reckless_audio_decoders
-    PRIVATE   $<IF:$<C_COMPILER_ID:MSVC>,/w,-w>
-    INTERFACE $<$<CXX_COMPILER_ID:MSVC>:/external:W0>)
-set_target_properties(reckless_audio_decoders PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
+target_compile_options(reckless_audio_decoders INTERFACE $<$<CXX_COMPILER_ID:MSVC>:/external:W0>)
+# The vendored file's warnings are its own; core/VorbisCrcTable.cpp, the toolkit's, keeps the toolkit's.
+set_source_files_properties(core/AudioDecoders.c PROPERTIES COMPILE_OPTIONS "$<IF:$<C_COMPILER_ID:MSVC>,/w,-w>")
+target_link_libraries(reckless_audio_decoders PRIVATE reckless_warnings)
+set_target_properties(reckless_audio_decoders PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden
+                                                         CXX_VISIBILITY_PRESET hidden)
+target_include_directories(reckless_audio_decoders PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/core")
 
 add_library(reckless_common_audio_files STATIC core/AudioFiles.cpp)
 target_link_libraries(reckless_common_audio_files
