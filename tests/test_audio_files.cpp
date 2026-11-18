@@ -4,6 +4,7 @@
 // FLAC and Ogg Vorbis files read to the reference decoders' samples, and every file cut short or damaged decoded
 // without a fault; then the WAV writer, its header field by field and its samples read back.
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -17,11 +18,13 @@
 #include <optional>
 #include <random>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <vector>
 
 #include "AudioFiles.h"
 #include "AudioTestFiles.h"
+#include "VorbisCrcTable.h"
 
 #include <gtest/gtest.h>
 
@@ -592,6 +595,45 @@ TEST(AudioFiles, AnMp3WhoseFramesChangeTheirChannelsPartWayIsRefused)
     Channels samples;
     EXPECT_EQ(reader->Read(21 * 1152, 2, samples), "") << "the stereo frames alone";
     EXPECT_EQ(reader->Read(21 * 1152 + 1, 2, samples), "its MPEG frames change rate or channels part-way");
+}
+
+TEST(AudioFiles, OggFilesOpenedOnManyThreadsAtOnceFillTheCrcTableOnceAndRaceOnNothing)
+{
+    // stb_vorbis writes a static CRC table on every open, so two opens on two threads wrote it together - the same
+    // values, and still a data race (core/AudioDecoders.c reroutes the call). Many threads open and decode one stream
+    // at once, released together: each must read what the reference decoder gave, and the table must have been filled
+    // exactly once however many opens there were. The race itself is what ThreadSanitizer, Helgrind and DRD report
+    // when this runs under them (Sentinel's tsan preset and Valgrind run, whose MusicLoader opens on its own threads);
+    // the count is what says the reroute is still in place in a build with no detector, and fails if a newer
+    // stb_vorbis changes the call it works on.
+    constexpr int            kThreads = 8;
+    const Bytes              file     = ReadFixture("chords_stereo_48k_q5.ogg");
+    std::atomic<bool>        is_released{false};
+    std::atomic<int>         did_read_well{0};
+    std::vector<std::thread> threads;
+    for (int thread = 0; thread < kThreads; ++thread)
+    {
+        threads.emplace_back([&] {
+            while (!is_released.load())
+            {
+                std::this_thread::yield();
+            }
+            std::string why;
+            auto        reader = AudioFileReader::Open(file, AudioFileFormat::kOggVorbis, why);
+            Channels    out;
+            if (reader != nullptr && reader->Read(3000, 2, out).empty() && out.size() == 2u && out[0].size() == 3000u)
+            {
+                did_read_well.fetch_add(1);
+            }
+        });
+    }
+    is_released.store(true);
+    for (std::thread &thread : threads)
+    {
+        thread.join();
+    }
+    EXPECT_EQ(did_read_well.load(), kThreads);
+    EXPECT_EQ(reckless_vorbis_crc_fill_count(), 1u) << "the table is filled once, however many streams are opened";
 }
 
 TEST(AudioFiles, TheCarriedFlacAndOggReadToTheReferenceDecodersSamples)
