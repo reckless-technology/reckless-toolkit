@@ -630,18 +630,35 @@ class MacSurface : public view::Host
                         once the surface has gone */
     void ChooseFile(const view::FileRequest &request, std::function<void(const std::string &)> picked) override
     {
+        ChooseFiles(request, [picked = std::move(picked)](const std::vector<std::string> &paths) {
+            picked(paths.empty() ? std::string() : paths.front());
+        });
+    }
+
+    /** The system open dialog for several files or a folder, or the save dialog, not modal; cancelled if the surface
+        goes while it is up.
+        @param request  what to ask: the title, the folder, the patterns, the file name, and whether it saves, takes
+                        several files (an NSOpenPanel's allowsMultipleSelection) or chooses a folder
+        @param picked   called on the main thread with the paths chosen, or none for a cancel; never called once the
+                        surface has gone */
+    void ChooseFiles(const view::FileRequest                              &request,
+                     std::function<void(const std::vector<std::string> &)> picked) override
+    {
         if (released_)
         {
             return; // let go: nothing hears an answer
         }
-        auto         callback = std::make_shared<std::function<void(const std::string &)>>(std::move(picked));
-        NSSavePanel *panel    = request.save ? [NSSavePanel savePanel] : [NSOpenPanel openPanel];
-        if (!request.save)
+        auto callback = std::make_shared<std::function<void(const std::vector<std::string> &)>>(std::move(picked));
+        const bool   is_folder = request.choose_folder;
+        const bool   is_save   = request.save && !is_folder;
+        NSSavePanel *panel     = is_save ? [NSSavePanel savePanel] : [NSOpenPanel openPanel];
+        if (!is_save)
         {
             NSOpenPanel *open            = (NSOpenPanel *)panel;
-            open.canChooseFiles          = YES;
-            open.canChooseDirectories    = NO;
-            open.allowsMultipleSelection = NO;
+            open.canChooseFiles          = is_folder ? NO : YES;
+            open.canChooseDirectories    = is_folder ? YES : NO;
+            open.canCreateDirectories    = is_folder; // a new project's place may be made in the dialog
+            open.allowsMultipleSelection = request.multiple && !is_folder;
         }
         else if (!request.file_name.empty())
         {
@@ -655,7 +672,7 @@ class MacSurface : public view::Host
         {
             panel.directoryURL = [NSURL fileURLWithPath:StringOf(request.folder) isDirectory:YES];
         }
-        if (!request.patterns.empty())
+        if (!request.patterns.empty() && !is_folder)
         {
             NSMutableArray<UTType *> *types = [NSMutableArray array];
             for (const auto &pattern : request.patterns)
@@ -682,8 +699,22 @@ class MacSurface : public view::Host
               return;
           }
           [surface->open_panels_ removeObject:panel];
-          const bool chosen = response == NSModalResponseOK && panel.URL != nil;
-          (*callback)(chosen ? std::string([panel.URL.path UTF8String]) : std::string());
+          std::vector<std::string> paths;
+          if (response == NSModalResponseOK)
+          {
+              if (!is_save && ((NSOpenPanel *)panel).allowsMultipleSelection)
+              {
+                  for (NSURL *url in ((NSOpenPanel *)panel).URLs)
+                  {
+                      paths.emplace_back([url.path UTF8String]);
+                  }
+              }
+              else if (panel.URL != nil)
+              {
+                  paths.emplace_back([panel.URL.path UTF8String]);
+              }
+          }
+          (*callback)(paths);
         }];
     }
 
@@ -785,11 +816,11 @@ class MacSurface : public view::Host
 
     /** The modifier keys of an event in the views' form.
         @param flags  an event's modifier flags
-        @return       shift, command and option, each true while held */
+        @return       shift, command, option and control, each true while held */
     static view::Modifiers ModifiersOf(NSEventModifierFlags flags)
     {
         return {(flags & NSEventModifierFlagShift) != 0, (flags & NSEventModifierFlagCommand) != 0,
-                (flags & NSEventModifierFlagOption) != 0};
+                (flags & NSEventModifierFlagOption) != 0, (flags & NSEventModifierFlagControl) != 0};
     }
 
     /** The router the surface's mouse, key and drop events go to.
@@ -1870,7 +1901,12 @@ reckless::view::KeyEvent KeyOf(NSEvent *event)
     if (characters.length > 0)
     {
         const unichar c = [characters characterAtIndex:0];
-        if (c >= 32 && (c < 0xf700 || c > 0xf8ff)) // the function keys are private-use characters
+        if (c >= NSF1FunctionKey && c <= NSF12FunctionKey) // F1 to F12, which are private-use characters
+        {
+            key.key = static_cast<Key>(static_cast<int>(Key::kF1) + static_cast<int>(c - NSF1FunctionKey));
+            return key;
+        }
+        if (c >= 32 && (c < 0xf700 || c > 0xf8ff)) // the other function keys are private-use characters too
         {
             key.key       = Key::kCharacter;
             key.character = static_cast<char32_t>(c);
@@ -2043,6 +2079,41 @@ void ViewRightMouseDown(id self, SEL, NSEvent *event)
     if (MacSurface *owner = OwnerOf(self))
     {
         owner->router().Down(owner->ToDesign(event), 1, true, MacSurface::ModifiersOf([event modifierFlags]));
+    }
+}
+
+/** `otherMouseDown:`: a press of the middle button to the router, which gives it to a view that asked for it. Any other
+    extra button is nothing, as it always was.
+    @param self   the view
+    @param event  the press: its place, click count and modifiers */
+void ViewOtherMouseDown(id self, SEL, NSEvent *event)
+{
+    if (MacSurface *owner = OwnerOf(self); owner != nullptr && [event buttonNumber] == 2)
+    {
+        owner->router().Down(owner->ToDesign(event), 1, reckless::view::MouseButton::kMiddle,
+                             MacSurface::ModifiersOf([event modifierFlags]));
+    }
+}
+
+/** `otherMouseDragged:`: a drag of the middle button to the router.
+    @param self   the view
+    @param event  the drag: its place and modifiers */
+void ViewOtherMouseDragged(id self, SEL, NSEvent *event)
+{
+    if (MacSurface *owner = OwnerOf(self); owner != nullptr && [event buttonNumber] == 2)
+    {
+        owner->router().Drag(owner->ToDesign(event), MacSurface::ModifiersOf([event modifierFlags]));
+    }
+}
+
+/** `otherMouseUp:`: the middle button's release to the router.
+    @param self   the view
+    @param event  the release: its place and modifiers */
+void ViewOtherMouseUp(id self, SEL, NSEvent *event)
+{
+    if (MacSurface *owner = OwnerOf(self); owner != nullptr && [event buttonNumber] == 2)
+    {
+        owner->router().Up(owner->ToDesign(event), MacSurface::ModifiersOf([event modifierFlags]));
     }
 }
 
@@ -2269,6 +2340,9 @@ Class PanelViewClass()
         AddMethod(cls, @selector(cursorUpdate:), reinterpret_cast<IMP>(ViewCursorUpdate));
         AddMethod(cls, @selector(mouseDown:), reinterpret_cast<IMP>(ViewMouseDown));
         AddMethod(cls, @selector(rightMouseDown:), reinterpret_cast<IMP>(ViewRightMouseDown));
+        AddMethod(cls, @selector(otherMouseDown:), reinterpret_cast<IMP>(ViewOtherMouseDown));
+        AddMethod(cls, @selector(otherMouseDragged:), reinterpret_cast<IMP>(ViewOtherMouseDragged));
+        AddMethod(cls, @selector(otherMouseUp:), reinterpret_cast<IMP>(ViewOtherMouseUp));
         AddMethod(cls, @selector(mouseDragged:), reinterpret_cast<IMP>(ViewMouseDragged));
         AddMethod(cls, @selector(rightMouseDragged:), reinterpret_cast<IMP>(ViewMouseDragged));
         AddMethod(cls, @selector(mouseUp:), reinterpret_cast<IMP>(ViewMouseUp));

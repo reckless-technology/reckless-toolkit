@@ -187,3 +187,54 @@ being the person's. A move between two real panels wants a second screen, and is
 On Windows the platform suite reads a real window's place, holds it to a work area, puts it back and moves it by an
 offset and back; it skips where the session has no monitor, as a runner that is a service on a window station that
 shows nothing has none. A move between two monitors of different DPI wants a second screen, and is not asserted.
+
+## Hosting a native view in a window of the app (a plug-in's editor)
+
+What a host that attaches a plug-in's editor to a top-level window of its own needs of the platform - a DAW opening one
+`AppWindow` per VST3 `IPlugView` and calling `attached(window->Handle(), ...)` - and what the toolkit gives it. All of it
+is additive: no default, signature or behaviour a shipped product has changed.
+
+| Need | Where it is | Notes |
+|---|---|---|
+| A window with **no child window** in it | `AppPlatform::OpenWindow` | Legal on every platform: it draws nothing itself (Linux's X window has a black background pixel, Windows' class a black brush, macOS' content view nothing), survives a resize and closes by being destroyed. `Handle()` is the NSView, the HWND or the X window's id. A window with no child window is not one the toolkit paints: whatever is attached must cover the client area. |
+| The content size, **exactly, in the handle's units** | `AppWindow::ContentSizeInUnits`, `SetContentSizeInUnits` | Units are pixels on Windows and Linux and points on macOS, what `IPlugView::getSize`, `onSize` and `IPlugFrame::resizeView` count in. `SetContentSize` goes through design pixels, which at a fractional scale cannot name every pixel. `SetContentSizeInUnits` **tells neither `resized` nor `resized_in_units`** on any platform: the caller set the size and knows it, and a plug-in told the size it asked for would be asked again. |
+| Resizable by the person, **per window and at any time** | `AppWindow::SetUserResizable(is_resizable, least, most)` | The limits are in the handle's units. It replaces what `WindowOptions::constrain` opened the window with: Windows' `WS_THICKFRAME` and `WM_SIZING`, macOS' resizable style mask and `windowWillResize`, and X11's size hints are the ones a window opened with a constraint already used. A window opened with no constraint is one size until this says otherwise. |
+| The person's resize, **in units** | `WindowOptions::resized_in_units(width, height)` | For a window with no child window as for one with. `resized` is told too, in design pixels, as it always was; the new callback is the exact size in the handle's units, which is what `onSize` takes. Neither is told for a size the app set. |
+| Close requested; close | `WindowOptions::closing`; destroy the `AppWindow` | `closing` is the close button, or Escape on a dialog, and does not close the window. Closing is destroying the `AppWindow`, which tells nothing, so call `IPlugView::removed` first, and **destroy after the event has returned** (`CallSoon`) rather than inside `closing`: macOS is inside `windowShouldClose:` there. |
+| The content scale | `AppWindow::Scale()`, `WindowOptions::rescaled` | The window's units per design pixel (Windows: the monitor's DPI over 96; Linux: the desktop's; macOS: 1, a window of points). `rescaled` is told when a window moves to a monitor of another scale, **on Windows only**: Linux reads the desktop's scale once, as the window opens (see below). |
+| A repeating timer the app can stop | `AppPlatform::AddTimer`, `CancelTimer` | `StartTimer` has no cancel and keeps it that way. `AddTimer` returns a token (never 0); `CancelTimer` stops it at once, from inside its own tick too. Natively `KillTimer` on Windows, `invalidate` on macOS and the loop's own table on Linux; the default on `AppPlatform` wraps `StartTimer`, so a platform of a suite's own keeps compiling and the cancelled timer stops calling the app. |
+| **Linux's VST3 `IRunLoop`**: file descriptors | `AppPlatform::CanWatchFileDescriptors`, `WatchFileDescriptor`, `UnwatchFileDescriptor` | `registerEventHandler(handler, fd)` is `WatchFileDescriptor(fd, [handler] { handler->onFDIsSet(fd); })` and `unregisterEventHandler` is `UnwatchFileDescriptor`; `registerTimer(handler, ms)` is `AddTimer(ms, [handler] { handler->onTimer(); })` and `unregisterTimer` is `CancelTimer`. The loop is the app's own `ppoll` (the same one a child window's `RunLoop::WatchFd` uses), so the handlers run on the main thread between X events. **Level triggered**: a descriptor left readable calls back on every turn, so the handler reads it or unwatches it; unwatching from inside the callback is safe. Elsewhere `CanWatchFileDescriptors` is false and `WatchFileDescriptor` answers 0 - VST3's `IRunLoop` is Linux's alone. |
+
+**What Windows and macOS do that Linux does not.** `WindowOptions::resized` (design pixels) is told for a size the app
+set with `SetContentSize` on Windows and macOS, where the platform's resize event is synchronous, and not on Linux, where
+the app's own size is known before the window manager's answer comes. `SetContentSizeInUnits` and `SetUserResizable` are
+the same on all three - told to no one - and a host should size an editor with those and take the person's with
+`resized_in_units`.
+
+**Not here: a live change of scale on Linux.** The window reads the desktop's scale once (`window::DisplayScaleOf`),
+and the toolkit has no source of a change; a plug-in is told its factor at `attached` and not again. The design for it
+would be: select `PropertyChangeMask` on the root window, re-read `RESOURCE_MANAGER` (`Xft.dpi`, which
+`DisplayScaleOf` already parses) when it changes, and tell each window's `rescaled` - and its `Scale()` - the new factor
+at the next turn of the loop. It is left out because the toolkit's own child windows would then need to follow too (they
+hold the scale they were made with), which is a change to every consumer's drawing and not a thing a host's attach
+needs.
+
+**What the suites prove.** On Linux, under `xvfb-run` (`tests/test_app_platform.cpp`): a window with no child window set
+to an exact odd size reads it back and tells no one; the person's resize, made by resizing the X window from another
+connection as a window manager does, reaches `resized_in_units` in pixels; a `WM_DELETE_WINDOW` reaches `closing`
+without closing the window and destroying it removes the X window; a timer cancelled from outside and from inside its own
+tick stops; a pipe's descriptor is polled level triggered and unwatched from its own callback. Windows' and macOS' code
+for the same is compiled by CI and not run: CI's runners show no window to a service.
+
+## Keys, the mouse and the dialogs a timeline needs
+
+| Need | Where it is | Notes |
+|---|---|---|
+| Space, Home, End, Delete, Backspace, arrows, F1 to F12, a letter, as **menu shortcuts** | `app::Shortcut::Plain` / `Primary`, `ShortcutKey` | Existed: `kSpace`, `kHome`, `kEnd`, `kDelete`, `kBackspace`, the arrows, `kF1` to `kF12`, and any character. A shortcut with no primary modifier is offered **after** the views: a `TextField` or `TextView` with the keyboard takes every key that types and every key that moves its caret, so `Plain('s')` and `Plain(ShortcutKey::kSpace)` cannot steal typing from a field and are the bar's the moment no view with the keyboard takes them. Held in `tests/test_menu_bar.cpp`. |
+| The same keys to **a focused view** | `view::KeyEvent`, `view::Key` | Space is `kCharacter` with `U' '`, a letter its character. **New: `Key::kF1` to `kF12`**, which the views never heard (no name for them: Linux gave a `kCharacter` with no character, Windows nothing). A text field and a text view return false for them, so a function key is the bar's. The raw keys' `named_key` is unchanged: the products that read raw keys see what they always did. |
+| The Control key itself | `view::Modifiers::control` | **New**, last in the struct, so `{shift, command, alt}` still reads as it did. `command` is Command on a Mac and Control elsewhere; `control` is the Control key everywhere - on Windows and Linux true with `command`, on a Mac Control alone. A Mac's Control+click is still a right press as it was (`MouseEvent::right`), and now also has `control` set. |
+| Modifiers on the wheel; horizontal wheel | `MouseEvent::modifiers`, `wheel_x`, `wheel_y` | Existed on all three: Ctrl+wheel is `modifiers.control` with `wheel_y`, Shift+wheel is `modifiers.shift` (a view makes it horizontal), a tilt or a trackpad's sideways scroll is `wheel_x` (Windows `WM_MOUSEHWHEEL`, macOS `scrollingDeltaX`, X11 buttons 6 and 7). |
+| The **middle button** | `MouseEvent::middle`, `View::takes_middle_button`, `MouseRouter::Down(point, clicks, MouseButton, modifiers)` | **New**, and opt-in: the platforms never delivered the middle button, so no view was written to ignore it. A press reaches the view under the pointer or the first of its parents with `takes_middle_button` set, and for every other view it is nothing - not a press, not a focus change - so a knob does not turn on a middle click. `MouseRouter::HasPress` says whether a view took it, so a window captures the pointer only for one that did. Windows `WM_MBUTTON*`, macOS `otherMouse*` button 2, X11 button 2. |
+| Cursors | `view::Cursor` | Existed, all eight on all three platforms: `kArrow`, `kPointingHand`, `kIBeam`, `kGrab`, `kGrabbing`, `kUpDown`, `kLeftRight` (horizontal resize: a clip's trim edge), `kCrosshair`. Windows draws the hand for `kGrab` and `kGrabbing`, and X11 `XC_fleur` for both. |
+| A dialog for **several files**, and for a **folder** | `view::FileRequest::multiple`, `choose_folder`; `Host::ChooseFiles`, `View::ChooseFiles` | **New**: `ChooseFiles` answers every path chosen, in the dialog's order. `multiple` is an open's; `choose_folder` asks for a folder and ignores the patterns. Windows `FOS_ALLOWMULTISELECT` and `FOS_PICKFOLDERS`, macOS `NSOpenPanel` `allowsMultipleSelection` and `canChooseDirectories`, Linux zenity's `--multiple` (one path to a line) and `--directory`, kdialog's `--multiple --separate-output` and `--getexistingdirectory`. `ChooseFile` is the same dialog answering the first path, and is what it always was for a request that sets neither. A host that has only `ChooseFile` answers a single request through it and a folder with none. |
+| Files dropped in | `View::FilesDropped(paths, position)` | Existed: every file of the drop, in order, and the drop's position in the view's own coordinates. |

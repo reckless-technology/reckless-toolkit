@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -102,6 +103,49 @@ class FakeAppWindow final : public app::AppWindow
             const auto resized = options_.resized;
             resized(width, height);
         }
+    }
+
+    /** The content's size in native units: the design size at one unit per design pixel, or the exact size
+        SetContentSizeInUnits was given.
+        @return  the content's width and height */
+    gfx::PointI ContentSizeInUnits() const override
+    {
+        return {options_.width, options_.height};
+    }
+
+    /** The content made exactly `width` x `height` units, and told to no one, as every platform has it.
+        @param width   the content's width, in units
+        @param height  the content's height, in units */
+    void SetContentSizeInUnits(int width, int height) override
+    {
+        LeaveFullScreenAtOnce();
+        options_.width  = width;
+        options_.height = height;
+        ++size_in_units_sets_;
+    }
+
+    /** The person's resizing set, kept for the suite to read (`is_user_resizable`, `least_units`, `most_units`).
+        @param is_resizable  true for a window the person may resize
+        @param least         the least content, in units; {0, 0} for none
+        @param most          the most content, in units; {0, 0} for none
+        @return              true */
+    bool SetUserResizable(bool is_resizable, gfx::PointI least, gfx::PointI most) override
+    {
+        is_user_resizable = is_resizable;
+        least_units       = least;
+        most_units        = most;
+        return true;
+    }
+
+    bool        is_user_resizable{false}; ///< what SetUserResizable last set
+    gfx::PointI least_units{0, 0};        ///< the least content SetUserResizable last set
+    gfx::PointI most_units{0, 0};         ///< the most content SetUserResizable last set
+
+    /** How many times the app set the size in units (SetContentSizeInUnits).
+        @return  the count */
+    int size_in_units_sets() const noexcept
+    {
+        return size_in_units_sets_;
     }
 
     /** The work area's size, where the suite gave one: the frame being the content alone.
@@ -248,6 +292,11 @@ class FakeAppWindow final : public app::AppWindow
             const auto resized = options_.resized;
             resized(width, height);
         }
+        if (options_.resized_in_units)
+        {
+            const auto resized = options_.resized_in_units;
+            resized(width, height);
+        }
     }
 
   private:
@@ -276,6 +325,7 @@ class FakeAppWindow final : public app::AppWindow
     FakeAppPlatform   &platform_;                      ///< the platform that lists it
     int                brought_to_front_{0};           ///< how many times BringToFront ran
     int                on_screen_resizes_{0};          ///< how many times SetContentSizeOnScreen ran
+    int                size_in_units_sets_{0};         ///< how many times SetContentSizeInUnits ran
     bool               is_full_screen_{false};         ///< full screen, or going there: the state last asked for
     bool               is_full_screen_pending_{false}; ///< a change begun and not yet finished (FinishFullScreen)
     gfx::PointI        windowed_size_{0, 0};           ///< the content's size before it went full screen
@@ -335,6 +385,58 @@ class FakeAppPlatform final : public app::AppPlatform
     void StartTimer(int milliseconds, std::function<void()> tick) override
     {
         timers_.push_back({milliseconds, std::move(tick)});
+    }
+
+    /** The fake's loop watches descriptors for the app, as Linux's does.
+        @return  true */
+    bool CanWatchFileDescriptors() const override
+    {
+        return true;
+    }
+
+    /** A descriptor watched: held until the suite says it is readable (FireDescriptor) or it is unwatched.
+        @param fd     the descriptor
+        @param ready  what runs when the suite fires it
+        @return       a token for UnwatchFileDescriptor */
+    int WatchFileDescriptor(int fd, std::function<void()> ready) override
+    {
+        const int token = ++last_watch_token_;
+        watches_[token] = {fd, std::move(ready)};
+        return token;
+    }
+
+    /** A watch taken back.
+        @param token  a token WatchFileDescriptor gave */
+    void UnwatchFileDescriptor(int token) override
+    {
+        watches_.erase(token);
+    }
+
+    /** The descriptor `fd` is readable: each watch on it runs once.
+        @param fd  the descriptor
+        @return    how many watches ran */
+    int FireDescriptor(int fd)
+    {
+        std::vector<std::function<void()>> ready;
+        for (const auto &[token, watch] : watches_)
+        {
+            if (watch.fd == fd)
+            {
+                ready.push_back(watch.ready);
+            }
+        }
+        for (const auto &call : ready)
+        {
+            call();
+        }
+        return static_cast<int>(ready.size());
+    }
+
+    /** How many descriptors are watched now.
+        @return  the count */
+    std::size_t watch_count() const noexcept
+    {
+        return watches_.size();
     }
 
     /** `call` after the event being handled: run by Run, or by RunCalls.
@@ -542,14 +644,19 @@ class FakeAppPlatform final : public app::AppPlatform
 
     /** A key as a platform's child window hands it to the views: a letter, digit or mark as the character it types
         (a letter shifted in upper case, unless the primary modifier is held, when it stays the letter, as every
-        platform now delivers Ctrl+letter and Command+letter), the editing and moving keys by name, and keys the views
-        have no name for (the function keys) as none.
+        platform now delivers Ctrl+letter and Command+letter), the editing, moving and function keys by name.
         @param pressed  the key and its modifiers
         @return         the views' key event */
     static view::KeyEvent ViewKeyOf(const app::Shortcut &pressed)
     {
         view::KeyEvent key;
-        key.modifiers = {pressed.shift, pressed.primary, pressed.alt};
+        key.modifiers = {pressed.shift, pressed.primary, pressed.alt, pressed.primary || pressed.control};
+        if (pressed.key >= app::ShortcutKey::kF1 && pressed.key <= app::ShortcutKey::kF12)
+        {
+            key.key = static_cast<view::Key>(static_cast<int>(view::Key::kF1) +
+                                             (static_cast<int>(pressed.key) - static_cast<int>(app::ShortcutKey::kF1)));
+            return key;
+        }
         switch (pressed.key)
         {
         case app::ShortcutKey::kCharacter:
@@ -602,7 +709,7 @@ class FakeAppPlatform final : public app::AppPlatform
             key.key = view::Key::kPageDown;
             break;
         default:
-            break; // a function key, or none: the views have no name for it
+            break; // none
         }
         return key;
     }
@@ -647,10 +754,20 @@ class FakeAppPlatform final : public app::AppPlatform
     std::atomic<bool>                 quit_{false};  ///< Quit has been asked; Run returns
     std::deque<std::function<void()>> calls_;        ///< the calls CallSoon queued, in order
     std::vector<Timer>                timers_;       ///< the timers, in the order started
-    std::vector<FakeAppWindow *>      windows_;      ///< the windows open, not owned
-    std::vector<view::MenuItem>       menu_;         ///< the menu SetMenu set
-    std::function<void(int)>          chosen_;       ///< SetMenu's chosen
-    std::function<void()>             quit_handler_; ///< SetQuitHandler's handler
+
+    /** A descriptor WatchFileDescriptor watched. */
+    struct Watch
+    {
+        int                   fd{-1}; ///< the descriptor
+        std::function<void()> ready;  ///< what FireDescriptor runs
+    };
+
+    std::map<int, Watch>         watches_;             ///< the watches by token
+    int                          last_watch_token_{0}; ///< the last token a watch was given
+    std::vector<FakeAppWindow *> windows_;             ///< the windows open, not owned
+    std::vector<view::MenuItem>  menu_;                ///< the menu SetMenu set
+    std::function<void(int)>     chosen_;              ///< SetMenu's chosen
+    std::function<void()>        quit_handler_;        ///< SetQuitHandler's handler
     /** SetMenuBar's bar, shared with the drawn bars. */
     std::shared_ptr<app::MenuBarController> bar_{std::make_shared<app::MenuBarController>()};
 };

@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
@@ -108,6 +110,49 @@ class AppWindow
         return {0, 0};
     }
 
+    /** The content's size in the window's native units: pixels on Windows and Linux, points on macOS - the units a
+        native child view (a plug-in's editor, attached to Handle()) is sized in. The size of what a person dragged
+        to, or SetContentSizeInUnits set, exactly, with no rounding through design pixels.
+        @return  the content's width and height, in native units; {0, 0} where the platform cannot say (the
+                 default) */
+    virtual gfx::PointI ContentSizeInUnits() const
+    {
+        return {0, 0};
+    }
+
+    /** The content made exactly `width` x `height` native units (pixels on Windows and Linux, points on macOS), its
+        top left where it stands - what a plug-in asking its host for a new editor size (VST3's
+        `IPlugFrame::resizeView`) is given. Unlike SetContentSize it **tells neither `resized` nor
+        `resized_in_units`**, on every platform: the caller set the size and knows it, and a plug-in told the size it
+        asked for would be asked again. Not held to the constraint. Leaves full screen first, as SetContentSize does.
+        The default is SetContentSize at the size in design pixels, rounded.
+        @param width   the content's width, in native units
+        @param height  the content's height, in native units */
+    virtual void SetContentSizeInUnits(int width, int height)
+    {
+        const float scale = Scale() > 0.0f ? Scale() : 1.0f;
+        SetContentSize(static_cast<int>(std::lround(static_cast<float>(width) / scale)),
+                       static_cast<int>(std::lround(static_cast<float>(height) / scale)));
+    }
+
+    /** The person's own resizing of the window - its frame, its corners - turned on or off, whatever the window was
+        opened with: a window opened with no `constrain` (one size) made resizable between limits, or one opened with a
+        constraint held to one size. A resizable window is held to the limits given, **in native units**
+        (ContentSizeInUnits's), and told each size it takes to `resized` and `resized_in_units` as a person's drag
+        is - and not for a size the app sets (SetContentSizeInUnits). It replaces the constraint the window was opened
+        with. The default does nothing, for a platform whose windows cannot change.
+        @param is_resizable  true for a window the person may resize, false for one of the size it has now
+        @param least         the least content, in native units; {0, 0} for none (one unit)
+        @param most          the most content, in native units; {0, 0} for none (what the screen takes)
+        @return              true when the window's resizing was set; false where the platform cannot */
+    virtual bool SetUserResizable(bool is_resizable, gfx::PointI least, gfx::PointI most)
+    {
+        (void)is_resizable;
+        (void)least;
+        (void)most;
+        return false;
+    }
+
     /** The title bar's text made `title` - the window's name following what it shows, a document's or a game's -
         where the platform shows it: the window's title on macOS, its caption and the task bar's button on Windows,
         _NET_WM_NAME and WM_NAME on Linux. A window that is never given one keeps the title it was opened with.
@@ -192,7 +237,13 @@ struct WindowOptions
     bool        dialog{false};  ///< a dialog: no minimise button, Escape closes it, it stays over its owner
     AppWindow  *owner{nullptr}; ///< the window a dialog belongs to
     std::optional<std::pair<int, int>> position; ///< where it stood last (AppWindow::Position); else centred
-    std::function<void()>              closing;  ///< the person closed it: its close button, or Escape on a dialog
+    /** The person closed it: its close button, or Escape on a dialog. The window is **not** closed by this: the app
+        closes it by destroying the AppWindow, which is also how it closes one of its own accord, and which tells
+        nothing (`closing` is not called for it). Destroy it after the call returns (CallSoon) rather than inside it,
+        as a window the platform is still delivering an event to is safest left until that event is done. A window
+        with no child window in it is closed the same way, and it is then the app's to take down first whatever it
+        attached to Handle(). */
+    std::function<void()> closing;
     /** The window moved to a display of another scale and was sized again for it, its content the design size times
         `scale` now (Windows' per-monitor scaling): its child window is to draw at that scale (SetScale). */
     std::function<void(float scale)> rescaled;
@@ -213,6 +264,13 @@ struct WindowOptions
 
     /** The person resized the window: its content is `width` x `height` design pixels now. */
     std::function<void(int width, int height)> resized;
+
+    /** The person resized the window: its content is `width` x `height` **native units** now (pixels on Windows and
+        Linux, points on macOS: AppWindow::ContentSizeInUnits) - the size a native child view, a plug-in's editor, is
+        told with, which `resized` cannot give exactly at a fractional scale because it rounds through design pixels.
+        Told for a window with no child window in it, as `resized` is, and for the same resizes: not for a size the app
+        sets with SetContentSizeInUnits. May be empty. */
+    std::function<void(int width, int height)> resized_in_units;
 
     /** The window carries the app's menu bar (SetMenuBar) where the platform puts one on a window: on Windows the
         window's own bar, across its top above the content, which keeps its design size - set before the window opens
@@ -290,6 +348,72 @@ class AppPlatform
         @param milliseconds  the period, in milliseconds
         @param tick          the call made on the main thread each period */
     virtual void StartTimer(int milliseconds, std::function<void()> tick) = 0;
+
+    /** A repeating timer the app can stop: `tick` every `milliseconds` on the main thread, until CancelTimer is called
+        with the token returned, or the platform goes. It may be cancelled from inside its own tick. The default is
+        StartTimer's timer with its tick made nothing once cancelled, so a platform that gives no cancel of its own
+        (a suite's) still stops it calling the app; the platforms here stop the timer itself.
+        @param milliseconds  the period, in milliseconds, at least 1
+        @param tick          the call made on the main thread each period
+        @return              a token for CancelTimer; never 0 */
+    virtual int AddTimer(int milliseconds, std::function<void()> tick)
+    {
+        const int  token           = ++next_fallback_token_;
+        const auto cancelled       = std::make_shared<bool>(false);
+        fallback_cancelled_[token] = cancelled;
+        StartTimer(milliseconds, [cancelled, tick = std::move(tick)] {
+            if (!*cancelled)
+            {
+                tick();
+            }
+        });
+        return token;
+    }
+
+    /** A timer AddTimer started stopped: its tick is not called again, not even one already due. A token that is
+        already cancelled, or never was one, is ignored.
+        @param token  a token AddTimer gave */
+    virtual void CancelTimer(int token)
+    {
+        const auto it = fallback_cancelled_.find(token);
+        if (it != fallback_cancelled_.end())
+        {
+            *it->second = true;
+            fallback_cancelled_.erase(it);
+        }
+    }
+
+    /** Whether WatchFileDescriptor is there: the platform's loop polls descriptors for the app. True on Linux, whose
+        loop is the app's own poll; false elsewhere, where a plug-in's own loop (VST3's `IRunLoop` is Linux's alone)
+        has no use for one, and for the default.
+        @return  true when WatchFileDescriptor can watch */
+    virtual bool CanWatchFileDescriptors() const
+    {
+        return false;
+    }
+
+    /** `ready` called on the main thread whenever `fd` is readable, hung up or in error, until
+        UnwatchFileDescriptor - what VST3's `IRunLoop::registerEventHandler` asks of a host on Linux. Level
+        triggered: a descriptor left readable calls `ready` on every turn of the loop, so the handler reads it or
+        unwatches it. It may be unwatched from inside `ready`. The descriptor stays the caller's, to close after the
+        unwatch.
+        @param fd     the descriptor
+        @param ready  what runs on the main thread when it is readable
+        @return       a token for UnwatchFileDescriptor; 0 where the platform cannot watch (CanWatchFileDescriptors) */
+    virtual int WatchFileDescriptor(int fd, std::function<void()> ready)
+    {
+        (void)fd;
+        (void)ready;
+        return 0;
+    }
+
+    /** A descriptor's watch taken back: `ready` is not called again. A token already taken back, 0, or one the
+        platform never gave is ignored.
+        @param token  a token WatchFileDescriptor gave */
+    virtual void UnwatchFileDescriptor(int token)
+    {
+        (void)token;
+    }
 
     /** `call` after the event being handled, on the main thread.
         @param call  the call to make once, after the current event */
@@ -399,5 +523,9 @@ class AppPlatform
         before it returns - the process may end then - and calls Quit.
         @param handler  the app's ending, called on the main thread */
     virtual void SetQuitHandler(std::function<void()> handler) = 0;
+
+  private:
+    int                                  next_fallback_token_{0}; ///< the last token AddTimer's default gave.
+    std::map<int, std::shared_ptr<bool>> fallback_cancelled_;     ///< the default AddTimer's timers' cancel flags.
 };
 } // namespace reckless::app
