@@ -235,6 +235,36 @@ TEST(GpuDrawing, ASoftwareGlIsNamedByItsRenderer)
     EXPECT_FALSE(IsSoftwareRenderer(nullptr));
 }
 
+TEST(GpuDrawing, EachNameOfASoftwareRendererIsFoundInAnyCapitalisation)
+{
+    // The decision that keeps a software GL from being started for a window, held directly: it needs no display, no GPU
+    // and no environment, so it runs on every machine and cannot skip. The window suite's case that proves the same
+    // refusal end to end skips where the EGL is not Mesa's (NVIDIA's ignores LIBGL_ALWAYS_SOFTWARE).
+    using reckless::window::IsSoftwareRenderer;
+    for (const char *name : {"llvmpipe", "softpipe", "swrast", "software rasterizer", "software renderer"})
+    {
+        EXPECT_TRUE(IsSoftwareRenderer(name)) << name;
+    }
+    for (const char *name : {"LLVMPIPE (LLVM 15.0.7, 256 bits)", "SoftPipe", "Mesa SwRast", "SOFTWARE RASTERIZER",
+                             "Apple Software Renderer", "Mesa Software Rasterizer"})
+    {
+        EXPECT_TRUE(IsSoftwareRenderer(name)) << name;
+    }
+    EXPECT_FALSE(IsSoftwareRenderer(nullptr));
+    EXPECT_FALSE(IsSoftwareRenderer(""));
+}
+
+TEST(GpuDrawing, TheRenderersOfRealGpusAreNotSoftware)
+{
+    using reckless::window::IsSoftwareRenderer;
+    // VMware's virtual GPU names LLVM in its renderer string but draws on the host's GPU: a bare "llvm" is deliberately
+    // not among the names, and that is what lets a virtual machine run the GPU suites at all.
+    EXPECT_FALSE(IsSoftwareRenderer("SVGA3D; build: RELEASE;  LLVM;"));
+    EXPECT_FALSE(IsSoftwareRenderer("llvm"));
+    EXPECT_FALSE(IsSoftwareRenderer("Mesa Intel(R) UHD Graphics 630 (CFL GT2)"));
+    EXPECT_FALSE(IsSoftwareRenderer("Quadro P2000/PCIe/SSE2"));
+}
+
 // ---- The back buffer taken before the frame (window/EarlyBackBuffer.h) -------------------------------------------
 //
 // The rules for holding one between the taking and the present, which need no GPU: a frame that never presented
