@@ -524,6 +524,19 @@ class AppPlatform
         @param handler  the app's ending, called on the main thread */
     virtual void SetQuitHandler(std::function<void()> handler) = 0;
 
+    /** What takes the files the system opens in the app: a document double-clicked in the Finder, or dropped on the
+        Dock's icon - on macOS, which hands the program an open-file event rather than an argument. Told each batch of
+        paths (UTF-8) on the main thread, in order; batches that came before a handler was set are given when it is
+        (app/OpenFileQueue.h). An empty handler takes none. **Linux and Windows deliver nothing here**: a file opened
+        there is on the command line (AppOptions::unknown), which the product reads itself, so the default does nothing
+        and a platform that has no such event behaves as it always did. A product asks through
+        AppRunHooks::on_open_files rather than calling this itself.
+        @param handler  what takes each batch of paths; empty for none */
+    virtual void SetOpenFilesHandler(std::function<void(const std::vector<std::string> &paths)> handler)
+    {
+        (void)handler;
+    }
+
   private:
     int                                  next_fallback_token_{0}; ///< the last token AddTimer's default gave.
     std::map<int, std::shared_ptr<bool>> fallback_cancelled_;     ///< the default AddTimer's timers' cancel flags.

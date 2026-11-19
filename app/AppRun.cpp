@@ -157,6 +157,13 @@ int RunApp(AppPlatform &platform, view::View &root, gfx::PointI minimum, const A
         }
     });
     platform.SetQuitHandler([&platform] { platform.Quit(); });
+    // Files the system opens: handed over from here, once the window exists and just before the loop runs, so a
+    // document that started the program reaches a product that has its window, never one that has none. An empty
+    // callback sets nothing, and a platform with no such event ignores it.
+    if (hooks.on_open_files)
+    {
+        platform.SetOpenFilesHandler(hooks.on_open_files);
+    }
     const auto started = std::chrono::steady_clock::now();
     platform.StartTimer(1000 / 30, [&] {
         // A smoke run whose window draws nothing in twenty seconds has no display to draw on.
@@ -173,6 +180,10 @@ int RunApp(AppPlatform &platform, view::View &root, gfx::PointI minimum, const A
     }
     child->SetFrameCallback(nullptr);
     platform.SetQuitHandler(nullptr);
+    if (hooks.on_open_files)
+    {
+        platform.SetOpenFilesHandler(nullptr); // the product's callback does not outlive the loop
+    }
     child.reset();
     window.reset();
     if (options.is_smoke)

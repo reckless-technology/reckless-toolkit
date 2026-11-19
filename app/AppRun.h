@@ -71,6 +71,13 @@ struct AppRunHooks
     /** Called when the window goes full screen (true) or comes back (false), whoever asked: the place to set a menu's
         tick again (FullScreenMenuEntry) and to keep the choice (WindowOptions::full_screen_changed); may be empty. */
     std::function<void(bool is_full_screen)> on_full_screen;
+    /** Called with the paths (UTF-8) of the files the system opens in the app, on the main thread, once the window
+        exists and the loop runs - **never before** - both for a launch by document (a double-clicked file on macOS
+        starts the program, and the paths come as the loop starts) and for a document opened while it runs. Each call
+        is one batch, in the order the system gave them. Only macOS has such an event; **on Linux and Windows the
+        callback is never called**, and the product reads its own command line (AppOptions::unknown) as it always did.
+        Empty, as every app was before, leaves the program's open-file events unanswered exactly as they were. */
+    std::function<void(const std::vector<std::string> &paths)> on_open_files;
 };
 
 /** An app on `platform`: its window, titled "<name>  v<version>", opened round `root` at the root's size (held to what

@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "AppPlatform.h"
+#include "OpenFileQueue.h"
 #include "PostQueue.h"
 #include "WindowPlace.h"
 
@@ -495,6 +496,28 @@ class FakeAppPlatform final : public app::AppPlatform
         quit_handler_ = std::move(handler);
     }
 
+    /** The handler the app asked for opened files with, behind the queue a platform keeps them in (OpenFileQueue).
+        @param handler  what takes each batch of paths; empty for none */
+    void SetOpenFilesHandler(std::function<void(const std::vector<std::string> &paths)> handler) override
+    {
+        open_files_.SetHandler(std::move(handler));
+    }
+
+    /** The system opens files in the app, as macOS's open-file event does: given to the app's handler, or held until
+        it has one.
+        @param paths  the files' paths, UTF-8 */
+    void OpenFiles(std::vector<std::string> paths)
+    {
+        open_files_.Receive(std::move(paths));
+    }
+
+    /** Whether the app has asked for opened files.
+        @return  true while a handler is set */
+    bool HasOpenFilesHandler() const noexcept
+    {
+        return open_files_.HasHandler();
+    }
+
     /** The posts' queue, woken into Run.
         @return  the queue */
     std::shared_ptr<core::PostQueue> Posts() override
@@ -768,6 +791,7 @@ class FakeAppPlatform final : public app::AppPlatform
     std::vector<view::MenuItem>  menu_;                ///< the menu SetMenu set
     std::function<void(int)>     chosen_;              ///< SetMenu's chosen
     std::function<void()>        quit_handler_;        ///< SetQuitHandler's handler
+    app::OpenFileQueue           open_files_;          ///< the opened files, held until SetOpenFilesHandler's handler
     /** SetMenuBar's bar, shared with the drawn bars. */
     std::shared_ptr<app::MenuBarController> bar_{std::make_shared<app::MenuBarController>()};
 };
