@@ -1097,7 +1097,12 @@ class MouseRouter
     }
 
     /** A press: to the view under the pointer, which keeps the press until it ends; the keyboard to the first view
-        from it up that wants it.
+        from it up that wants it. The router holds one press at a time: a press that comes while a view holds another -
+        a second button, on that view or another - first ends the held one for its view, as a release (MouseUp) at the
+        last place the router knew the pointer, and only then begins the new one, so every MouseDown a view hears is
+        followed by one MouseUp. (A middle press no view asked for is nothing and leaves the held press alone.) The
+        window's platforms say nothing of which button was released, so the next release of any button ends the press
+        then held.
         @param point      the pointer, in the root's coordinates, in pixels
         @param clicks     1 for a press, 2 for the second press of a double click
         @param right      true for the secondary button, or a control-click on a Mac
@@ -1114,19 +1119,26 @@ class MouseRouter
         @param modifiers  the modifier keys held */
     void Down(gfx::PointF point, int clicks, MouseButton button, Modifiers modifiers)
     {
+        if (pressed_ != nullptr)
+        {
+            if (button == MouseButton::kMiddle && PressTarget(point, button) == nullptr)
+            {
+                return; // a middle press no view asked for is nothing, and it leaves the press held as it was
+            }
+            EndHeldPress(); // one press at a time: the view that holds one hears it end before the next begins
+        }
         Hover(point, modifiers);
-        pressed_ = ViewAt(root_, point.ToNearestInt());
-        down_    = point;
-        button_  = button; // the press's button, for its drags and its release
+        pressed_        = PressTarget(point, button);
+        down_           = point;
+        last_point_     = point;
+        last_modifiers_ = modifiers;
+        button_         = button; // the press's button, for its drags and its release
         if (button == MouseButton::kMiddle)
         {
             // Only a view that asked for the middle button (View::takes_middle_button) hears it, the one under the
-            // pointer or the first of its parents that did; for every other the press is nothing, as it was before the
-            // router knew the button, and it moves neither the keyboard nor an earlier press's double click.
-            while (pressed_ != nullptr && !pressed_->takes_middle_button)
-            {
-                pressed_ = pressed_->parent();
-            }
+            // pointer or the first of its parents that did (PressTarget); for every other the press is nothing, as it
+            // was before the router knew the button, and it moves neither the keyboard nor an earlier press's double
+            // click.
             double_click_ = nullptr;
             if (pressed_ != nullptr)
             {
@@ -1172,6 +1184,8 @@ class MouseRouter
         {
             double_click_ = nullptr; // a drag, not a double click
         }
+        last_point_     = point;
+        last_modifiers_ = modifiers;
         if (pressed_ != nullptr)
         {
             pressed_->MouseDrag(EventFor(*pressed_, point, 1, button_, modifiers));
@@ -1427,6 +1441,37 @@ class MouseRouter
     static constexpr float                     kDoubleClickSlop = 4.0f;
     static constexpr std::chrono::milliseconds kLongPress{300}; ///< a press held past this long is no double click
 
+    /** The view a press of `button` at `point` goes to: the one under the pointer; for the middle button, it or the
+        first of its parents that asked for that button (View::takes_middle_button), null when none did.
+        @param point   the pointer, in the root's coordinates, in pixels
+        @param button  the button pressed
+        @return        the view, not owned; null for none */
+    View *PressTarget(gfx::PointF point, MouseButton button) const
+    {
+        View *view = ViewAt(root_, point.ToNearestInt());
+        if (button == MouseButton::kMiddle)
+        {
+            while (view != nullptr && !view->takes_middle_button)
+            {
+                view = view->parent();
+            }
+        }
+        return view;
+    }
+
+    /** The held press ends because another begins: its view hears a MouseUp of its own button at the last place the
+        pointer was told of, which is what the release of that button would have said, and no double click follows. */
+    void EndHeldPress()
+    {
+        View *view    = pressed_;
+        pressed_      = nullptr;
+        double_click_ = nullptr;
+        if (view != nullptr)
+        {
+            view->MouseUp(EventFor(*view, last_point_, 1, button_, last_modifiers_));
+        }
+    }
+
     /** The event `view` hears at `root_point`, in its own coordinates: made of its arguments alone, so a wheel or a
        move during a press changes nothing of the press.
         @param view        the view the event goes to
@@ -1496,6 +1541,8 @@ class MouseRouter
     View                                 *double_click_{nullptr}; ///< a double click's second press, until its release
     std::chrono::steady_clock::time_point double_click_at_{};     ///< when the second press of a double click came
     gfx::PointF                           down_{};                ///< where the press began, in the root's coordinates
+    gfx::PointF                           last_point_{};          ///< where the press was last told of the pointer
+    Modifiers                             last_modifiers_{};      ///< the modifier keys it was last told of
     MouseButton                           button_{MouseButton::kLeft}; ///< the button the press is of
     Cursor                                cursor_{Cursor::kArrow};     ///< the shape last told to the host
 };
