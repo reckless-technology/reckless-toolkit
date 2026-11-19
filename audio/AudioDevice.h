@@ -124,7 +124,8 @@ struct StreamRequest
 
 /** What a stream opened as: its rate and block, the channels the callback sees each way, the latency the API reports
     beyond the block itself - input and output summed, in samples, 0 where it reports none - and the periods its output
-    buffers where the API says. */
+    buffers where the API says. The two sides of that sum are told apart as well (`input_latency_frames`,
+    `output_latency_frames`), for a program that places a take by the input's alone or shows a round trip from both. */
 struct StreamFormat
 {
     int sample_rate{0};      ///< the rate the stream runs at, in hertz
@@ -133,6 +134,15 @@ struct StreamFormat
     int output_channels{0};  ///< the output channels the callback sees
     int reported_latency{0}; ///< the latency the API reports beyond the block, in samples, input and output summed
     int periods{0};          ///< the blocks the output buffers, where the API says; 0 where it does not
+    /** The input side's share of `reported_latency`, in samples: what a recording is late by beyond the block the
+        callback reads, which a program places a take by. 0 with no input, and 0 where the back end cannot tell the
+        input's from the output's (ALSA: the figure it has is the playback buffer alone, whose capture side adds
+        no latency of its own beyond the block, and a driver's own capture delay is not reported). */
+    int input_latency_frames{0};
+    /** The output side's share of `reported_latency`, in samples: what a sound written is late by beyond the block the
+        callback writes. 0 where the back end cannot tell. With `input_latency_frames` it is `reported_latency`,
+        exactly, on every back end - a back end that tells neither side leaves both 0 and the sum as it was. */
+    int output_latency_frames{0};
 };
 
 /** What runs a stream. */

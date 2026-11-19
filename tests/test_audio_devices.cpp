@@ -282,6 +282,14 @@ TEST_P(AudioDevices, RunsAStreamAtTheRateAndTheBlockItOpenedAt)
     EXPECT_EQ(format.input_channels, request.input_count);
     EXPECT_EQ(format.output_channels, request.output_count);
     EXPECT_GE(format.reported_latency, 0);
+    // The two sides are the sum, on every API; an input the stream does not open reports none.
+    EXPECT_GE(format.input_latency_frames, 0);
+    EXPECT_GE(format.output_latency_frames, 0);
+    EXPECT_EQ(format.input_latency_frames + format.output_latency_frames, format.reported_latency);
+    if (format.input_channels == 0)
+    {
+        EXPECT_EQ(format.input_latency_frames, 0);
+    }
 
     // The stream ran, for as long as the rate and the block say it should have, at the rate it opened at.
     ASSERT_GT(timing.callbacks, 0) << "the stream never called back";
@@ -771,6 +779,9 @@ TEST_P(AudioDevices, BuffersThePeriodsTheRequestAsksFor)
         // Beyond the block each way, as StreamFormat means it: the buffer less the two blocks a cable's round trip
         // counts beside it (CarriesTheSamplesALoopBringsBack).
         EXPECT_EQ(format.reported_latency, (periods - 2) * format.block_size) << periods << " periods";
+        // ALSA's figure is the playback buffer's alone: the output side holds all of it, the input side is not told.
+        EXPECT_EQ(format.output_latency_frames, format.reported_latency);
+        EXPECT_EQ(format.input_latency_frames, 0);
         EXPECT_EQ(scan.corrupt, 0);
         if (recorder.xruns() == 0)
         {

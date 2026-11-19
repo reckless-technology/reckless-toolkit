@@ -729,7 +729,8 @@ inline constexpr EmbeddedFile kEmbeddedFiles[] = {
     # formats, periods and capture ring, which need no Windows.
     add_executable(reckless_audio_test tests/test_audio_settings.cpp tests/test_wasapi_formats.cpp
                                        tests/test_asio_formats.cpp tests/test_win_midi_formats.cpp
-                                       tests/test_core_midi_formats.cpp tests/test_realtime_threads.cpp)
+                                       tests/test_core_midi_formats.cpp tests/test_realtime_threads.cpp
+                                       tests/test_stream_format.cpp)
     target_link_libraries(reckless_audio_test PRIVATE reckless_common_audio reckless_toolkit_test_support
                                                       reckless_warnings GTest::gtest_main)
     if(WIN32)

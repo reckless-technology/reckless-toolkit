@@ -230,6 +230,26 @@ devices.
 Nothing above the seam has to change: `AudioDevice.h`'s `AudioSystem` (nine pure virtuals) and `MidiSystem` (four)
 were already written against no library, and no test names a back end.
 
+## The latency, each side apart
+
+`StreamFormat::reported_latency` is one figure, the latency beyond the block input and output summed. Beside it,
+`input_latency_frames` and `output_latency_frames` give the two sides, and they **add up to it exactly** on every back
+end (the sum itself is as it always was, so no caller changed): a recording program places a take by the input's, and
+shows a round trip from both. Each is from what the back end already knew:
+
+| Back end | `input_latency_frames` | `output_latency_frames` |
+|---|---|---|
+| ALSA | **0: not told.** The back end's figure is the playback buffer less two blocks, which is the output's; a capture side's room costs no latency and its driver's own delay is not reported | all of `reported_latency` |
+| JACK | the first input port's capture latency (`jack_port_get_latency_range`, its least) | the first output port's playback latency |
+| CoreAudio | the input scope's device latency, safety offset and its stream's latency (`Latency`); 0 with no input | the output scope's the same |
+| Windows Audio | the capture stream's latency (`GetStreamLatency`) plus the capture period the ring keeps; 0 with no input | the render stream's latency |
+| ASIO | `ASIOGetLatencies`' input less a block; 0 with no input | its output less a block; 0 with no output |
+
+A side that is not open is 0; so is a back end that tells neither (the offline device). **Unrun:** the ALSA split
+is held by the device suite (`tests/test_audio_devices.cpp`) in CI on the loopback card, and was not run on the
+machine that wrote it; the JACK split is the same arithmetic, run there by the same suite; CoreAudio's, Windows Audio's
+and ASIO's are compiled by CI and have never run - the sums are the lines they replace, split.
+
 ## Where each API ends up
 
 | Platform | Audio | MIDI |

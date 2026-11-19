@@ -92,11 +92,13 @@ class OfflineAudioSystem final : public AudioSystem
         format_.sample_rate = request.sample_rate;
         format_.block_size =
             block_override_ > 0 ? block_override_ : (request.block_size > 0 ? request.block_size : 256);
-        format_.input_channels   = request.input_count;
-        format_.output_channels  = request.output_count;
-        format_.reported_latency = 0;
-        open_                    = true;
-        failed_                  = false;
+        format_.input_channels        = request.input_count;
+        format_.output_channels       = request.output_count;
+        format_.reported_latency      = 0;
+        format_.input_latency_frames  = 0; // no device, no latency, on either side
+        format_.output_latency_frames = 0;
+        open_                         = true;
+        failed_                       = false;
         return true;
     }
 

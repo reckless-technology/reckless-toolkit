@@ -351,11 +351,11 @@ class JackSystem final : public AudioSystem
         inputs_.assign(std::max<std::size_t>(in_ports_.size(), 1), nullptr);
         outputs_.assign(out_ports_.size(), nullptr);
 
-        format_.sample_rate      = rate;
-        format_.block_size       = block_.load(std::memory_order_acquire);
-        format_.input_channels   = static_cast<int>(in_ports_.size());
-        format_.output_channels  = static_cast<int>(out_ports_.size());
-        format_.reported_latency = DeviceLatency();
+        format_.sample_rate     = rate;
+        format_.block_size      = block_.load(std::memory_order_acquire);
+        format_.input_channels  = static_cast<int>(in_ports_.size());
+        format_.output_channels = static_cast<int>(out_ports_.size());
+        SetDeviceLatency();
         callback_.store(&callback, std::memory_order_release);
         failed_.store(false, std::memory_order_relaxed);
         server_gone_.store(false, std::memory_order_relaxed);
@@ -383,7 +383,7 @@ class JackSystem final : public AudioSystem
         }
         active_ = true;
         AwaitBlock();
-        format_.reported_latency = DeviceLatency(); // a device port's latency follows the block, settled now
+        SetDeviceLatency(); // a device port's latency follows the block, settled now
         // Connected once active, as JACK requires; deactivating disconnects them, so each Start connects afresh.
         for (std::size_t c = 0; c < out_ports_.size(); ++c)
         {
@@ -599,13 +599,14 @@ class JackSystem final : public AudioSystem
         }
     }
 
-    /** The latency the device ports report beyond the block: the first output's playback latency and the first
-        input's capture latency, summed.
-        @return  the latency, in frames */
-    int DeviceLatency() const
+    /** The latency the device ports report beyond the block, each side apart and summed into the format: the first
+        output's playback latency and the first input's capture latency (`StreamFormat::output_latency_frames`,
+        `input_latency_frames`, and their sum `reported_latency`), in frames. */
+    void SetDeviceLatency()
     {
-        return LatencyOf(client_, targets_.front(), JackPlaybackLatency) +
-               (sources_.empty() ? 0 : LatencyOf(client_, sources_.front(), JackCaptureLatency));
+        format_.output_latency_frames = LatencyOf(client_, targets_.front(), JackPlaybackLatency);
+        format_.input_latency_frames  = sources_.empty() ? 0 : LatencyOf(client_, sources_.front(), JackCaptureLatency);
+        format_.reported_latency      = format_.output_latency_frames + format_.input_latency_frames;
     }
 
     /** JACK's xrun callback, on a thread of the server's: the next process callback is told.
