@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -46,6 +47,32 @@ struct DeviceInfo
     std::vector<int> sample_rates;             ///< the rates it lists, in hertz; empty where the API lists none
     int              current_sample_rate{0};   ///< the rate it runs at now, 0 where the API does not say
     int              preferred_sample_rate{0}; ///< the rate the API would open it at, 0 where it does not say
+
+    /** The names of its input channels, as the API or the driver gives them, in UTF-8, one per channel in the device's
+        order: either empty - the back end cannot tell - or exactly `input_channels` long, a channel it has no name for
+        left as "". Never made up: a product shows "Input 3" itself for a channel with no name. Read from what the API
+        lists, never by opening a stream; ChannelNames.h says what each back end reads and what it cannot. Where a name
+        is a speaker position ("FL"; ALSA's channel map) it says what the driver declares the channel carries, which on
+        an interface that is not a speaker layout is its default and no label. Appended after the older fields so a
+        positional initialiser of those still means what it did. */
+    std::vector<std::string> input_channel_names;
+    std::vector<std::string> output_channel_names; ///< the same for the output channels (`input_channel_names`)
+
+    /** The name of one input channel.
+        @param channel  the channel, counted from 0
+        @return         its name, empty where the back end has none or the channel is not there; a view into this */
+    std::string_view InputChannelName(int channel) const noexcept
+    {
+        return NameAt(input_channel_names, channel);
+    }
+
+    /** The name of one output channel.
+        @param channel  the channel, counted from 0
+        @return         its name, empty where the back end has none or the channel is not there; a view into this */
+    std::string_view OutputChannelName(int channel) const noexcept
+    {
+        return NameAt(output_channel_names, channel);
+    }
 
     /** What it can be opened as: "duplex" (in and out at once), "input", "output", or "none".
         @return  the kind's name, a string literal that outlives the device */
@@ -96,6 +123,18 @@ struct DeviceInfo
             }
         }
         return false;
+    }
+
+  private:
+    /** One name of a list.
+        @param names    the list, empty or one name a channel
+        @param channel  the channel, counted from 0
+        @return         its name; empty where the list has none or the channel is not there */
+    static std::string_view NameAt(const std::vector<std::string> &names, int channel) noexcept
+    {
+        return channel >= 0 && static_cast<std::size_t>(channel) < names.size()
+                   ? std::string_view(names[static_cast<std::size_t>(channel)])
+                   : std::string_view();
     }
 };
 

@@ -2,6 +2,7 @@
 // device layer that meets JACK, its calls renamed to the loader's (JackNames.h, before jack/jack.h).
 #include "JackNames.h"
 
+#include "ChannelNames.h"
 #include "JackDevice.h"
 #include "RealtimeScheduling.h"
 
@@ -130,13 +131,20 @@ std::vector<DeviceInfo> List(jack_client_t *client)
             continue;
         }
         DeviceInfo device;
-        device.name                  = name;
-        device.output_channels       = static_cast<int>(PortsOf(inputs, name).size());
-        device.input_channels        = static_cast<int>(PortsOf(outputs, name).size());
-        device.duplex_channels       = std::min(device.input_channels, device.output_channels);
-        device.sample_rates          = {rate};
-        device.current_sample_rate   = rate;
-        device.preferred_sample_rate = rate;
+        device.name = name;
+        // The ports the device layer connects a stream to, in the order it connects them (Open): a client's input
+        // ports are the device's outputs. Their own names are the channels' - "capture_1", "playback_FL" - as the
+        // server's graph carries them; nothing is read from a port beyond its name, so no client is touched.
+        const std::vector<std::string> playback_ports = PortsOf(inputs, name);
+        const std::vector<std::string> capture_ports  = PortsOf(outputs, name);
+        device.output_channels                        = static_cast<int>(playback_ports.size());
+        device.input_channels                         = static_cast<int>(capture_ports.size());
+        device.output_channel_names                   = ChannelNamesOfPorts(playback_ports);
+        device.input_channel_names                    = ChannelNamesOfPorts(capture_ports);
+        device.duplex_channels                        = std::min(device.input_channels, device.output_channels);
+        device.sample_rates                           = {rate};
+        device.current_sample_rate                    = rate;
+        device.preferred_sample_rate                  = rate;
         if (device.input_channels + device.output_channels > 0)
         {
             devices.push_back(std::move(device));

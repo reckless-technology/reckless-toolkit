@@ -2,6 +2,8 @@
 // HAL. CoreAudio's headers bring the Carbon types into the global namespace, so nothing here names its own the same.
 #include "CoreAudioDevice.h"
 
+#include "ChannelNames.h"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -234,12 +236,43 @@ std::vector<int> Rates(AudioObjectID device, AudioObjectPropertyScope scope)
 /** What probing a device once found: its listed name, its channels each way and its rates. */
 struct Probed
 {
-    std::string      name;         ///< its maker's name, ": " and its own, as RtAudio named it
-    int              inputs{0};    ///< its input channels
-    int              outputs{0};   ///< its output channels
-    std::vector<int> rates;        ///< the rates it lists
-    int              preferred{0}; ///< the highest of them up to 48 kHz, else the lowest, as RtAudio preferred
+    std::string              name;         ///< its maker's name, ": " and its own, as RtAudio named it
+    int                      inputs{0};    ///< its input channels
+    int                      outputs{0};   ///< its output channels
+    std::vector<int>         rates;        ///< the rates it lists
+    int                      preferred{0}; ///< the highest of them up to 48 kHz, else the lowest, as RtAudio preferred
+    std::vector<std::string> input_names;  ///< the HAL's names for its input channels (ChannelNames.h)
+    std::vector<std::string> output_names; ///< the HAL's names for its output channels
 };
+
+/** The HAL's names for a device's channels one way: each channel's element name (kAudioObjectPropertyElementName on
+    the device, in the scope, at the element that is the channel counted from 1 across the device's streams) - what a
+    driver or the user set in Audio MIDI Setup. A property read, which opens no IOProc and starts nothing; a channel the
+    HAL has no name for is left unnamed.
+    @param device    the device
+    @param scope     kAudioObjectPropertyScopeInput or kAudioObjectPropertyScopeOutput
+    @param channels  how many channels it has that way
+    @return          the names, empty or `channels` long (ChannelNamesFor) */
+std::vector<std::string> ElementNames(AudioObjectID device, AudioObjectPropertyScope scope, int channels)
+{
+    std::vector<std::string> names;
+    for (int c = 0; c < channels; ++c)
+    {
+        const AudioObjectPropertyAddress address = {kAudioObjectPropertyElementName, scope,
+                                                    static_cast<AudioObjectPropertyElement>(c + 1)};
+        CFStringRef                      value   = nullptr;
+        UInt32                           size    = sizeof(value);
+        std::string                      name;
+        if (AudioObjectHasProperty(device, &address) &&
+            AudioObjectGetPropertyData(device, &address, 0, nullptr, &size, &value) == noErr && value != nullptr)
+        {
+            name = Utf8(value);
+            CFRelease(value);
+        }
+        names.push_back(std::move(name));
+    }
+    return ChannelNamesFor(names, channels);
+}
 
 /** A device probed: nothing where it lists no rates, as RtAudio passed it over.
     @param device  the device
@@ -247,10 +280,12 @@ struct Probed
 std::optional<Probed> Probe(AudioObjectID device)
 {
     Probed probed;
-    probed.name    = StringProperty(device, kAudioObjectPropertyManufacturer) + ": " +
-                     StringProperty(device, kAudioObjectPropertyName);
-    probed.outputs = Total(StreamChannels(device, kAudioObjectPropertyScopeOutput));
-    probed.inputs  = Total(StreamChannels(device, kAudioObjectPropertyScopeInput));
+    probed.name         = StringProperty(device, kAudioObjectPropertyManufacturer) + ": " +
+                          StringProperty(device, kAudioObjectPropertyName);
+    probed.outputs      = Total(StreamChannels(device, kAudioObjectPropertyScopeOutput));
+    probed.inputs       = Total(StreamChannels(device, kAudioObjectPropertyScopeInput));
+    probed.output_names = ElementNames(device, kAudioObjectPropertyScopeOutput, probed.outputs);
+    probed.input_names  = ElementNames(device, kAudioObjectPropertyScopeInput, probed.inputs);
     probed.rates = Rates(device, probed.outputs > 0 ? kAudioObjectPropertyScopeOutput : kAudioObjectPropertyScopeInput);
     if (probed.rates.empty() || probed.inputs + probed.outputs <= 0)
     {
@@ -339,6 +374,8 @@ std::vector<Listed> Enumerate()
         device.info.duplex_channels       = std::min(probed.inputs, probed.outputs);
         device.info.sample_rates          = probed.rates;
         device.info.preferred_sample_rate = probed.preferred;
+        device.info.input_channel_names   = probed.input_names;
+        device.info.output_channel_names  = probed.output_names;
         device.info.current_sample_rate   = static_cast<int>(NominalRate(id));
         device.info.is_default_output     = id == default_output && probed.outputs > 0;
         device.info.is_default_input      = id == default_input && probed.inputs > 0;

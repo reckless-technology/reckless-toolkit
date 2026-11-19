@@ -29,6 +29,7 @@
 #include "asiodrivers.h"
 
 #include "AsioFormats.h"
+#include "ChannelNames.h"
 #include "MmcssThread.h"
 #include "SampleEncodings.h"
 
@@ -80,11 +81,58 @@ DriverList g_driver_list;
 /** What loading a driver once found: its channels and the rates it takes. */
 struct Probed
 {
-    int              inputs{0};    ///< its input channels
-    int              outputs{0};   ///< its output channels
-    std::vector<int> rates;        ///< the rates it takes, of kRates
-    int              preferred{0}; ///< the highest of them up to 48 kHz, else the lowest, as RtAudio preferred
+    int                      inputs{0};    ///< its input channels
+    int                      outputs{0};   ///< its output channels
+    std::vector<int>         rates;        ///< the rates it takes, of kRates
+    int                      preferred{0}; ///< the highest of them up to 48 kHz, else the lowest, as RtAudio preferred
+    std::vector<std::string> input_names;  ///< the driver's names for its input channels (ChannelNames.h)
+    std::vector<std::string> output_names; ///< the driver's names for its output channels
 };
+
+/** A driver's text as UTF-8: ASIO's strings are 8-bit text in the system's ANSI code page, which the drivers of an
+    interface's vendor fill in as they please, so they are converted from that page and not taken as UTF-8.
+    @param ansi  the text, null-terminated within its buffer
+    @return      the UTF-8 text; empty where it will not convert */
+std::string Utf8FromAnsi(const char *ansi)
+{
+    if (ansi == nullptr || *ansi == '\0')
+    {
+        return {};
+    }
+    const int wide_length = MultiByteToWideChar(CP_ACP, 0, ansi, -1, nullptr, 0);
+    if (wide_length <= 1)
+    {
+        return {};
+    }
+    std::wstring wide(static_cast<std::size_t>(wide_length - 1), L'\0');
+    MultiByteToWideChar(CP_ACP, 0, ansi, -1, wide.data(), wide_length);
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (bytes <= 1)
+    {
+        return {};
+    }
+    std::string text(static_cast<std::size_t>(bytes - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, text.data(), bytes, nullptr, nullptr);
+    return text;
+}
+
+/** The driver's names for its channels one way, from the driver the probe has loaded and initialised: ASIO's own
+    per-channel name (ASIOGetChannelInfo), which needs no buffers made and no stream started.
+    @param is_input  true for the input channels, false for the outputs
+    @param channels  how many it has
+    @return          the names, empty or `channels` long (ChannelNamesFor) */
+std::vector<std::string> DriverChannelNames(bool is_input, long channels)
+{
+    std::vector<std::string> names;
+    for (long c = 0; c < channels; ++c)
+    {
+        ASIOChannelInfo info = {};
+        info.channel         = c;
+        info.isInput         = is_input ? ASIOTrue : ASIOFalse;
+        names.push_back(ASIOGetChannelInfo(&info) == ASE_OK ? Utf8FromAnsi(info.name) : std::string());
+    }
+    return ChannelNamesFor(names, static_cast<int>(channels));
+}
 
 /** Every probe that found a driver, by its name, for the program's life: a driver is probed once, since none can be
     loaded to be probed while a stream holds one.
@@ -155,8 +203,10 @@ std::optional<Probed> Probe(const std::string &name)
         ASIOExit();
         return std::nullopt;
     }
-    probed.inputs  = static_cast<int>(inputs);
-    probed.outputs = static_cast<int>(outputs);
+    probed.inputs       = static_cast<int>(inputs);
+    probed.outputs      = static_cast<int>(outputs);
+    probed.input_names  = DriverChannelNames(true, inputs);
+    probed.output_names = DriverChannelNames(false, outputs);
     for (const unsigned int rate : kRates)
     {
         if (ASIOCanSampleRate(static_cast<ASIOSampleRate>(rate)) == ASE_OK)
@@ -624,6 +674,8 @@ class AsioSystem final : public AudioSystem
             device.info.duplex_channels       = std::min(probed.inputs, probed.outputs);
             device.info.sample_rates          = probed.rates;
             device.info.preferred_sample_rate = probed.preferred;
+            device.info.input_channel_names   = probed.input_names;
+            device.info.output_channel_names  = probed.output_names;
             listed.push_back(std::move(device));
         }
         std::vector<DeviceInfo> infos;
