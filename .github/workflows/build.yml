@@ -402,6 +402,9 @@ jobs:
           fi
           echo "$venv/bin" >> "$GITHUB_PATH"
           "$venv/bin/gcovr" --version | head -1
+      # -fprofile-update=atomic: gcov's counters are plain increments by default, and a suite that runs several threads
+      # through one function (core's Ogg Vorbis opens on eight at once, 2026-11-18) loses increments, so gcov derives
+      # a branch count below zero and gcovr exits 64 on NegativeHits. Atomic counters cost nothing the suites notice.
       # A fresh tree every run, as vst-plugins' coverage job makes one: a kept tree carries other branches' notes and
       # counters - a .gcda or .gcno of a target or a source this checkout lacks, or renames - which gcovr stops on, and
       # no clean-up between runs keeps up with every branch's targets. The fetched dependencies stay in the tool cache
@@ -410,7 +413,8 @@ jobs:
         run: |
           rm -rf build/ci-toolkit-cov
           cmake -S . -B build/ci-toolkit-cov -G Ninja -DCMAKE_BUILD_TYPE=Debug -DRECKLESS_TOOLKIT_GUI=OFF \
-            "-DCMAKE_CXX_FLAGS=--coverage -O0" "-DCMAKE_C_FLAGS=--coverage -O0" -DCMAKE_EXE_LINKER_FLAGS=--coverage \
+            "-DCMAKE_CXX_FLAGS=--coverage -fprofile-update=atomic -O0" "-DCMAKE_C_FLAGS=--coverage -fprofile-update=atomic -O0"
+            -DCMAKE_EXE_LINKER_FLAGS=--coverage \
             -DFETCHCONTENT_UPDATES_DISCONNECTED=ON "-DFETCHCONTENT_BASE_DIR=${{ steps.cpp.outputs.deps }}"
       - name: Build
         run: cmake --build build/ci-toolkit-cov -j ${{ steps.cpp.outputs.jobs }}
