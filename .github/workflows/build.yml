@@ -413,7 +413,7 @@ jobs:
         run: |
           rm -rf build/ci-toolkit-cov
           cmake -S . -B build/ci-toolkit-cov -G Ninja -DCMAKE_BUILD_TYPE=Debug -DRECKLESS_TOOLKIT_GUI=OFF \
-            "-DCMAKE_CXX_FLAGS=--coverage -fprofile-update=atomic -O0" "-DCMAKE_C_FLAGS=--coverage -fprofile-update=atomic -O0"
+            "-DCMAKE_CXX_FLAGS=--coverage -fprofile-update=atomic -O0" "-DCMAKE_C_FLAGS=--coverage -fprofile-update=atomic -O0" \
             -DCMAKE_EXE_LINKER_FLAGS=--coverage \
             -DFETCHCONTENT_UPDATES_DISCONNECTED=ON "-DFETCHCONTENT_BASE_DIR=${{ steps.cpp.outputs.deps }}"
       - name: Build
