@@ -35,6 +35,7 @@
 #include "include/core/SkCanvas.h"
 #include "include/core/SkSurface.h"
 
+#include "LocalFileOpening.h"
 #include "SkiaCanvas.h"
 #include "UriList.h"
 #include "Window.h"
@@ -2065,22 +2066,7 @@ namespace
     @param target  a folder's path or a URL */
 void OpenWithDesktop(std::string target)
 {
-    const pid_t child = fork();
-    if (child == 0)
-    {
-        setsid();
-        if (fork() == 0)
-        {
-            char  opener[] = "xdg-open";
-            char *argv[]   = {opener, target.data(), nullptr};
-            execvp(argv[0], argv);
-        }
-        _exit(0);
-    }
-    if (child > 0)
-    {
-        waitpid(child, nullptr, 0);
-    }
+    SpawnDesktopOpener("xdg-open", std::move(target)); // LocalFileOpening.h, which OpenLocalFile shares
 }
 } // namespace
 
@@ -2096,6 +2082,11 @@ void OpenInBrowser(const std::string &url)
     {
         OpenWithDesktop(url);
     }
+}
+
+bool OpenLocalFile(const std::filesystem::path &path)
+{
+    return OpenLocalFileWithXdgOpen(path);
 }
 
 float DisplayScaleOf(void *)

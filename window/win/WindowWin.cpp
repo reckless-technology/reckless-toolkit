@@ -25,6 +25,7 @@
 #include "include/core/SkCanvas.h"
 #include "include/core/SkSurface.h"
 
+#include "LocalFileOpening.h"
 #include "SkiaCanvas.h"
 #include "Window.h"
 
@@ -2300,6 +2301,25 @@ void OpenInBrowser(const std::string &url)
     {
         CoUninitialize();
     }
+}
+
+bool OpenLocalFile(const std::filesystem::path &path)
+{
+    const std::optional<std::filesystem::path> file = ExistingRegularFile(path);
+    if (!file)
+    {
+        return false;
+    }
+    // The wide path as the file system spells it, no code page and no parsing as a URL; no parameters, so nothing is
+    // split as a command line. COM is up for the call as the shell asks.
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const auto    result =
+        reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", file->c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+    if (SUCCEEDED(com))
+    {
+        CoUninitialize();
+    }
+    return result > 32; // the shell's own convention: a value over 32 is success
 }
 
 float DisplayScaleOf(void *parent)
