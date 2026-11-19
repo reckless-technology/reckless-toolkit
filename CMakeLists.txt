@@ -634,13 +634,24 @@ if(RECKLESS_TOOLKIT_BUILD_TESTS)
     # Core: JSON, decimal text, the preset files and folders, audio files and the interface's preferences.
     add_executable(reckless_core_test tests/test_json.cpp tests/test_decimal_text.cpp tests/test_preset_files.cpp
                                       tests/test_audio_files.cpp tests/test_interface_settings.cpp
-                                      tests/test_cpu_topology.cpp)
+                                      tests/test_cpu_topology.cpp tests/test_durable_write.cpp)
     target_link_libraries(reckless_core_test PRIVATE reckless_common_core reckless_core_preset_files reckless_core_cpu
                                                      reckless_common_audio_files reckless_warnings
                                                      reckless_toolkit_test_support GTest::gtest_main)
     target_compile_definitions(reckless_core_test PRIVATE
         RECKLESS_AUDIO_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/audio")
     add_test(NAME core COMMAND reckless_core_test)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # WriteWhole's order of calls - file flush, rename, folder flush - read from strace where it exists.
+        find_program(RECKLESS_STRACE strace)
+        if(RECKLESS_STRACE)
+            add_test(NAME core_write_order
+                     COMMAND ${CMAKE_COMMAND} -DSTRACE=${RECKLESS_STRACE} -DTEST_EXE=$<TARGET_FILE:reckless_core_test>
+                             -DLOG=${CMAKE_CURRENT_BINARY_DIR}/write-order.strace
+                             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_write_order.cmake)
+            set_tests_properties(core_write_order PROPERTIES SKIP_REGULAR_EXPRESSION "strace could not trace")
+        endif()
+    endif()
 
     add_executable(reckless_gfx_test tests/test_gfx.cpp tests/test_svg_art.cpp tests/test_svg_image.cpp)
     target_link_libraries(reckless_gfx_test PRIVATE reckless_common_gfx reckless_warnings GTest::gtest_main)
