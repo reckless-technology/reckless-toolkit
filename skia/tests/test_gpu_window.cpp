@@ -1309,6 +1309,11 @@ TEST(GpuWindow, ASoftwareGlIsRefusedAndTheWindowDrawsOnTheCpuRaster)
     // also the chess matches' - from spinning one up across its cores for a window: refused as kSoftwareRenderer, the
     // window left on the CPU raster, and no rasteriser's thread started. On a machine with a GPU, Mesa is told to
     // rasterise in software for this case; a driver that is not Mesa's does not hear that, and the case skips there.
+    // That skip leaves THIS case's end-to-end check unmade, but not the decision: IsSoftwareRenderer is held directly,
+    // on every machine, by test_gpu_drawing.cpp. Nor can the case be re-run in this process on Mesa's EGL: glvnd
+    // chooses its vendor library at the process's first EGL call, and __EGL_VENDOR_LIBRARY_FILENAMES set afterwards
+    // is not read (measured on a Quadro P2000, 2026-11-18). To run it there, start the suite with it set:
+    // __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
     GpuDrawingVariable  unset("");
     EnvironmentVariable software("LIBGL_ALWAYS_SOFTWARE", "1");
     EnvironmentVariable llvmpipe("GALLIUM_DRIVER", "llvmpipe"); // over a GALLIUM_DRIVER that names a GPU (WSLg's d3d12)
@@ -1323,8 +1328,11 @@ TEST(GpuWindow, ASoftwareGlIsRefusedAndTheWindowDrawsOnTheCpuRaster)
     std::printf("[ gpu window ] asked for the GPU with software GL: %s\n", Described(state).c_str());
     if (state.drawing == Drawing::kGpu && !reckless::window::IsSoftwareRenderer(state.renderer.c_str()))
     {
-        GTEST_SKIP() << "this EGL is not Mesa's, and draws on its GPU whatever LIBGL_ALWAYS_SOFTWARE says: "
-                     << state.renderer;
+        GTEST_SKIP() << "the software refusal is NOT checked end to end here: this EGL is not Mesa's, and draws on "
+                        "its GPU whatever LIBGL_ALWAYS_SOFTWARE says ("
+                     << state.renderer
+                     << "). IsSoftwareRenderer is held by test_gpu_drawing.cpp; to run this case, set "
+                        "__EGL_VENDOR_LIBRARY_FILENAMES to Mesa's glvnd vendor file before starting the suite";
     }
     EXPECT_EQ(state.drawing, Drawing::kCpuRaster);
     EXPECT_EQ(state.why, DrawingFallback::kSoftwareRenderer) << reckless::window::TextOf(state.why);
