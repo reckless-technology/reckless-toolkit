@@ -499,7 +499,12 @@ class AlsaSystem final : public AudioSystem
         // the buffer less the two blocks each way - none at the fewest periods. Counting the output's block a second
         // time had a UMC1820's cable come back a block sooner than reported, at every rate and block.
         format_.reported_latency = std::max(out_.buffer - 2 * block_, 0);
-        format_.periods          = out_.buffer / std::max(block_, 1);
+        // All of it is the playback side's, the buffer behind what the output already holds; a capture side's room
+        // costs no latency (kInputFrames) and its driver's own delay is not something ALSA reports here, so the input's
+        // share is 0 - not told, rather than none - and the two still add up to the sum.
+        format_.input_latency_frames  = 0;
+        format_.output_latency_frames = format_.reported_latency;
+        format_.periods               = out_.buffer / std::max(block_, 1);
         callback_.store(&callback, std::memory_order_release);
         failed_.store(false, std::memory_order_relaxed);
         open_ = true;

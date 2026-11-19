@@ -754,8 +754,11 @@ class AsioSystem final : public AudioSystem
         // within 61 to 68 samples at 64, 256 and 1024 frames alike, where counting the blocks again put it 60, 445 and
         // 1987 out, the error growing with the block. A driver that latches more than one output block keeps that
         // extra block in the figure, which shows up as a larger constant residual, not as a growing error.
-        format_.reported_latency = static_cast<int>((inputs > 0 ? std::max(input_latency - block_, 0L) : 0L) +
-                                                    (outputs > 0 ? std::max(output_latency - block_, 0L) : 0L));
+        format_.input_latency_frames =
+            inputs > 0 ? static_cast<int>(std::max(input_latency - block_, 0L)) : 0; // ASIOGetLatencies' input
+        format_.output_latency_frames =
+            outputs > 0 ? static_cast<int>(std::max(output_latency - block_, 0L)) : 0; // and its output
+        format_.reported_latency = format_.input_latency_frames + format_.output_latency_frames;
         return true;
     }
 

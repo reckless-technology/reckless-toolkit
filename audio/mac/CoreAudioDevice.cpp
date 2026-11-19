@@ -624,12 +624,13 @@ class CoreAudioSystem final : public AudioSystem
             return Refuse("'" + output->info.name + "' would not open on CoreAudio: " + why);
         }
 
-        format_.sample_rate      = rate;
-        format_.block_size       = block_;
-        format_.input_channels   = static_cast<int>(input_places_.size());
-        format_.output_channels  = static_cast<int>(output_places_.size());
-        format_.reported_latency = Latency(kAudioObjectPropertyScopeOutput) +
-                                   (input_places_.empty() ? 0 : Latency(kAudioObjectPropertyScopeInput));
+        format_.sample_rate           = rate;
+        format_.block_size            = block_;
+        format_.input_channels        = static_cast<int>(input_places_.size());
+        format_.output_channels       = static_cast<int>(output_places_.size());
+        format_.output_latency_frames = Latency(kAudioObjectPropertyScopeOutput);
+        format_.input_latency_frames  = input_places_.empty() ? 0 : Latency(kAudioObjectPropertyScopeInput);
+        format_.reported_latency      = format_.output_latency_frames + format_.input_latency_frames;
         callback_.store(&callback, std::memory_order_release);
         failed_.store(false, std::memory_order_relaxed);
         pending_xrun_.store(false, std::memory_order_relaxed);
