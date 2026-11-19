@@ -25,6 +25,7 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 
+#include "RealtimeScheduling.h"
 #include "SampleEncodings.h"
 
 namespace reckless::audio
@@ -51,9 +52,6 @@ constexpr unsigned int kInputFrames = 4096;
 
 /** How long the stream's thread waits for a device before it takes the device to have stopped. */
 constexpr int kWaitTimeoutMs = 2000;
-
-/** The round-robin real-time priority the stream's thread asks for, RtAudio's, held to what the system allows. */
-constexpr int kPriority = 70;
 
 /** The name the `default` PCM is listed under, RtAudio's. */
 constexpr const char *kDefaultName = "Default ALSA Device";
@@ -587,6 +585,21 @@ class AlsaSystem final : public AudioSystem
         return format_;
     }
 
+    /** A consumer's thread at the standing of the stream's own: the same round-robin policy and priority the stream's
+        thread asks for (linux_realtime::StreamThreadPriority), refused with the system's reason where it allows none.
+        @param membership  receives what puts the thread's own policy back
+        @return            what was achieved, or why not */
+    RealtimeThreadResult JoinAudioThread(RealtimeThreadMembership &membership) const override
+    {
+        if (!open_)
+        {
+            RealtimeThreadResult result;
+            result.refused = "no stream is open, so there is no callback thread whose standing to give";
+            return result;
+        }
+        return linux_realtime::JoinRoundRobin(membership);
+    }
+
     std::string LastError() const override
     {
         const std::lock_guard lock(error_mutex_);
@@ -750,7 +763,7 @@ class AlsaSystem final : public AudioSystem
     void Run(std::promise<std::string> &started)
     {
         sched_param param{};
-        param.sched_priority = std::min(kPriority, sched_get_priority_max(SCHED_RR));
+        param.sched_priority = linux_realtime::StreamThreadPriority();
         static_cast<void>(pthread_setschedparam(pthread_self(), SCHED_RR, &param)); // a user allowed none runs as is
         pending_xrun_    = false;
         has_called_      = false;

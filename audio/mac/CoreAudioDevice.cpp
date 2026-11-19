@@ -21,6 +21,11 @@
 
 #include <CoreAudio/CoreAudio.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/thread_policy.h>
+#include <os/workgroup.h>
+#include <pthread.h>
 
 namespace reckless::audio
 {
@@ -391,6 +396,126 @@ std::vector<Place> PlacesOf(const std::vector<int> &streams, int first, int coun
     return places;
 }
 
+/** A consumer's thread at the standing of the stream's callback thread, as Apple's "Understanding Audio Workgroups"
+    has it for parallel real-time threads: the thread given a time-constraint policy whose period is the stream's block
+    (what a real-time thread on an Apple-silicon machine needs to be scheduled at all, beside the performance cores),
+   and then joined to the device's audio workgroup (`kAudioDevicePropertyIOThreadOSWorkgroup`, macOS 11), so the system
+    schedules it with the HAL's thread against the one deadline. Nothing more is done: no interval is started - the
+    HAL's thread owns the workgroup's cycle.
+
+    Not realtime-safe, on purpose: once per thread, at its start and end. The workgroup is retained for as long as the
+    thread is a member, so a stream closed first leaves nothing dangling.
+    @param device      the device the IOProc runs on, the aggregate where there is one
+    @param format      what the stream opened as; its block and rate set the period
+    @param membership  receives the undo: leave the workgroup, then put the thread's own time-constraint policy back
+    @return            what was achieved and what was refused, and why */
+RealtimeThreadResult JoinCallbackStanding(AudioObjectID device, const StreamFormat &format,
+                                          RealtimeThreadMembership &membership)
+{
+    RealtimeThreadResult result;
+    const thread_act_t   thread = pthread_mach_thread_np(pthread_self());
+
+    // The thread's policy as it is, to put back: a thread with no time-constraint policy reports the default.
+    thread_time_constraint_policy_data_t before{};
+    mach_msg_type_number_t               count      = THREAD_TIME_CONSTRAINT_POLICY_COUNT;
+    boolean_t                            is_default = FALSE;
+    const bool                           had_policy =
+        thread_policy_get(thread, THREAD_TIME_CONSTRAINT_POLICY, reinterpret_cast<thread_policy_t>(&before), &count,
+                          &is_default) == KERN_SUCCESS &&
+        is_default == FALSE;
+
+    std::string               refused;
+    bool                      did_set_policy = false;
+    mach_timebase_info_data_t base{};
+    if (format.sample_rate > 0 && format.block_size > 0 && mach_timebase_info(&base) == KERN_SUCCESS && base.numer != 0)
+    {
+        // The block's duration in the clock's own units; the thread asks for up to half of it, within all of it.
+        const double nanoseconds =
+            1.0e9 * static_cast<double>(format.block_size) / static_cast<double>(format.sample_rate);
+        const auto period =
+            static_cast<std::uint32_t>(nanoseconds * static_cast<double>(base.denom) / static_cast<double>(base.numer));
+        thread_time_constraint_policy_data_t policy{};
+        policy.period      = period;
+        policy.computation = period / 2;
+        policy.constraint  = period;
+        policy.preemptible = TRUE;
+        const kern_return_t status =
+            thread_policy_set(thread, THREAD_TIME_CONSTRAINT_POLICY, reinterpret_cast<thread_policy_t>(&policy),
+                              THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+        did_set_policy = status == KERN_SUCCESS;
+        if (!did_set_policy)
+        {
+            refused = "time-constraint policy refused (kern_return " + std::to_string(status) + ")";
+        }
+    }
+    else
+    {
+        refused = "time-constraint policy not set: the stream's block is not known";
+    }
+
+    os_workgroup_t                   workgroup = nullptr;
+    UInt32                           size      = sizeof(workgroup);
+    const AudioObjectPropertyAddress address   = Address(kAudioDevicePropertyIOThreadOSWorkgroup);
+    const OSStatus found = AudioObjectGetPropertyData(device, &address, 0, nullptr, &size, &workgroup);
+    std::shared_ptr<os_workgroup_join_token_s> token;
+    if (found != noErr || workgroup == nullptr)
+    {
+        refused += std::string(refused.empty() ? "" : "; ") + "the device has no audio workgroup (OSStatus " +
+                   std::to_string(found) + ")";
+        workgroup = nullptr;
+    }
+    else
+    {
+        // The parentheses keep the SDK's typeof-using macro of the same name out of this C++.
+        workgroup        = static_cast<os_workgroup_t>((os_retain)(workgroup));
+        token            = std::make_shared<os_workgroup_join_token_s>();
+        const int joined = os_workgroup_join(workgroup, token.get());
+        if (joined != 0)
+        {
+            refused += std::string(refused.empty() ? "" : "; ") + "joining the audio workgroup failed (error " +
+                       std::to_string(joined) + ")";
+            (os_release)(workgroup);
+            workgroup = nullptr;
+            token.reset();
+        }
+    }
+
+    if (!did_set_policy && workgroup == nullptr)
+    {
+        result.refused = refused;
+        return result;
+    }
+    membership.SetUndo([workgroup, token, did_set_policy, had_policy, before] {
+        if (workgroup != nullptr)
+        {
+            os_workgroup_leave(workgroup, token.get());
+            (os_release)(workgroup);
+        }
+        if (did_set_policy)
+        {
+            const thread_act_t self = pthread_mach_thread_np(pthread_self());
+            if (had_policy)
+            {
+                thread_time_constraint_policy_data_t restored = before;
+                thread_policy_set(self, THREAD_TIME_CONSTRAINT_POLICY, reinterpret_cast<thread_policy_t>(&restored),
+                                  THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+            }
+            else
+            {
+                thread_standard_policy_data_t standard{};
+                thread_policy_set(self, THREAD_STANDARD_POLICY, reinterpret_cast<thread_policy_t>(&standard),
+                                  THREAD_STANDARD_POLICY_COUNT);
+            }
+        }
+    });
+    result.is_joined = true;
+    result.achieved  = std::string(workgroup != nullptr ? "joined the device's audio workgroup" : "") +
+                       (workgroup != nullptr && did_set_policy ? " with " : "") +
+                       (did_set_policy ? "a time-constraint policy of one block" : "");
+    result.refused   = refused;
+    return result;
+}
+
 /** CoreAudio's AudioSystem: the devices, and one stream on a device, or on a private aggregate of two. Message thread
     throughout but for Proc and Listener, which the HAL's threads run. */
 class CoreAudioSystem final : public AudioSystem
@@ -571,6 +696,22 @@ class CoreAudioSystem final : public AudioSystem
     StreamFormat Format() const override
     {
         return format_;
+    }
+
+    /** A consumer's thread at the standing of the HAL's callback thread: the device's audio workgroup joined, and a
+        time-constraint policy of one block set (JoinCallbackStanding). Without the workgroup, Apple silicon schedules a
+        helper thread on an efficiency core, and it misses the deadline.
+        @param membership  receives what leaves the workgroup and puts the thread's policy back
+        @return            what was achieved, or why not */
+    RealtimeThreadResult JoinAudioThread(RealtimeThreadMembership &membership) const override
+    {
+        if (!open_)
+        {
+            RealtimeThreadResult result;
+            result.refused = "no stream is open, so there is no callback thread whose standing to give";
+            return result;
+        }
+        return JoinCallbackStanding(device_, format_, membership);
     }
 
     std::string LastError() const override

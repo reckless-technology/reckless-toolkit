@@ -25,6 +25,14 @@
     The audio device layer (audio/): a back end of the toolkit's own for every device API on every platform, the
     settings an app keeps and a device with no hardware. */
 
+/** @namespace reckless::audio::linux_realtime
+    Linux's round-robin real-time scheduling for a thread, shared by the ALSA stream thread and a consumer's own
+    threads joining its standing (audio/linux/RealtimeScheduling.h). */
+
+/** @namespace reckless::audio::windows_realtime
+    The multimedia scheduler's Pro Audio class for a thread, shared by the WASAPI stream thread's fallback and a
+    consumer's own threads joining its standing (audio/win/MmcssThread.h). */
+
 /** @namespace reckless::audio::test
     The device suite's rigs: a deterministic test device on each real audio API (tests/devices). */
 
@@ -35,6 +43,9 @@
 /** @namespace reckless::core
     The core (core/): JSON, UTF-8, numbers to and from text in any locale, the user's files and folders, the
     interface's preferences, audio files, and what an audio thread and its display share. */
+
+/** @namespace reckless::core::sysfs
+    The kernel's CPU lists and small sysfs files, read for the CPU topology (core/CpuTopology.h). */
 
 /** @namespace reckless::core::json
     The one form everything saved takes: a JSON value, its plain writer and its strict RFC 8259 reader. */
