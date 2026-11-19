@@ -169,7 +169,7 @@ read with `lipo` and `vtool` for both slices and the 13.3 floor, `RECKLESS_AUDIO
 clones vst-plugins, IR Capture, Amphitheater, Knect 4, Sudoku, Sentinel and Reckless Studio at their default branches' heads through the consumer guard's
 deploy keys (Studio's suite dependency, `vst-plugins`, is cloned at Studio's pinned commit with `CONSUMER_VST_PLUGINS_DEPLOY_KEY`), links this checkout in at each one's `external/reckless-toolkit`, configures each as its own CI does and
 builds a few of its targets - vst-plugins' `reckless_update_shared` and `reckless_plugin_view_test`, IR Capture's
-`ir_capture_ui`, Amphitheater's `amphitheater_gui`, Knect 4's `knect4_gui`, Sudoku's `sudoku_gui`, Sentinel's `Sentinel`, Studio's `studio_app` and `studio_engine` - so a target, CTest or option named as a
+`ir_capture_ui`, Amphitheater's `amphitheater_gui`, Knect 4's `knect4_gui`, Sudoku's `sudoku_gui`, Sentinel's `Sentinel`, Studio's `studio_app_shell` and `studio_engine` - so a target, CTest or option named as a
 product's, a header a product's shadows, or a moved function fails here), `coverage` (gcc, gcovr on `core/`, `gfx/` but
 its Skia canvas, `input/` but its platforms' translation units, `look/`, `view/`, `net/`, `update/` and `licence/`, red under the floor `--fail-under-line` names; built with `-fprofile-update=atomic`, because gcov's counters are plain increments otherwise and the Ogg Vorbis suite opens files on eight threads at once, so lost increments gave a branch a negative count and gcovr exited 64 on `NegativeHits` from 2026-11-19 - never silence that with `--gcov-ignore-parse-errors`),
 `format`, `doxygen` and `CI`, the aggregate the ruleset requires. Documentation alone builds nothing.
