@@ -680,6 +680,13 @@ if(RECKLESS_TOOLKIT_BUILD_TESTS)
                                                      GTest::gtest_main)
     add_test(NAME view COMMAND reckless_view_test)
 
+    # Opening an installed file in the system's handler (window/LocalFileOpening.h): the paths refused before anything
+    # is spawned, and on Linux the spawn against a stub xdg-open on the PATH - no window, no display, no real handler.
+    add_executable(reckless_local_file_test tests/test_local_file.cpp)
+    target_link_libraries(reckless_local_file_test PRIVATE reckless_window_headers reckless_warnings
+                                                           reckless_toolkit_test_support GTest::gtest_main)
+    add_test(NAME local_file COMMAND reckless_local_file_test)
+
     # The files a binary carries inside itself (cmake/RecklessEmbed.cmake): two tables naming the serif in common,
     # whose bytes every module shares, each held to its files by tests/test_embedded.cpp (CTests embedded_a and
     # embedded_b) - its names and files written beside it in EmbeddedFiles.h; the second takes the monospaced

@@ -34,6 +34,7 @@
 
 #include "ClipboardMac.h"
 #include "GpuPresenterMac.h"
+#include "LocalFileOpening.h"
 #include "SkiaCanvas.h"
 #include "Window.h"
 
@@ -1778,6 +1779,19 @@ void OpenInBrowser(const std::string &url)
     {
         [[NSWorkspace sharedWorkspace] openURL:page];
     }
+}
+
+bool OpenLocalFile(const std::filesystem::path &path)
+{
+    const std::optional<std::filesystem::path> file = ExistingRegularFile(path);
+    if (!file)
+    {
+        return false;
+    }
+    // A file URL made from the path as a path (fileURLWithPath: escapes what a URL must), so nothing in it is parsed as
+    // a URL's own parts.
+    NSURL *target = [NSURL fileURLWithPath:StringOf(file->native())];
+    return target != nil && [[NSWorkspace sharedWorkspace] openURL:target];
 }
 
 std::unique_ptr<ChildWindow> CreateChildWindow(void *parent, view::View &root, int width, int height, float scale,
