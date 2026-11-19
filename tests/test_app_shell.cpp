@@ -191,6 +191,74 @@ TEST(RunApp, AnAppWithAMenuBarHasItsWindowCarryItAndItsChildHandOnTheKeys)
     }
 }
 
+TEST(RunApp, FilesTheSystemOpenedBeforeTheWindowExistedAreGivenOnceItDoesAndTheLaterOnesAsTheyCome)
+{
+    // macOS starts a program by document with an open-file event: the paths must reach a product that has its window
+    // (never one that has none), the one that launched it first and each opened while it runs after, in order.
+    FakeAppPlatform platform;
+    platform.OpenFiles({"/docs/launch.rsp"}); // came with the launch, before RunApp made a window
+    reckless::view::View root;
+    root.SetBounds({300, 200});
+    std::vector<std::string> log;
+    SuiteChild              *child = nullptr;
+
+    reckless::app::AppRunHooks hooks;
+    hooks.on_open       = [&](reckless::app::AppWindow &) { log.push_back("window"); };
+    hooks.on_open_files = [&](const std::vector<std::string> &paths) {
+        EXPECT_EQ(platform.windows().size(), 1u) << "the window exists when a document is handed over";
+        for (const std::string &path : paths)
+        {
+            log.push_back(path);
+        }
+    };
+    const auto make_child = [&](void *, reckless::view::View &, int, int, float,
+                                std::unique_ptr<reckless::window::RunLoop>) {
+        auto made = std::make_unique<SuiteChild>();
+        child     = made.get();
+        platform.CallSoon([&] {
+            platform.OpenFiles({"/docs/while-running-1.rsp", "/docs/while-running-2.rsp"}); // opened in the Finder
+            for (int i = 0; i < 5 && child->frame; ++i)
+            {
+                child->frame();
+            }
+        });
+        return made;
+    };
+    EXPECT_FALSE(platform.HasOpenFilesHandler());
+    EXPECT_EQ(reckless::app::RunApp(platform, root, {100, 50}, reckless::app::ParseAppOptions({"--smoke", "3"}),
+                                    "Suite App", "1.0.0", make_child, hooks),
+              0);
+    EXPECT_EQ(log, (std::vector<std::string>{"window", "/docs/launch.rsp", "/docs/while-running-1.rsp",
+                                             "/docs/while-running-2.rsp"}));
+    EXPECT_FALSE(platform.HasOpenFilesHandler()) << "the product's callback is taken back as the loop ends";
+}
+
+TEST(RunApp, AProductThatSetsNoOpenFilesCallbackAsksThePlatformForNoneAndTheFilesAreNotGiven)
+{
+    FakeAppPlatform      platform;
+    reckless::view::View root;
+    root.SetBounds({300, 200});
+    bool        asked      = false;
+    SuiteChild *child      = nullptr;
+    const auto  make_child = [&](void *, reckless::view::View &, int, int, float,
+                                 std::unique_ptr<reckless::window::RunLoop>) {
+        auto made = std::make_unique<SuiteChild>();
+        child     = made.get();
+        platform.CallSoon([&] {
+            asked = platform.HasOpenFilesHandler();
+            for (int i = 0; i < 5 && child->frame; ++i)
+            {
+                child->frame();
+            }
+        });
+        return made;
+    };
+    EXPECT_EQ(reckless::app::RunApp(platform, root, {100, 50}, reckless::app::ParseAppOptions({"--smoke", "3"}),
+                                    "Suite App", "1.0.0", make_child),
+              0);
+    EXPECT_FALSE(asked) << "no handler is set, so the platform answers no open-file event, as before";
+}
+
 TEST(ChildWindowPacing, AWindowThatPacesNothingItselfAnswersThePlatformTimerAndSaysWhy)
 {
     // The seam's default body (window/Window.h), held on every platform: a child window written against no display

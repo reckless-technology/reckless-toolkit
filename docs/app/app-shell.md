@@ -9,6 +9,7 @@ suite drives the whole app on the suites' own platform (`tests/FakeAppPlatform.h
 | Header | Target | What it is |
 |---|---|---|
 | `app/AppRun.h` | `reckless_app_shell` | `ParseAppOptions` and `RunApp`: the command line's `--smoke`, the window opened round the app's views, its frames, its loop |
+| `app/OpenFileQueue.h` | `reckless_app_headers` | `OpenFileQueue`: the files the system opens in the app (a Finder double-click on macOS), held until the product's callback is set and then given in order; no AppKit in it |
 | `app/AppRoot.h` | `reckless_app_shell` | `AppRoot`: the views at the window's size in a zoom, zoomed down below the layout's least or held at a fixed zoom the app sets, and the series' tooltip |
 | `app/AppWindowSizes.h` | `reckless_app_shell` | `WindowSizes`: a View menu's sizes, 50 % to 150 % of the design, held on the root - the size in force, those the screen takes, the next up and down, kept through full screen |
 | `app/AppFullScreen.h` | `reckless_app_headers` | `FullScreenMenuEntry`: a View menu's full-screen item as each platform writes it - F11 (and Alt+Enter on Windows), Control-Command-F on a Mac - toggling the window's full screen |
@@ -54,6 +55,28 @@ it is given (`window::CreateChildWindow`, or a suite's own), hands it the files 
 runs the loop until the window is closed or the app is quit, calls `on_end` with where the window stood, and closes
 it. A smoke run prints the name and the version, quits once the window has drawn its frames (thirty unless the count
 says) and returns 3 where it drew fewer - none in twenty seconds means no display; 1 is no window at all.
+
+### Documents the system opens: `AppRunHooks::on_open_files`
+
+A product that registers a document type asks to be told what the system opens in it:
+
+```cpp
+reckless::app::AppRunHooks hooks;
+hooks.on_open_files = [&](const std::vector<std::string> &paths) { OpenProjects(paths); }; // UTF-8, main thread
+```
+
+On **macOS** a double-clicked document does not arrive as an argument but as an open-file event
+(`application:openFiles:` and `application:openURLs:`, `app/mac/AppMac.mm`); the platform hands each batch to an
+`OpenFileQueue` and `RunApp` sets the callback as the window exists, just before the loop, so a document that
+**started** the program is delivered once the product's window is there and never before, and one opened **while it
+runs** is delivered as it comes, each call one batch in the system's order. The callback is taken back as the loop
+ends. A product that sets none is not told the events are answered at all: the delegate answers the open-file
+selectors only once the callback is set, so the program behaves as it always did. On **Linux and Windows** the
+toolkit gives the callback nothing, ever: the path is on the command line, in `AppOptions::unknown`, which the product
+reads. The macOS code (`AppMac.mm`) is written from Apple's documentation and **has not been run**: the hosted macOS
+job compiles and links it, and the queueing - paths that come before the callback is set are held and given once, in
+order, never inside the callback - is held on every platform by `tests/test_open_file_queue.cpp` and the two
+`RunApp` tests in `tests/test_app_shell.cpp`, through `FakeAppPlatform::OpenFiles`.
 
 ## The root: `AppRoot`
 

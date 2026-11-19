@@ -777,7 +777,7 @@ inline constexpr EmbeddedFile kEmbeddedFiles[] = {
     # an app suite of its own: vst-plugins' reckless_app_test, its Standalone's.
     add_executable(reckless_app_shell_test tests/test_post_queue.cpp tests/test_fake_app_platform.cpp
                                            tests/test_app_shell.cpp tests/test_menu_bar.cpp tests/test_window_sizes.cpp
-                                           tests/test_window_place.cpp tests/test_full_screen.cpp)
+                                           tests/test_window_place.cpp tests/test_full_screen.cpp tests/test_open_file_queue.cpp)
     target_link_libraries(reckless_app_shell_test PRIVATE reckless_app_shell reckless_toolkit_test_support
                                                           reckless_warnings GTest::gtest_main)
     add_test(NAME app COMMAND reckless_app_shell_test)

@@ -27,6 +27,7 @@
 
 #include "../../window/mac/ClipboardMac.h" // the child window's too: not on an include path
 #include "AppPlatform.h"
+#include "OpenFileQueue.h"
 #include "SkiaCanvas.h"
 #include "WindowPlace.h"
 
@@ -42,6 +43,11 @@ class MacPlatform;
     std::function<void()>
          quit_handler; ///< the app's own ending, run once when a quit comes from outside; may be empty.
     bool ending;       ///< true once quit_handler has run, so it runs only once.
+    /** Where the files the system opens go (OpenFileQueue::Receive); may be empty. */
+    std::function<void(std::vector<std::string>)> open_files;
+    /** Whether the app asked for opened files (AppPlatform::SetOpenFilesHandler): the delegate answers the open-file
+        selectors only then, so an app that did not ask is treated by AppKit exactly as it was before they existed. */
+    bool wants_open_files;
 }
 @end
 
@@ -63,6 +69,60 @@ class MacPlatform;
 {
     (void)sender;
     return NO; // the main window's close button ends the app itself, after saving
+}
+
+- (BOOL)respondsToSelector:(SEL)selector
+{
+    if (selector == @selector(application:openFiles:) || selector == @selector(application:openURLs:))
+    {
+        return wants_open_files;
+    }
+    return [super respondsToSelector:selector];
+}
+
+/** Documents opened in the app, a double-click in the Finder or a drop on the Dock's icon - the system's older call,
+    which AppKit makes only where `application:openURLs:` is not answered. The paths go to the queue as UTF-8.
+    @param sender     the application
+    @param filenames  the paths of the files, as NSStrings */
+- (void)application:(NSApplication *)sender openFiles:(NSArray<NSString *> *)filenames
+{
+    std::vector<std::string> paths;
+    for (NSString *name in filenames)
+    {
+        if (const char *utf8 = [name UTF8String])
+        {
+            paths.emplace_back(utf8);
+        }
+    }
+    if (open_files)
+    {
+        open_files(std::move(paths));
+    }
+    [sender replyToOpenOrPrint:NSApplicationDelegateReplySuccess];
+}
+
+/** Documents opened in the app, as URLs: the call macOS 10.13 and later make in preference to `openFiles:`. Only a
+    file URL is a path; any other is left alone.
+    @param application  the application
+    @param urls         what was opened */
+- (void)application:(NSApplication *)application openURLs:(NSArray<NSURL *> *)urls
+{
+    (void)application;
+    std::vector<std::string> paths;
+    for (NSURL *url in urls)
+    {
+        if ([url isFileURL])
+        {
+            if (const char *utf8 = [[url path] UTF8String])
+            {
+                paths.emplace_back(utf8);
+            }
+        }
+    }
+    if (open_files)
+    {
+        open_files(std::move(paths));
+    }
 }
 
 @end
@@ -929,11 +989,15 @@ class MacPlatform final : public AppPlatform
     {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-        delegate_         = [[RecklessAppDelegate alloc] init];
-        delegate_->ending = false;
-        NSApp.delegate    = delegate_;
-        target_           = [[RecklessMenuTarget alloc] init];
-        bar_target_       = [[RecklessMenuTarget alloc] init];
+        delegate_                   = [[RecklessAppDelegate alloc] init];
+        delegate_->ending           = false;
+        delegate_->wants_open_files = false;
+        delegate_->open_files       = [queue = open_files_](std::vector<std::string> paths) {
+            queue->Receive(std::move(paths));
+        };
+        NSApp.delegate = delegate_;
+        target_        = [[RecklessMenuTarget alloc] init];
+        bar_target_    = [[RecklessMenuTarget alloc] init];
         // A bar item's tag is its command number; the controller is held weakly, the target outliving no platform.
         const std::weak_ptr<MenuBarController> menu = menu_;
         bar_target_->chosen                         = [menu](int command) {
@@ -1125,6 +1189,16 @@ class MacPlatform final : public AppPlatform
         delegate_->quit_handler = std::move(handler);
     }
 
+    void SetOpenFilesHandler(std::function<void(const std::vector<std::string> &paths)> handler) override
+    {
+        delegate_->wants_open_files = static_cast<bool>(handler);
+        // AppKit asks its delegate which calls it answers when the delegate is set, so it is set again now that this
+        // has changed: the open-file events are answered only once the app has asked for them.
+        NSApp.delegate = nil;
+        NSApp.delegate = delegate_;
+        open_files_->SetHandler(std::move(handler)); // what came before it is given now, in order
+    }
+
   private:
     /** The menu bar: the app menu, and the app's own menu, "Options", where it has items.
         @param items  the app's commands; none leaves the app menu alone */
@@ -1251,7 +1325,10 @@ class MacPlatform final : public AppPlatform
     std::shared_ptr<core::PostQueue> posts_{std::make_shared<core::PostQueue>()};
     std::string                      name_;          ///< the app's name.
     RecklessAppDelegate             *delegate_{nil}; ///< the application's delegate, which holds the quit handler.
-    RecklessMenuTarget              *target_{nil};   ///< the target of the app's menu items.
+    /** The files the system opened, held until the app's handler is set (SetOpenFilesHandler); shared with the
+        delegate's block. */
+    std::shared_ptr<OpenFileQueue> open_files_{std::make_shared<OpenFileQueue>()};
+    RecklessMenuTarget            *target_{nil}; ///< the target of the app's menu items.
     RecklessMenuTarget *bar_target_{nil}; ///< the target of the menu bar's items (SetMenuBar), by command number.
     /** The menu bar, its choosing and its shortcuts, shared with every window's keyDown. */
     std::shared_ptr<MenuBarController> menu_{std::make_shared<MenuBarController>()};
