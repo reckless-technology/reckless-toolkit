@@ -15,6 +15,7 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,6 +44,8 @@ TEST(ChildWindow, AUriListsFilePathsArePercentDecodedAndAStrayPercentIsItself)
 
 #if defined(__linux__)
 #include <poll.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <chrono>
 #include <cstdint>
@@ -618,6 +621,242 @@ TEST(ChildWindow, TheRawKeysGiveEveryEdgeAndLeaveTheViewsWhatTheyAlwaysHad)
     EXPECT_TRUE(heard.empty());
     child.reset();
     XCloseDisplay(display);
+}
+
+namespace
+{
+/** A view that writes down the middle button, the wheel with its modifiers and the function keys it is given. */
+class DawProbe final : public reckless::view::View
+{
+  public:
+    DawProbe()
+    {
+        takes_middle_button = true;
+    }
+
+    std::vector<std::string> log;
+
+    bool WantsKeyboardFocus() const override
+    {
+        return true;
+    }
+
+    void MouseDown(const reckless::view::MouseEvent &e) override
+    {
+        log.push_back(std::string("down") + (e.middle ? " middle" : "") + (e.right ? " right" : ""));
+    }
+
+    void MouseUp(const reckless::view::MouseEvent &e) override
+    {
+        log.push_back(std::string("up") + (e.middle ? " middle" : ""));
+    }
+
+    bool MouseWheel(const reckless::view::MouseEvent &e) override
+    {
+        log.push_back("wheel " + std::to_string(static_cast<int>(e.wheel_x)) + "," +
+                      std::to_string(static_cast<int>(e.wheel_y)) + (e.modifiers.control ? " control" : "") +
+                      (e.modifiers.command ? " command" : "") + (e.modifiers.shift ? " shift" : ""));
+        return true;
+    }
+
+    bool KeyPressed(const reckless::view::KeyEvent &key) override
+    {
+        const int function = static_cast<int>(key.key) - static_cast<int>(reckless::view::Key::kF1);
+        log.push_back(function >= 0 && function < 12 ? "F" + std::to_string(function + 1) : "key");
+        return true;
+    }
+};
+} // namespace
+
+TEST(ChildWindow, AMiddlePressTheWheelWithItsModifiersAndTheFunctionKeysReachAViewOnLinux)
+{
+    reckless::test::TestHostWindow top(240, 160);
+    if (!top.Valid())
+    {
+        if (reckless::test::WindowRequired())
+        {
+            FAIL() << "the run promises a window and there is no display";
+        }
+        GTEST_SKIP() << "no display";
+    }
+    top.Show(true);
+    reckless::view::View root;
+    DawProbe             probe;
+    root.SetBounds({240, 160});
+    probe.SetBounds({0, 0, 240, 160});
+    root.AddChild(probe);
+    auto        loop  = std::make_unique<TurnedLoop>();
+    TurnedLoop &turns = *loop;
+    auto        child = reckless::window::CreateChildWindow(top.Parent(), root, 240, 160, 1.0f, std::move(loop));
+    ASSERT_NE(child, nullptr);
+    turns.Turn();
+    root.host()->RequestKeyboardFocus(&probe);
+
+    Display *display = XOpenDisplay(nullptr);
+    ASSERT_NE(display, nullptr);
+    const auto toplevel  = static_cast<::Window>(reinterpret_cast<std::uintptr_t>(top.Parent()));
+    ::Window   tree_root = 0, tree_parent = 0, *children = nullptr;
+    unsigned   count = 0;
+    ASSERT_NE(XQueryTree(display, toplevel, &tree_root, &tree_parent, &children, &count), 0);
+    ASSERT_EQ(count, 1u);
+    const ::Window window = children[0];
+    XFree(children);
+    const auto settle = [&] {
+        XFlush(display);
+        for (int i = 0; i < 20; ++i)
+        {
+            turns.Turn();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    };
+    const auto button = [&](unsigned which, bool is_down, unsigned state) {
+        XEvent e{};
+        e.xbutton.type        = is_down ? ButtonPress : ButtonRelease;
+        e.xbutton.display     = display;
+        e.xbutton.window      = window;
+        e.xbutton.root        = DefaultRootWindow(display);
+        e.xbutton.x           = 20;
+        e.xbutton.y           = 20;
+        e.xbutton.state       = state;
+        e.xbutton.button      = which;
+        e.xbutton.same_screen = True;
+        XSendEvent(display, window, False, is_down ? ButtonPressMask : ButtonReleaseMask, &e);
+        settle();
+    };
+    button(Button2, true, 0);
+    button(Button2, false, Button2Mask);
+    button(Button4, true, ControlMask); // the wheel away from the player, Control held: a zoom
+    button(6, true, ShiftMask);         // the wheel tilted left, Shift held
+    XEvent key{};
+    key.xkey.type        = KeyPress;
+    key.xkey.display     = display;
+    key.xkey.window      = window;
+    key.xkey.root        = DefaultRootWindow(display);
+    key.xkey.keycode     = XKeysymToKeycode(display, XK_F5);
+    key.xkey.same_screen = True;
+    XSendEvent(display, window, False, KeyPressMask, &key);
+    settle();
+    EXPECT_EQ(probe.log, (std::vector<std::string>{"down middle", "up middle", "wheel 0,20 control command",
+                                                   "wheel 20,0 shift", "F5"}))
+        << "the middle button as itself, the wheel's travel and the keys held with it (Control is the primary here "
+           "too), F5 by name";
+    child.reset();
+    XCloseDisplay(display);
+}
+
+TEST(ChildWindow, ADialogForSeveralFilesOrAFolderAsksTheDesktopsDialogForThemAndAnswersEveryPath)
+{
+    // The desktop's dialog is zenity or kdialog, run as a process: this suite puts a zenity of its own first on the
+    // PATH, which writes down the arguments it was run with and answers as the real one does - one path to a line.
+    reckless::test::TestHostWindow top(240, 160);
+    if (!top.Valid())
+    {
+        if (reckless::test::WindowRequired())
+        {
+            FAIL() << "the run promises a window and there is no display";
+        }
+        GTEST_SKIP() << "no display";
+    }
+    top.Show(true);
+    char folder_template[] = "/tmp/reckless-dialog-XXXXXX";
+    ASSERT_NE(mkdtemp(folder_template), nullptr);
+    const std::string folder = folder_template;
+    const std::string script = folder + "/zenity";
+    {
+        std::FILE *file = std::fopen(script.c_str(), "w");
+        ASSERT_NE(file, nullptr);
+        std::fprintf(file,
+                     "#!/bin/sh\nprintf '%%s\\n' \"$*\" > '%s/args'\n"
+                     "case \"$*\" in\n"
+                     "*--directory*) printf '/home/a/New Project\\n';;\n"
+                     "*--multiple*) printf '/home/a/one.wav\\n/home/a/two words.wav\\n/home/a/3.wav\\n';;\n"
+                     "*--file-selection*) printf '/home/a/single.wav\\n';;\nesac\n",
+                     folder.c_str());
+        std::fclose(file);
+        ASSERT_EQ(chmod(script.c_str(), 0755), 0);
+    }
+    const std::string old_path = std::getenv("PATH") != nullptr ? std::getenv("PATH") : "";
+    setenv("PATH", (folder + ":" + old_path).c_str(), 1);
+
+    reckless::view::View root;
+    root.SetBounds({240, 160});
+    auto        loop  = std::make_unique<TurnedLoop>();
+    TurnedLoop &turns = *loop;
+    auto        child = reckless::window::CreateChildWindow(top.Parent(), root, 240, 160, 1.0f, std::move(loop));
+    ASSERT_NE(child, nullptr);
+    turns.Turn();
+    const auto arguments = [&folder] {
+        std::string text;
+        if (std::FILE *file = std::fopen((folder + "/args").c_str(), "r"))
+        {
+            char buffer[512];
+            while (std::fgets(buffer, sizeof(buffer), file) != nullptr)
+            {
+                text += buffer;
+            }
+            std::fclose(file);
+        }
+        return text;
+    };
+    const auto ask = [&](const reckless::view::FileRequest &request, bool several) {
+        std::vector<std::string> answer;
+        bool                     answered = false;
+        const auto               done     = [&answer, &answered](std::vector<std::string> paths) {
+            answer   = std::move(paths);
+            answered = true;
+        };
+        if (several)
+        {
+            root.host()->ChooseFiles(request, [&done](const std::vector<std::string> &paths) { done(paths); });
+        }
+        else
+        {
+            root.host()->ChooseFile(request, [&done](const std::string &path) {
+                done(path.empty() ? std::vector<std::string>{} : std::vector<std::string>{path});
+            });
+        }
+        for (int i = 0; i < 500 && !answered; ++i)
+        {
+            turns.Turn();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        EXPECT_TRUE(answered) << "the dialog answered";
+        return answer;
+    };
+
+    reckless::view::FileRequest request;
+    request.title    = "Add audio";
+    request.patterns = {"*.wav"};
+    request.multiple = true;
+    EXPECT_EQ(ask(request, true),
+              (std::vector<std::string>{"/home/a/one.wav", "/home/a/two words.wav", "/home/a/3.wav"}))
+        << "every path of a multiple open, in the dialog's order, a space in one of them whole";
+    EXPECT_NE(arguments().find("--multiple"), std::string::npos) << arguments();
+    EXPECT_NE(arguments().find("*.wav"), std::string::npos) << "the patterns still filter";
+
+    reckless::view::FileRequest project;
+    project.title         = "New project";
+    project.choose_folder = true;
+    project.patterns      = {"*.wav"}; // a folder has no pattern: ignored
+    EXPECT_EQ(ask(project, true), (std::vector<std::string>{"/home/a/New Project"})) << "the folder's path";
+    EXPECT_NE(arguments().find("--directory"), std::string::npos) << arguments();
+    EXPECT_EQ(arguments().find("*.wav"), std::string::npos) << "no pattern asked of a folder";
+
+    reckless::view::FileRequest one;
+    one.title = "Open";
+    EXPECT_EQ(ask(one, false), (std::vector<std::string>{"/home/a/single.wav"}))
+        << "the single dialog as it always was";
+    EXPECT_EQ(arguments().find("--multiple"), std::string::npos) << arguments();
+    EXPECT_EQ(arguments().find("--directory"), std::string::npos) << arguments();
+
+    // A request for several, through the single dialog, is the first of them: a caller that never asked for the list.
+    EXPECT_EQ(ask(request, false), (std::vector<std::string>{"/home/a/one.wav"}));
+
+    child.reset();
+    setenv("PATH", old_path.c_str(), 1);
+    unlink(script.c_str());
+    unlink((folder + "/args").c_str());
+    rmdir(folder.c_str());
 }
 #else
 TEST(ChildWindow, TakesTheDropsDraggedOverTheTopLevelItIsTheProxyOf)

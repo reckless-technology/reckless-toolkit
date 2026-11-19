@@ -515,6 +515,9 @@ class LinuxWindow final : public AppWindow
     void                BringToFront() override;
     void                SetContentSize(int width, int height) override;
     void                SetContentSizeOnScreen(int width, int height) override;
+    gfx::PointI         ContentSizeInUnits() const override;
+    void                SetContentSizeInUnits(int width, int height) override;
+    bool                SetUserResizable(bool is_resizable, gfx::PointI least, gfx::PointI most) override;
     gfx::PointI         LargestContent() const override;
     void                SetTitle(const std::string &title) override;
     std::string         Title() const override;
@@ -592,7 +595,8 @@ class LinuxWindow final : public AppWindow
     std::function<gfx::PointI()>  aspect_; ///< the panel's design size as the aspect to hold, or {0, 0}; may be empty.
     int                           fixed_height_{0}; ///< the bar's height, in design pixels, over what scales.
     std::function<void(int, int)> resized_; ///< told the content's design size after the person dragged the frame.
-    bool                          dialog_;  ///< a dialog: typed as one, Escape closes it.
+    std::function<void(int, int)> resized_in_units_;      ///< told the content's size in pixels after the same drag.
+    bool                          dialog_;                ///< a dialog: typed as one, Escape closes it.
     std::function<void(bool)>     full_screen_changed_;   ///< told each change of full screen; may be empty.
     bool                          may_go_full_screen_;    ///< opened with full screen allowed, and no dialog.
     bool                          is_full_screen_{false}; ///< full screen, or asked to be: the state last asked for
@@ -732,7 +736,7 @@ class LinuxPlatform final : public AppPlatform
         @param milliseconds  the interval, in milliseconds, at least 1
         @param tick          what runs each interval, on the loop's thread
         @return              a token for Unregister */
-    int AddTimer(int milliseconds, std::function<void()> tick)
+    int AddTimer(int milliseconds, std::function<void()> tick) override
     {
         const int  token    = next_token_++;
         const auto interval = std::chrono::milliseconds(std::max(milliseconds, 1));
@@ -746,6 +750,38 @@ class LinuxPlatform final : public AppPlatform
     {
         watches_.erase(token);
         timers_.erase(token);
+    }
+
+    /** Stop a timer AddTimer started, at once: a tick already due is not run. One already stopped is ignored.
+        @param token  a token AddTimer gave */
+    void CancelTimer(int token) override
+    {
+        timers_.erase(token);
+    }
+
+    /** The loop polls descriptors for the app.
+        @return  true */
+    bool CanWatchFileDescriptors() const override
+    {
+        return true;
+    }
+
+    /** Watch `fd` on the loop for the app's own use until UnwatchFileDescriptor, as a plug-in's host loop does
+        (VST3's `IRunLoop::registerEventHandler`).
+        @param fd     the descriptor, which the caller keeps open until it unwatches
+        @param ready  what runs on the loop's thread when it is readable, hung up or in error
+        @return       a token for UnwatchFileDescriptor; 0 for a descriptor that is not one (negative) */
+    int WatchFileDescriptor(int fd, std::function<void()> ready) override
+    {
+        return fd >= 0 ? Watch(fd, std::move(ready)) : 0;
+    }
+
+    /** Take back a watch WatchFileDescriptor made, at once: nothing further is run for it, not even for a descriptor
+        the poll in progress found ready. One already gone is ignored.
+        @param token  a token WatchFileDescriptor gave */
+    void UnwatchFileDescriptor(int token) override
+    {
+        watches_.erase(token);
     }
 
     // ---- AppPlatform -----------------------------------------------------------------------------------------------
@@ -1154,7 +1190,8 @@ std::unique_ptr<window::RunLoop> LinuxPlatform::ChildLoop()
 
 LinuxWindow::LinuxWindow(LinuxPlatform &platform, const WindowOptions &options)
     : platform_(platform), display_(platform.display()), closing_(options.closing), constrain_(options.constrain),
-      aspect_(options.aspect), fixed_height_(options.fixed_height), resized_(options.resized), dialog_(options.dialog),
+      aspect_(options.aspect), fixed_height_(options.fixed_height), resized_(options.resized),
+      resized_in_units_(options.resized_in_units), dialog_(options.dialog),
       full_screen_changed_(options.full_screen_changed),
       may_go_full_screen_(options.may_go_full_screen && !options.dialog)
 {
@@ -1386,6 +1423,52 @@ void LinuxWindow::SetContentSizeOnScreen(int width, int height)
         const auto f = resized_;
         f(width, height);
     }
+}
+
+gfx::PointI LinuxWindow::ContentSizeInUnits() const
+{
+    return {pixel_width_, pixel_height_};
+}
+
+void LinuxWindow::SetContentSizeInUnits(int width, int height)
+{
+    SetFullScreen(false); // a size of the app's own is the window's
+    // The pixels asked for, exactly, and the size hints for them first, as SetContentSize does; the size is the app's
+    // own, so the ConfigureNotify it brings matches pixel_width_ and is told to no one.
+    pixel_width_      = std::max(1, width);
+    pixel_height_     = std::max(1, height);
+    const auto [x, y] = Position();
+    SetSizeHints(x, y, false);
+    XResizeWindow(display_, window_, static_cast<unsigned>(pixel_width_), static_cast<unsigned>(pixel_height_));
+    XFlush(display_);
+}
+
+bool LinuxWindow::SetUserResizable(bool is_resizable, gfx::PointI least, gfx::PointI most)
+{
+    if (is_resizable)
+    {
+        // The window manager's limits are the constraint's least and most, in design units at the window's scale: a
+        // limit of none is one unit and what a window may be.
+        constrain_ = [this, least, most](gfx::PointF proposed) {
+            const float scale = scale_ > 0.0f ? scale_ : 1.0f;
+            const float low_x = least.x > 0 ? static_cast<float>(least.x) / scale : 1.0f / scale;
+            const float low_y = least.y > 0 ? static_cast<float>(least.y) / scale : 1.0f / scale;
+            const float top_x = most.x > 0 ? static_cast<float>(most.x) / scale : 1.0e5f;
+            const float top_y = most.y > 0 ? static_cast<float>(most.y) / scale : 1.0e5f;
+            return gfx::PointF{std::clamp(proposed.x, low_x, std::max(low_x, top_x)),
+                               std::clamp(proposed.y, low_y, std::max(low_y, top_y))};
+        };
+    }
+    else
+    {
+        constrain_ = nullptr; // one size: the one it has
+    }
+    aspect_           = nullptr;
+    fixed_height_     = 0;
+    const auto [x, y] = Position();
+    SetSizeHints(x, y, false);
+    XFlush(display_);
+    return true;
 }
 
 gfx::PointI LinuxWindow::LargestContent() const
@@ -1641,6 +1724,11 @@ void LinuxWindow::Event(const XEvent &event)
             const auto f = resized_;
             f(std::max(1, static_cast<int>(std::lround(static_cast<float>(pixel_width_) / scale_))),
               std::max(1, static_cast<int>(std::lround(static_cast<float>(pixel_height_) / scale_))));
+        }
+        if (resized_in_units_)
+        {
+            const auto f = resized_in_units_;
+            f(pixel_width_, pixel_height_);
         }
     }
 }

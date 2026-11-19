@@ -469,3 +469,66 @@ TEST(FakeAppPlatform, TheViewWithTheKeyboardHasAKeyFirstAndTheBarsShortcutsTheRe
     root.RemoveChild(text);
     root.SetHost(nullptr);
 }
+
+TEST(FakeAppPlatform, ADawsBareKeysAreShortcutsUntilATextFieldHasTheKeyboardAndThenTheyAreTyping)
+{
+    // Space to play, S to split, Home and End to jump, Delete to remove and F5 to record - none with the primary
+    // modifier - are the bar's shortcuts for a window whose focused view takes no typing, and a key no view takes
+    // reaches them; with a TextField holding the keyboard the same keys are the field's (typed, or moving its caret),
+    // so a shortcut never steals typing - the function keys, which the field never takes, still reach the bar.
+    reckless::test::FakeAppPlatform platform;
+    std::vector<std::string>        log;
+    const auto                      item = [&log](const char *name, int id, Shortcut shortcut) {
+        return MenuEntry::Item(name, id, shortcut, [&log, name] { log.emplace_back(name); });
+    };
+    MenuBar bar;
+    bar.menus.push_back(MenuEntry::Menu(
+        "Transport",
+        {item("play", 1, Shortcut::Plain(ShortcutKey::kSpace)), item("split", 2, Shortcut::Plain('s')),
+         item("start", 3, Shortcut::Plain(ShortcutKey::kHome)), item("end", 4, Shortcut::Plain(ShortcutKey::kEnd)),
+         item("delete", 5, Shortcut::Plain(ShortcutKey::kDelete)),
+         item("backspace", 6, Shortcut::Plain(ShortcutKey::kBackspace)),
+         item("left", 7, Shortcut::Plain(ShortcutKey::kLeft)), item("record", 8, Shortcut::Plain(ShortcutKey::kF5)),
+         item("loop", 9, Shortcut::Plain(ShortcutKey::kF12, true))}));
+    platform.SetMenuBar(bar, nullptr);
+
+    using Took = reckless::test::FakeAppPlatform::Took;
+    const Shortcut keys[]{Shortcut::Plain(ShortcutKey::kSpace),    Shortcut::Plain('s'),
+                          Shortcut::Plain(ShortcutKey::kHome),     Shortcut::Plain(ShortcutKey::kEnd),
+                          Shortcut::Plain(ShortcutKey::kDelete),   Shortcut::Plain(ShortcutKey::kBackspace),
+                          Shortcut::Plain(ShortcutKey::kLeft),     Shortcut::Plain(ShortcutKey::kF5),
+                          Shortcut::Plain(ShortcutKey::kF12, true)};
+    for (const Shortcut &key : keys)
+    {
+        EXPECT_EQ(platform.PressKey(key), Took::kShortcut) << "no view has the keyboard";
+    }
+    EXPECT_EQ(log, (std::vector<std::string>{"play", "split", "start", "end", "delete", "backspace", "left", "record",
+                                             "loop"}));
+    log.clear();
+
+    reckless::view::View        root;
+    reckless::test::TextHost    host;
+    reckless::view::MouseRouter router(root, &host);
+    host.router = &router;
+    root.SetBounds({400, 300});
+    root.SetHost(&host);
+    reckless::view::TextField field{reckless::view::TextField::Style{}};
+    field.SetBounds({0, 0, 200, 24});
+    root.AddChild(field);
+    router.Focus(&field);
+    for (const Shortcut &key :
+         {Shortcut::Plain(ShortcutKey::kSpace), Shortcut::Plain('s'), Shortcut::Plain(ShortcutKey::kHome),
+          Shortcut::Plain(ShortcutKey::kEnd), Shortcut::Plain(ShortcutKey::kDelete),
+          Shortcut::Plain(ShortcutKey::kBackspace), Shortcut::Plain(ShortcutKey::kLeft)})
+    {
+        EXPECT_EQ(platform.PressKey(key, &router), Took::kView) << "the field's, not the bar's";
+    }
+    EXPECT_TRUE(log.empty()) << "no shortcut stole a key from the field";
+    EXPECT_EQ(field.text(), " ") << "a space and an s typed, Home and End moved, Backspace took the s off again";
+    EXPECT_EQ(platform.PressKey(Shortcut::Plain(ShortcutKey::kF5), &router), Took::kShortcut)
+        << "a function key is never typing";
+    EXPECT_EQ(platform.PressKey(Shortcut::Plain(ShortcutKey::kF12, true), &router), Took::kShortcut);
+    EXPECT_EQ(log, (std::vector<std::string>{"record", "loop"}));
+    root.RemoveChild(field);
+    root.SetHost(nullptr);
+}

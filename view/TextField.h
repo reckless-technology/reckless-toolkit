@@ -343,6 +343,18 @@ class TextField final : public View
             return true;
         case Key::kTab:
         case Key::kNone:
+        case Key::kF1:
+        case Key::kF2:
+        case Key::kF3:
+        case Key::kF4:
+        case Key::kF5:
+        case Key::kF6:
+        case Key::kF7:
+        case Key::kF8:
+        case Key::kF9:
+        case Key::kF10:
+        case Key::kF11:
+        case Key::kF12:
             return false;
         }
         return true;

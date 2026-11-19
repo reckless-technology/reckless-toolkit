@@ -207,3 +207,69 @@ TEST(FakeAppPlatform, APlatformThatCannotPlaceAWindowOrNameItsScreensSaysSoAndMo
     EXPECT_EQ(window->Position(), (std::pair<int, int>{40, 50})) << "and has not moved";
     EXPECT_TRUE(platform.ScreenAreas().empty()) << "a platform that cannot enumerate its displays names none";
 }
+
+TEST(FakeAppPlatform, ACancellableTimerIsAPlatformsDefaultOverStartTimerAndStopsCallingTheApp)
+{
+    // A platform that gives no cancel of its own - this one gives none - still stops a timer AddTimer started from
+    // calling the app, and tells a platform nothing to cancel by.
+    FakeAppPlatform platform;
+    int             kept      = 0;
+    int             cancelled = 0;
+    const int       keep      = platform.AddTimer(10, [&kept] { ++kept; });
+    const int       stop      = platform.AddTimer(10, [&cancelled] { ++cancelled; });
+    EXPECT_NE(keep, 0);
+    EXPECT_NE(stop, 0);
+    EXPECT_NE(keep, stop);
+    platform.Tick();
+    platform.CancelTimer(stop);
+    platform.Tick();
+    platform.CancelTimer(stop); // twice, and a token never given, do nothing
+    platform.CancelTimer(1000);
+    platform.Tick();
+    EXPECT_EQ(kept, 3);
+    EXPECT_EQ(cancelled, 1) << "ticked once before it was cancelled";
+}
+
+TEST(FakeAppPlatform, ADescriptorWatchIsFiredByTheSuiteAndStopsWhenUnwatched)
+{
+    FakeAppPlatform platform;
+    EXPECT_TRUE(platform.CanWatchFileDescriptors());
+    int       calls = 0;
+    const int token = platform.WatchFileDescriptor(7, [&calls] { ++calls; });
+    EXPECT_NE(token, 0);
+    EXPECT_EQ(platform.watch_count(), 1u);
+    EXPECT_EQ(platform.FireDescriptor(7), 1);
+    EXPECT_EQ(platform.FireDescriptor(8), 0) << "another descriptor";
+    EXPECT_EQ(calls, 1);
+    platform.UnwatchFileDescriptor(token);
+    EXPECT_EQ(platform.FireDescriptor(7), 0);
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(platform.watch_count(), 0u);
+}
+
+TEST(FakeAppPlatform, AWindowsSizeInUnitsAndItsResizingAreTheAppsToSetAndItsOwnResizeIsToldInUnits)
+{
+    FakeAppPlatform                  platform;
+    std::vector<std::pair<int, int>> in_units;
+    std::vector<std::pair<int, int>> in_design;
+    reckless::app::WindowOptions     options;
+    options.width            = 300;
+    options.height           = 200;
+    options.resized_in_units = [&in_units](int width, int height) { in_units.emplace_back(width, height); };
+    options.resized          = [&in_design](int width, int height) { in_design.emplace_back(width, height); };
+    const auto window        = platform.OpenWindow(options);
+    ASSERT_NE(window, nullptr);
+    auto &fake = static_cast<FakeAppWindow &>(*window);
+    EXPECT_EQ(window->ContentSizeInUnits(), (reckless::gfx::PointI{300, 200}));
+    window->SetContentSizeInUnits(641, 481);
+    EXPECT_EQ(window->ContentSizeInUnits(), (reckless::gfx::PointI{641, 481}));
+    EXPECT_TRUE(in_units.empty()) << "the app set it and is told nothing";
+    EXPECT_TRUE(in_design.empty());
+    EXPECT_EQ(fake.size_in_units_sets(), 1);
+    EXPECT_TRUE(window->SetUserResizable(true, {100, 80}, {900, 700}));
+    EXPECT_TRUE(fake.is_user_resizable);
+    EXPECT_EQ(fake.least_units, (reckless::gfx::PointI{100, 80}));
+    fake.Resize(700, 500); // the person's
+    EXPECT_EQ(in_units, (std::vector<std::pair<int, int>>{{700, 500}}));
+    EXPECT_EQ(in_design, (std::vector<std::pair<int, int>>{{700, 500}}));
+}

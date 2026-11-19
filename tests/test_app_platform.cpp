@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <functional>
 #include <memory>
@@ -39,6 +40,7 @@
 
 #if defined(__linux__)
 #include <dlfcn.h>
+#include <unistd.h>
 // Xlib last: its macros (None, Bool, Status, True) would reach into the headers above.
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
@@ -64,6 +66,12 @@ std::unique_ptr<reckless::app::AppPlatform> PlatformOrNull()
     {
         return nullptr;
     }
+#endif
+#if defined(__linux__)
+    // Xvfb refuses a connection opened within about a millisecond of another's close - 7 in 500 open-and-close
+    // pairs, none with 2 ms between them (measured on Linux Mint 22, 2026-11-19, with Xvfb from Ubuntu 24.04's xserver)
+    // - which reads as a platform with no window, at 0 ms, in whichever test came next.
+    std::this_thread::sleep_for(std::chrono::milliseconds(3));
 #endif
     return reckless::app::AppPlatform::Create("RecklessPlatformTest", {});
 }
@@ -332,6 +340,163 @@ TEST(AppPlatform, AQueueAWorkerKeepsOutlivesThePlatformAndRefusesItsPosts)
     EXPECT_FALSE(kept->Post([&] { ran = true; })) << "the platform has gone: the post is dropped";
     EXPECT_FALSE(ran);
 }
+
+#if !defined(__APPLE__) // a Mac runs no loop here
+TEST(AppPlatform, ATimerTheAppCancelsTicksNoMoreAndMayCancelItselfInItsOwnTick)
+{
+    const std::unique_ptr<reckless::app::AppPlatform> platform = PlatformOrNull();
+    REQUIRE_PLATFORM(platform);
+    int  steady_ticks = 0;
+    int  own_ticks    = 0;
+    int  own_token    = 0;
+    auto steady       = platform->AddTimer(5, [&steady_ticks] { ++steady_ticks; });
+    own_token         = platform->AddTimer(5, [&] {
+        if (++own_ticks == 3)
+        {
+            platform->CancelTimer(own_token); // from inside its own tick
+        }
+    });
+    EXPECT_NE(steady, 0);
+    EXPECT_NE(own_token, 0);
+    EXPECT_NE(steady, own_token);
+    RunFor(*platform, 0.15);
+    EXPECT_GE(steady_ticks, 4) << "a timer runs until it is cancelled";
+    EXPECT_EQ(own_ticks, 3) << "the one that cancelled itself stopped on the third tick";
+    platform->CancelTimer(steady);
+    const int stopped_at = steady_ticks;
+    RunFor(*platform, 0.06);
+    EXPECT_EQ(steady_ticks, stopped_at) << "a cancelled timer ticks no more";
+    platform->CancelTimer(steady); // twice, and a token never given, are ignored
+    platform->CancelTimer(987654);
+}
+
+TEST(AppPlatform, AWindowWithNoChildWindowTakesAnExactSizeInUnitsAndTellsNoOneOfIt)
+{
+    // A plug-in's editor is attached to the window's handle with no toolkit content in it: the window is its own
+    // size, set exactly in the handle's units, told to nobody (the plug-in asked for it), and its own resize - the
+    // person's - told in those units (see the Linux test below, which makes one).
+    const std::unique_ptr<reckless::app::AppPlatform> platform = PlatformOrNull();
+    REQUIRE_PLATFORM(platform);
+    std::vector<std::pair<int, int>> told_units;
+    std::vector<std::pair<int, int>> told_design;
+    reckless::app::WindowOptions     options;
+    options.title            = "Reckless Platform Test";
+    options.width            = 320;
+    options.height           = 200;
+    options.resized          = [&told_design](int width, int height) { told_design.emplace_back(width, height); };
+    options.resized_in_units = [&told_units](int width, int height) { told_units.emplace_back(width, height); };
+    const std::unique_ptr<reckless::app::AppWindow> window = platform->OpenWindow(options);
+    ASSERT_NE(window, nullptr);
+    EXPECT_NE(window->Handle(), nullptr);
+    RunFor(*platform, 0.1);
+    const reckless::gfx::PointI opened = window->ContentSizeInUnits();
+    EXPECT_GT(opened.x, 0) << "the content's size, in the units the handle is sized in";
+    EXPECT_GT(opened.y, 0);
+    EXPECT_NEAR(static_cast<float>(opened.x), 320.0f * window->Scale(), 1.0f);
+    EXPECT_NEAR(static_cast<float>(opened.y), 200.0f * window->Scale(), 1.0f);
+    told_units.clear();
+    told_design.clear();
+
+    window->SetContentSizeInUnits(407, 301); // odd sizes, which no design size at a fractional scale holds
+    RunFor(*platform, 0.1);
+    EXPECT_EQ(window->ContentSizeInUnits(), (reckless::gfx::PointI{407, 301})) << "exactly the units asked for";
+    EXPECT_TRUE(told_units.empty()) << "a size the app set is told to no one";
+    EXPECT_TRUE(told_design.empty());
+    window->SetContentSizeInUnits(512, 384);
+    RunFor(*platform, 0.08);
+    EXPECT_EQ(window->ContentSizeInUnits(), (reckless::gfx::PointI{512, 384}));
+    EXPECT_TRUE(told_units.empty());
+
+    EXPECT_TRUE(window->SetUserResizable(true, {200, 150}, {900, 700})) << "resizable by the person, per window";
+    EXPECT_TRUE(window->SetUserResizable(false, {0, 0}, {0, 0})) << "and not";
+    RunFor(*platform, 0.08);
+    EXPECT_EQ(window->ContentSizeInUnits(), (reckless::gfx::PointI{512, 384})) << "its size kept through each";
+    EXPECT_TRUE(told_units.empty());
+}
+#endif
+
+#if defined(__linux__)
+TEST(AppPlatform, AWindowsOwnResizeAndCloseAreToldAndItClosesWhenTheAppDestroysIt)
+{
+    // The window manager's resize reaches resized_in_units in pixels, exact, for a window with no child window - made
+    // here as a window manager makes one, by resizing the X window from another connection - and its close button as
+    // a WM_DELETE_WINDOW message reaches `closing`, which does not close it: destroying the AppWindow does, and tells
+    // nothing.
+    const std::unique_ptr<reckless::app::AppPlatform> platform = PlatformOrNull();
+    REQUIRE_PLATFORM(platform);
+    Display *display = XOpenDisplay(nullptr);
+    ASSERT_NE(display, nullptr);
+    std::vector<std::pair<int, int>> told_units;
+    int                              closings = 0;
+    reckless::app::WindowOptions     options;
+    options.title            = "Reckless Platform Test";
+    options.width            = 320;
+    options.height           = 200;
+    options.resized_in_units = [&told_units](int width, int height) { told_units.emplace_back(width, height); };
+    options.closing          = [&closings] { ++closings; };
+    auto window              = platform->OpenWindow(options);
+    ASSERT_NE(window, nullptr);
+    RunFor(*platform, 0.1);
+    ASSERT_TRUE(window->SetUserResizable(true, {200, 150}, {900, 700}));
+    RunFor(*platform, 0.08);
+    const auto id = static_cast<::Window>(reinterpret_cast<std::uintptr_t>(window->Handle()));
+    XResizeWindow(display, id, 541, 333);
+    XFlush(display);
+    EXPECT_TRUE(RunUntil(*platform, [&told_units] { return !told_units.empty(); }));
+    ASSERT_FALSE(told_units.empty());
+    EXPECT_EQ(told_units.back(), (std::pair<int, int>{541, 333})) << "the person's size, in pixels, exactly";
+    EXPECT_EQ(window->ContentSizeInUnits(), (reckless::gfx::PointI{541, 333}));
+
+    XEvent close{};
+    close.xclient.type         = ClientMessage;
+    close.xclient.window       = id;
+    close.xclient.message_type = XInternAtom(display, "WM_PROTOCOLS", False);
+    close.xclient.format       = 32;
+    close.xclient.data.l[0]    = static_cast<long>(XInternAtom(display, "WM_DELETE_WINDOW", False));
+    close.xclient.data.l[1]    = CurrentTime;
+    XSendEvent(display, id, False, NoEventMask, &close);
+    XFlush(display);
+    EXPECT_TRUE(RunUntil(*platform, [&closings] { return closings > 0; })) << "the close told to the app";
+    EXPECT_EQ(closings, 1);
+    window.reset(); // the app closes it, from outside the event
+    EXPECT_EQ(closings, 1) << "destroying the window tells nothing";
+    XSync(display, False);
+    XWindowAttributes gone{};
+    EXPECT_EQ(XGetWindowAttributes(display, id, &gone), 0) << "the native window is gone";
+    XCloseDisplay(display);
+}
+
+TEST(AppPlatform, ADescriptorWatchedForTheAppIsPolledByTheLoopUntilItIsUnwatched)
+{
+    // What VST3's IRunLoop::registerEventHandler asks of a Linux host: the loop calls back whenever the descriptor is
+    // readable, level triggered, and stops at once when the watch is taken back, from inside the callback too.
+    const std::unique_ptr<reckless::app::AppPlatform> platform = PlatformOrNull();
+    REQUIRE_PLATFORM(platform);
+    ASSERT_TRUE(platform->CanWatchFileDescriptors());
+    EXPECT_EQ(platform->WatchFileDescriptor(-1, [] {}), 0) << "no such descriptor";
+    int fds[2];
+    ASSERT_EQ(pipe(fds), 0);
+    int calls = 0;
+    int token = 0;
+    token     = platform->WatchFileDescriptor(fds[0], [&] {
+        if (++calls == 3)
+        {
+            platform->UnwatchFileDescriptor(token); // from inside its own callback
+        }
+    });
+    EXPECT_NE(token, 0);
+    RunFor(*platform, 0.04);
+    EXPECT_EQ(calls, 0) << "nothing readable, nothing called";
+    ASSERT_EQ(write(fds[1], "x", 1), 1);
+    EXPECT_TRUE(RunUntil(*platform, [&calls] { return calls >= 3; })) << "never read, so readable each turn";
+    RunFor(*platform, 0.06);
+    EXPECT_EQ(calls, 3) << "unwatched inside the third call: no fourth";
+    platform->UnwatchFileDescriptor(token); // again, and one never given, are ignored
+    platform->UnwatchFileDescriptor(424242);
+    close(fds[0]);
+    close(fds[1]);
+}
+#endif
 
 TEST(AppPlatform, AWindowThatDidNotAskNeverGoesFullScreen)
 {

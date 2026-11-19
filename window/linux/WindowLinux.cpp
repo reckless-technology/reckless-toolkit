@@ -79,7 +79,7 @@ bool TakesBgra(const Visual *visual, int depth) noexcept
     @return       Shift, Control and Alt (Mod1) as the views read them */
 view::Modifiers ModifiersOf(unsigned state) noexcept
 {
-    return {(state & ShiftMask) != 0, (state & ControlMask) != 0, (state & Mod1Mask) != 0};
+    return {(state & ShiftMask) != 0, (state & ControlMask) != 0, (state & Mod1Mask) != 0, (state & ControlMask) != 0};
 }
 
 /** The cursor font's shape for a view's cursor.
@@ -149,6 +149,19 @@ view::Key NamedKeyOfKeySym(KeySym symbol) noexcept
     }
 }
 
+/** The function key a key symbol stands for, F1 to F12: not part of the table the raw keys are named from
+    (NamedKeyOfKeySym), which the products that read raw keys have always seen without them.
+    @param symbol  the key symbol
+    @return        kF1 to kF12, or Key::kNone for any other symbol */
+view::Key FunctionKeyOfKeySym(KeySym symbol) noexcept
+{
+    if (symbol >= XK_F1 && symbol <= XK_F12)
+    {
+        return static_cast<view::Key>(static_cast<int>(view::Key::kF1) + static_cast<int>(symbol - XK_F1));
+    }
+    return view::Key::kNone;
+}
+
 /** A key event as the views' key: the editing and moving keys by their key symbols, the rest as the character it
     types (Latin-1, as XLookupString gives it with no input method).
     @param event  the key press, which XLookupString reads
@@ -163,6 +176,11 @@ view::KeyEvent KeyOf(XKeyEvent &event)
     if (const view::Key named = NamedKeyOfKeySym(symbol); named != view::Key::kNone)
     {
         key.key = named;
+        return key;
+    }
+    if (const view::Key function = FunctionKeyOfKeySym(symbol); function != view::Key::kNone)
+    {
+        key.key = function;
         return key;
     }
     // Ctrl with a letter as the letter with the primary modifier, as a Mac's Command-letter reaches the views:
@@ -429,6 +447,13 @@ class LinuxConnection
                         already open or the desktop has neither dialog program */
     void ChooseFile(const view::FileRequest &request, std::function<void(const std::string &)> picked);
 
+    /** zenity's or kdialog's answer to `request`, every path of it, given to `picked` on a later tick: the files of a
+        multiple open, the folder of a folder dialog, the one path of the rest. None for a cancel; a dialog already
+        open is cancelled at once.
+        @param request  the dialog's title, folder, file patterns, and whether it saves, takes several or a folder
+        @param picked   run on a later tick with the paths chosen; empty when cancelled */
+    void ChooseFiles(const view::FileRequest &request, std::function<void(const std::vector<std::string> &)> picked);
+
     /** `text` on the CLIPBOARD selection, for a copy: held by the loop where it keeps the clipboard for the windows on
         it (an app's, RunLoop::SetClipboardText), else by an owner on this connection, answering pastes while the
         connection lives (a plug-in's window in a host).
@@ -468,14 +493,15 @@ class LinuxConnection
     std::map<::Window, LinuxSurface *> surfaces_; ///< every surface by its window, the child window and its popups
     std::map<::Window, LinuxSurface *> proxied_;  ///< top-level windows whose drops a surface takes (ProxyFor)
     std::vector<LinuxPopup *>          popups_;   ///< the open popups, oldest first
-    ::Window                           grab_window_{0};      ///< the window holding the pointer grab; 0 for none
-    std::deque<std::function<void()>>  calls_;               ///< the calls deferred to the next tick
-    std::map<unsigned, ::Cursor>       cursors_;             ///< the cursors made, by shape
-    std::map<VisualID, Colormap>       colormaps_;           ///< the popups' (ColormapFor)
-    pid_t                              dialog_pid_{-1};      ///< the file dialog's process; -1 for none open
-    int                                dialog_fd_{-1};       ///< the read end of the dialog's output; -1 for none
-    std::string                        dialog_output_;       ///< what the dialog has written so far
-    std::function<void(const std::string &)> dialog_picked_; ///< given the path when the dialog closes
+    ::Window                           grab_window_{0}; ///< the window holding the pointer grab; 0 for none
+    std::deque<std::function<void()>>  calls_;          ///< the calls deferred to the next tick
+    std::map<unsigned, ::Cursor>       cursors_;        ///< the cursors made, by shape
+    std::map<VisualID, Colormap>       colormaps_;      ///< the popups' (ColormapFor)
+    pid_t                              dialog_pid_{-1}; ///< the file dialog's process; -1 for none open
+    int                                dialog_fd_{-1};  ///< the read end of the dialog's output; -1 for none
+    std::string                        dialog_output_;  ///< what the dialog has written so far
+    std::function<void(const std::vector<std::string> &)> dialog_picked_; ///< given the paths when the dialog closes
+    bool dialog_is_list_{false}; ///< the dialog was asked for several files: its output is a path to a line
     /** The CLIPBOARD selection's owner on this connection, made by the first copy the loop does not keep; null until
         then. */
     std::unique_ptr<x11::ClipboardOwner> clipboard_;
@@ -640,6 +666,18 @@ class LinuxSurface : public view::Host
         }
     }
 
+    /** The connection's file dialog for several files or a folder; nothing once the surface is let go.
+        @param request  the dialog's title, folder, file patterns, and whether it saves, takes several or a folder
+        @param picked   run on a later tick with the paths chosen; empty when cancelled */
+    void ChooseFiles(const view::FileRequest                              &request,
+                     std::function<void(const std::vector<std::string> &)> picked) override
+    {
+        if (!released_)
+        {
+            connection_.ChooseFiles(request, std::move(picked));
+        }
+    }
+
     // ---- Events ---------------------------------------------------------------------------------------------------
 
     /** The window takes files dragged from the desktop (XDND, version 5): what the child window does. */
@@ -708,7 +746,7 @@ class LinuxSurface : public view::Host
             Press(event.xbutton);
             break;
         case ButtonRelease:
-            if (event.xbutton.button == Button1 || event.xbutton.button == Button3)
+            if (event.xbutton.button == Button1 || event.xbutton.button == Button2 || event.xbutton.button == Button3)
             {
                 pressed_ = false;
                 router_.Up(ToDesign(event.xbutton.x, event.xbutton.y), ModifiersOf(event.xbutton.state));
@@ -1340,6 +1378,10 @@ class LinuxSurface : public view::Host
             router_.Down(point, second ? 2 : 1, false, modifiers);
             break;
         }
+        case Button2:
+            router_.Down(point, 1, view::MouseButton::kMiddle, modifiers);
+            pressed_ = router_.HasPress(); // a press no view asked for is nothing, as it was
+            break;
         case Button3:
             pressed_ = true;
             router_.Down(point, 1, true, modifiers);
@@ -1602,30 +1644,53 @@ void LinuxConnection::RunDisplayFrame()
 
 void LinuxConnection::ChooseFile(const view::FileRequest &request, std::function<void(const std::string &)> picked)
 {
+    ChooseFiles(request, [picked = std::move(picked)](const std::vector<std::string> &paths) {
+        picked(paths.empty() ? std::string() : paths.front());
+    });
+}
+
+void LinuxConnection::ChooseFiles(const view::FileRequest                              &request,
+                                  std::function<void(const std::vector<std::string> &)> picked)
+{
     const bool zenity = OnPath("zenity");
     if (dialog_pid_ > 0 || (!zenity && !OnPath("kdialog")))
     {
         CallSoon([picked] { picked({}); });
         return;
     }
+    // A folder is chosen by neither a save nor a pattern; several files are an open's alone.
+    const bool               is_folder = request.choose_folder;
+    const bool               is_list   = request.multiple && !request.save && !is_folder;
     std::vector<std::string> args;
     std::string              start = request.folder.empty() ? std::string() : request.folder + "/";
-    if (request.save)
+    if (request.save && !is_folder)
     {
         start += request.file_name;
     }
     std::string patterns;
     for (const auto &p : request.patterns)
     {
-        patterns += (patterns.empty() ? "" : " ") + p;
+        if (!is_folder) // a folder has no extension to match
+        {
+            patterns += (patterns.empty() ? "" : " ") + p;
+        }
     }
     if (zenity)
     {
         args = {"zenity", "--file-selection", "--title=" + request.title};
-        if (request.save)
+        if (is_folder)
+        {
+            args.emplace_back("--directory");
+        }
+        else if (request.save)
         {
             args.emplace_back("--save");
             args.emplace_back("--confirm-overwrite");
+        }
+        if (is_list)
+        {
+            args.emplace_back("--multiple");
+            args.emplace_back("--separator=\n"); // one path to a line: zenity's own "|" may be in a name
         }
         if (!start.empty())
         {
@@ -1638,11 +1703,19 @@ void LinuxConnection::ChooseFile(const view::FileRequest &request, std::function
     }
     else
     {
-        args = {"kdialog", "--title", request.title, request.save ? "--getsavefilename" : "--getopenfilename",
+        args = {"kdialog", "--title", request.title,
+                is_folder      ? "--getexistingdirectory"
+                : request.save ? "--getsavefilename"
+                               : "--getopenfilename",
                 start.empty() ? std::string(".") : start};
         if (!patterns.empty())
         {
             args.push_back(patterns + "|Files");
+        }
+        if (is_list)
+        {
+            args.emplace_back("--multiple");
+            args.emplace_back("--separate-output"); // one path to a line
         }
     }
     int fds[2];
@@ -1674,10 +1747,11 @@ void LinuxConnection::ChooseFile(const view::FileRequest &request, std::function
         return;
     }
     fcntl(fds[0], F_SETFL, O_NONBLOCK);
-    dialog_pid_    = pid;
-    dialog_fd_     = fds[0];
-    dialog_output_ = {};
-    dialog_picked_ = std::move(picked);
+    dialog_pid_     = pid;
+    dialog_fd_      = fds[0];
+    dialog_output_  = {};
+    dialog_is_list_ = is_list;
+    dialog_picked_  = std::move(picked);
 }
 
 void LinuxConnection::PollDialog()
@@ -1715,8 +1789,30 @@ void LinuxConnection::PollDialog()
     {
         path.clear(); // cancelled, or no dialog after all
     }
+    std::vector<std::string> paths;
+    if (!dialog_is_list_)
+    {
+        if (!path.empty())
+        {
+            paths.push_back(path); // the one path, whole, as it always was
+        }
+    }
+    else
+    {
+        // One path to a line, in the order the dialog gave them.
+        for (std::size_t start = 0; start < path.size();)
+        {
+            std::size_t end = path.find('\n', start);
+            end             = end == std::string::npos ? path.size() : end;
+            if (end > start)
+            {
+                paths.push_back(path.substr(start, end - start));
+            }
+            start = end + 1;
+        }
+    }
     auto picked = std::move(dialog_picked_);
-    picked(path);
+    picked(paths);
 }
 
 std::unique_ptr<view::Popup> LinuxSurface::OpenPopup(view::View &content, gfx::PointI at,

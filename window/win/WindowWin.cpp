@@ -129,7 +129,8 @@ std::atomic<int> window_count{0};
     @return the Shift, Control and Alt states */
 view::Modifiers CurrentModifiers() noexcept
 {
-    return {GetKeyState(VK_SHIFT) < 0, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_MENU) < 0};
+    return {GetKeyState(VK_SHIFT) < 0, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_MENU) < 0,
+            GetKeyState(VK_CONTROL) < 0};
 }
 
 /** Text in the platform's wide form.
@@ -187,6 +188,19 @@ LPCWSTR CursorFor(view::Cursor cursor)
     return IDC_ARROW;
 }
 
+/** The function key a virtual-key code is, F1 to F12: not part of NamedKey's table, which the raw keys are named from
+    and which the products that read them have always seen without function keys.
+    @param code  the virtual-key code, a key-down message's wparam
+    @return      kF1 to kF12, or Key::kNone for any other key */
+view::Key FunctionKey(WPARAM code)
+{
+    if (code >= VK_F1 && code <= VK_F12)
+    {
+        return static_cast<view::Key>(static_cast<int>(view::Key::kF1) + static_cast<int>(code - VK_F1));
+    }
+    return view::Key::kNone;
+}
+
 /** A named key from its virtual-key code; Key::kNone for one that types a character (WM_CHAR brings that).
     @param code  the virtual-key code, a key-down message's wparam
     @return      the key, or Key::kNone */
@@ -235,20 +249,33 @@ struct SurfaceLife
     IFileDialog *dialog_up{nullptr}; ///< the file dialog while it shows, else null.
 };
 
-/** The shell's file dialog for `request`, modal over `owner`; the path chosen, or empty. `life.dialog_up` is the
+/** The shell's file dialog for `request`, modal over `owner`; the paths chosen, or none. `life.dialog_up` is the
     dialog while it shows.
-    @param request  the title, the patterns, the folder and whether it saves
+    @param request  the title, the patterns, the folder, and whether it saves, takes several files or a folder
     @param owner    the window the dialog is modal over
     @param life     the surface's life, whose dialog_up is set for the dialog's loop
-    @return         the path chosen, in UTF-8; empty for a cancel or a failure */
-std::string RunFileDialog(const view::FileRequest &request, HWND owner, SurfaceLife &life)
+    @return         the paths chosen, in UTF-8, in the order the dialog gives them; none for a cancel or a failure */
+std::vector<std::string> RunFileDialog(const view::FileRequest &request, HWND owner, SurfaceLife &life)
 {
-    const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    std::string   result;
-    IFileDialog  *dialog = nullptr;
-    if (SUCCEEDED(CoCreateInstance(request.save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog, nullptr,
-                                   CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))))
+    const HRESULT            com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    std::vector<std::string> result;
+    IFileDialog             *dialog = nullptr;
+    // A folder is an open dialog's, whatever the request says of saving; several files are an open's alone.
+    const bool is_folder = request.choose_folder;
+    const bool is_save   = request.save && !is_folder;
+    const bool is_list   = request.multiple && !is_save && !is_folder;
+    if (SUCCEEDED(CoCreateInstance(is_save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&dialog))))
     {
+        if (is_folder || is_list)
+        {
+            DWORD options = 0;
+            if (SUCCEEDED(dialog->GetOptions(&options)))
+            {
+                dialog->SetOptions(options | (is_folder ? FOS_PICKFOLDERS : 0u) |
+                                   (is_list ? FOS_ALLOWMULTISELECT : 0u));
+            }
+        }
         if (!request.title.empty())
         {
             dialog->SetTitle(WideOf(request.title).c_str());
@@ -258,12 +285,12 @@ std::string RunFileDialog(const view::FileRequest &request, HWND owner, SurfaceL
         {
             spec += (spec.empty() ? L"" : L";") + WideOf(pattern);
         }
-        if (!spec.empty())
+        if (!spec.empty() && !is_folder)
         {
             const COMDLG_FILTERSPEC filter{L"Files", spec.c_str()};
             dialog->SetFileTypes(1, &filter);
         }
-        if (request.save && !request.file_name.empty())
+        if (is_save && !request.file_name.empty())
         {
             dialog->SetFileName(WideOf(request.file_name).c_str());
         }
@@ -281,16 +308,43 @@ std::string RunFileDialog(const view::FileRequest &request, HWND owner, SurfaceL
         life.dialog_up      = nullptr;
         if (SUCCEEDED(shown))
         {
-            IShellItem *item = nullptr;
-            if (SUCCEEDED(dialog->GetResult(&item)))
-            {
+            const auto take = [&result](IShellItem *item) {
                 PWSTR path = nullptr;
                 if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)))
                 {
-                    result = Utf8Of(path);
+                    result.push_back(Utf8Of(path));
                     CoTaskMemFree(path);
                 }
-                item->Release();
+            };
+            IFileOpenDialog *open_dialog = nullptr;
+            if (is_list && SUCCEEDED(dialog->QueryInterface(IID_PPV_ARGS(&open_dialog))))
+            {
+                IShellItemArray *items = nullptr;
+                if (SUCCEEDED(open_dialog->GetResults(&items)))
+                {
+                    DWORD count = 0;
+                    items->GetCount(&count);
+                    for (DWORD i = 0; i < count; ++i)
+                    {
+                        IShellItem *item = nullptr;
+                        if (SUCCEEDED(items->GetItemAt(i, &item)))
+                        {
+                            take(item);
+                            item->Release();
+                        }
+                    }
+                    items->Release();
+                }
+                open_dialog->Release();
+            }
+            else
+            {
+                IShellItem *item = nullptr;
+                if (SUCCEEDED(dialog->GetResult(&item)))
+                {
+                    take(item);
+                    item->Release();
+                }
             }
         }
         dialog->Release();
@@ -1131,6 +1185,19 @@ class WinSurface : public view::Host
         @param picked   told the path chosen, in UTF-8, or an empty string for a cancel; runs on the message thread */
     void ChooseFile(const view::FileRequest &request, std::function<void(const std::string &)> picked) override
     {
+        ChooseFiles(request, [picked = std::move(picked)](const std::vector<std::string> &paths) {
+            picked(paths.empty() ? std::string() : paths.front());
+        });
+    }
+
+    /** The shell's own dialog for several files or a folder, opened as ChooseFile's is: from a message of its own,
+        modal over the host's window. `picked` hears the paths while the window lives, and nothing once it has gone.
+        @param request  the title, the patterns, the folder, and whether it saves, takes several files or a folder
+        @param picked   told the paths chosen, in UTF-8, in the dialog's order, or none for a cancel; runs on the
+                        message thread */
+    void ChooseFiles(const view::FileRequest                              &request,
+                     std::function<void(const std::vector<std::string> &)> picked) override
+    {
         if (hwnd_ == nullptr)
         {
             return; // let go: nothing hears an answer
@@ -1181,7 +1248,19 @@ class WinSurface : public view::Host
         case WM_RBUTTONDBLCLK:
             Press(lparam, 1, true);
             return 0;
+        case WM_MBUTTONDOWN:
+        case WM_MBUTTONDBLCLK:
+            // Only a view that asked for the middle button takes the press (View::takes_middle_button): the window
+            // captures the pointer for it alone, and the rest is the nothing it was.
+            router_.Down(PointOf(lparam), 1, view::MouseButton::kMiddle, CurrentModifiers());
+            if (router_.HasPress())
+            {
+                pressed_ = true;
+                SetCapture(hwnd_);
+            }
+            return 0;
         case WM_LBUTTONUP:
+        case WM_MBUTTONUP:
         case WM_RBUTTONUP:
             if (pressed_)
             {
@@ -1245,8 +1324,12 @@ class WinSurface : public view::Host
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN: {
             TellRawKey(true, wparam, lparam); // nothing where no owner asked; the views are given what they always were
-            const view::Key       key       = NamedKey(wparam);
+            view::Key             key       = NamedKey(wparam);
             const view::Modifiers modifiers = CurrentModifiers();
+            if (key == view::Key::kNone)
+            {
+                key = FunctionKey(wparam);
+            }
             if (key != view::Key::kNone && router_.Key({key, 0, modifiers}))
             {
                 return 0;
@@ -1348,10 +1431,11 @@ class WinSurface : public view::Host
                 PendingDialog pending = std::move(dialogs_.front());
                 dialogs_.pop_front();
                 const std::shared_ptr<SurfaceLife> life = life_;
-                const std::string path = RunFileDialog(pending.request, GetAncestor(hwnd_, GA_ROOT), *life);
+                const std::vector<std::string>     paths =
+                    RunFileDialog(pending.request, GetAncestor(hwnd_, GA_ROOT), *life);
                 if (!life->gone) // else the surface went in the dialog's loop: nothing of it may be touched again
                 {
-                    pending.picked(path);
+                    pending.picked(paths);
                 }
             }
             return 0;
@@ -1681,8 +1765,8 @@ class WinSurface : public view::Host
     /** A file dialog asked for and waiting for its message to open. */
     struct PendingDialog
     {
-        view::FileRequest                        request; ///< the dialog's title, patterns and folder.
-        std::function<void(const std::string &)> picked;  ///< told the path chosen.
+        view::FileRequest                                     request; ///< the dialog's title, patterns and folder.
+        std::function<void(const std::vector<std::string> &)> picked;  ///< told the paths chosen.
     };
 
     std::deque<std::function<void()>> calls_;   ///< the calls CallSoon queued, one run per kCallSoonMessage.

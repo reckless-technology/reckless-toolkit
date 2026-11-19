@@ -459,11 +459,11 @@ class WinWindow final : public AppWindow
         @param hooks    the app's ending, the shortcuts, the menu bar's commands and the menu bar it opens with */
     WinWindow(const WindowOptions &options, WindowHooks hooks)
         : closing_(options.closing), rescaled_(options.rescaled), constrain_(options.constrain),
-          resized_(options.resized), full_screen_changed_(options.full_screen_changed),
-          session_ending_(std::move(hooks.session_ending)), shortcut_(std::move(hooks.shortcut)),
-          command_(std::move(hooks.command)), gone_(std::move(hooks.gone)), dialog_(options.dialog),
-          design_width_(options.width), design_height_(options.height), style_(StyleOf(options)),
-          ex_style_(ExStyleOf(options)), has_menu_(hooks.menu != nullptr),
+          resized_(options.resized), resized_in_units_(options.resized_in_units),
+          full_screen_changed_(options.full_screen_changed), session_ending_(std::move(hooks.session_ending)),
+          shortcut_(std::move(hooks.shortcut)), command_(std::move(hooks.command)), gone_(std::move(hooks.gone)),
+          dialog_(options.dialog), design_width_(options.width), design_height_(options.height),
+          style_(StyleOf(options)), ex_style_(ExStyleOf(options)), has_menu_(hooks.menu != nullptr),
           may_go_full_screen_(options.may_go_full_screen && !options.dialog)
     {
         HWND owner = nullptr;
@@ -627,6 +627,65 @@ class WinWindow final : public AppWindow
                                             static_cast<int>(outer.cx), static_cast<int>(outer.cy)},
                                            area);
         SetOwnSize(frame.x(), frame.y(), outer, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    gfx::PointI ContentSizeInUnits() const override
+    {
+        RECT client{};
+        if (hwnd_ == nullptr || !GetClientRect(hwnd_, &client))
+        {
+            return {0, 0};
+        }
+        return {static_cast<int>(client.right - client.left), static_cast<int>(client.bottom - client.top)};
+    }
+
+    void SetContentSizeInUnits(int width, int height) override
+    {
+        SetFullScreen(false); // a size of the app's own is the window's
+        const float scale = Scale();
+        // The design size follows, rounded, for a change of DPI to size by; the pixels set are the ones asked for.
+        design_width_     = std::max(1, static_cast<int>(std::lround(static_cast<float>(width) / scale)));
+        design_height_    = std::max(1, static_cast<int>(std::lround(static_cast<float>(height) / scale)));
+        const SIZE outer  = OuterSize(style_, ex_style_, std::max(1, width), std::max(1, height), dpi_, has_menu_);
+        is_setting_units_ = true; // the app set it and knows it: WM_SIZE tells no one
+        SetOwnSize(0, 0, outer, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        is_setting_units_ = false;
+    }
+
+    bool SetUserResizable(bool is_resizable, gfx::PointI least, gfx::PointI most) override
+    {
+        if (hwnd_ == nullptr || is_full_screen_)
+        {
+            return false;
+        }
+        // The constraint in design units at the window's scale, from limits in pixels: WM_SIZING and the style's
+        // sizing frame do the rest, as for a window opened with a constraint.
+        if (is_resizable)
+        {
+            constrain_ = [this, least, most](gfx::PointF proposed) {
+                const float scale = Scale();
+                const float low_x = least.x > 0 ? static_cast<float>(least.x) / scale : 1.0f / scale;
+                const float low_y = least.y > 0 ? static_cast<float>(least.y) / scale : 1.0f / scale;
+                const float top_x = most.x > 0 ? static_cast<float>(most.x) / scale : 1.0e5f;
+                const float top_y = most.y > 0 ? static_cast<float>(most.y) / scale : 1.0e5f;
+                return gfx::PointF{std::clamp(proposed.x, low_x, std::max(low_x, top_x)),
+                                   std::clamp(proposed.y, low_y, std::max(low_y, top_y))};
+            };
+        }
+        else
+        {
+            constrain_ = nullptr;
+        }
+        // The sizing frame put on or taken off, the client area kept to the pixel: the frame grows or shrinks round it.
+        const gfx::PointI content = ContentSizeInUnits();
+        style_ =
+            is_resizable ? (style_ | static_cast<DWORD>(WS_THICKFRAME)) : (style_ & ~static_cast<DWORD>(WS_THICKFRAME));
+        SetWindowLongPtrW(hwnd_, GWL_STYLE, static_cast<LONG_PTR>(style_));
+        is_setting_units_ = true;
+        SetOwnSize(0, 0, OuterSize(style_, ex_style_, content.x, content.y, dpi_, has_menu_),
+                   SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        is_setting_units_ = false;
+        return true;
     }
 
     gfx::PointI LargestContent() const override
@@ -815,14 +874,23 @@ class WinWindow final : public AppWindow
             break;
         case WM_SIZE:
             // Not the bar's row coming or going (SetMenuBar), which the frame is sized round the content for after.
-            if (resized_ && static_cast<int>(wparam) != SIZE_MINIMIZED && !is_changing_bar_)
+            if ((resized_ || resized_in_units_) && static_cast<int>(wparam) != SIZE_MINIMIZED && !is_changing_bar_ &&
+                !is_setting_units_)
             {
                 // The client area the window took, in design units at its scale: the content's new size.
                 const float scale = Scale();
                 design_width_     = std::max(1, static_cast<int>(std::lround(LOWORD(lparam) / scale)));
                 design_height_    = std::max(1, static_cast<int>(std::lround(HIWORD(lparam) / scale)));
-                const auto f      = resized_;
-                f(design_width_, design_height_);
+                if (resized_)
+                {
+                    const auto f = resized_;
+                    f(design_width_, design_height_);
+                }
+                if (resized_in_units_)
+                {
+                    const auto f = resized_in_units_;
+                    f(static_cast<int>(LOWORD(lparam)), static_cast<int>(HIWORD(lparam)));
+                }
                 return 0;
             }
             break;
@@ -1098,22 +1166,24 @@ class WinWindow final : public AppWindow
     std::function<void(float)> rescaled_;      ///< told the new scale after a move to a monitor of another DPI.
     /** The owner's constraint on the content size, in design units; empty for a window of one size. */
     std::function<gfx::PointF(gfx::PointF)> constrain_;
-    std::function<void(int, int)>           resized_;        ///< told the content's design size after each resize.
-    std::function<void()>                   session_ending_; ///< the app's ending, run when the session ends.
-    std::function<bool(const Shortcut &)>   shortcut_; ///< a key offered to the menu bar's shortcuts; may be empty.
-    std::function<void(int)>                command_;  ///< a menu bar item chosen, by its command number; may be empty.
-    std::function<void()>                   gone_;     ///< told as the window is destroyed; may be empty.
-    bool                                    dialog_;   ///< a dialog: Escape closes it.
-    int                                     design_width_;          ///< the content's width, in design pixels.
-    int                                     design_height_;         ///< the content's height, in design pixels.
-    DWORD                                   style_;                 ///< the window style.
-    DWORD                                   ex_style_;              ///< the extended window style.
-    bool                                    has_menu_;              ///< the window carries a menu bar.
-    std::pair<int, int>                     normal_position_{0, 0}; ///< where it stood when last it was not minimised
-    bool                                    setting_size_{false};   ///< inside SetOwnSize
-    std::function<void(bool)>               full_screen_changed_;   ///< told each change of full screen; may be empty.
-    bool                                    may_go_full_screen_;    ///< opened with full screen allowed, and no dialog.
-    bool                                    is_full_screen_{false}; ///< borderless over its monitor.
+    std::function<void(int, int)>           resized_;          ///< told the content's design size after each resize.
+    std::function<void(int, int)>           resized_in_units_; ///< told the content's size in pixels after each resize.
+    bool is_setting_units_{false}; ///< inside SetContentSizeInUnits or SetUserResizable: its WM_SIZE is the app's own.
+    std::function<void()>                 session_ending_; ///< the app's ending, run when the session ends.
+    std::function<bool(const Shortcut &)> shortcut_;       ///< a key offered to the menu bar's shortcuts; may be empty.
+    std::function<void(int)>              command_; ///< a menu bar item chosen, by its command number; may be empty.
+    std::function<void()>                 gone_;    ///< told as the window is destroyed; may be empty.
+    bool                                  dialog_;  ///< a dialog: Escape closes it.
+    int                                   design_width_;          ///< the content's width, in design pixels.
+    int                                   design_height_;         ///< the content's height, in design pixels.
+    DWORD                                 style_;                 ///< the window style.
+    DWORD                                 ex_style_;              ///< the extended window style.
+    bool                                  has_menu_;              ///< the window carries a menu bar.
+    std::pair<int, int>                   normal_position_{0, 0}; ///< where it stood when last it was not minimised
+    bool                                  setting_size_{false};   ///< inside SetOwnSize
+    std::function<void(bool)>             full_screen_changed_;   ///< told each change of full screen; may be empty.
+    bool                                  may_go_full_screen_;    ///< opened with full screen allowed, and no dialog.
+    bool                                  is_full_screen_{false}; ///< borderless over its monitor.
     bool            is_alt_key_used_{false}; ///< the last key down, with Alt, was a shortcut's: its mnemonic is not.
     WINDOWPLACEMENT placement_{};            ///< the placement it had before full screen.
     DWORD           windowed_style_{0};      ///< the style it had before full screen.
@@ -1271,9 +1341,25 @@ class WinPlatform final : public AppPlatform
 
     void StartTimer(int milliseconds, std::function<void()> tick) override
     {
+        AddTimer(milliseconds, std::move(tick));
+    }
+
+    int AddTimer(int milliseconds, std::function<void()> tick) override
+    {
         const UINT_PTR id = next_timer_++;
         timers_[id]       = std::move(tick);
         SetTimer(messages_, id, static_cast<UINT>(std::max(milliseconds, 1)), nullptr);
+        return static_cast<int>(id);
+    }
+
+    void CancelTimer(int token) override
+    {
+        const auto it = timers_.find(static_cast<UINT_PTR>(token));
+        if (it != timers_.end())
+        {
+            KillTimer(messages_, it->first);
+            timers_.erase(it);
+        }
     }
 
     void CallSoon(std::function<void()> call) override
@@ -1338,7 +1424,8 @@ class WinPlatform final : public AppPlatform
             const auto it = timers_.find(static_cast<UINT_PTR>(wparam));
             if (it != timers_.end())
             {
-                it->second();
+                const auto tick = it->second; // a copy: the tick may cancel its own timer
+                tick();
             }
             return 0;
         }

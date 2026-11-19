@@ -381,6 +381,14 @@ class ZoomView final : public View, private Host
         View::ChooseFile(request, std::move(picked));
     }
 
+    /** The window's file dialog for several files or a folder, asked through the host this view lives in.
+        @param request  what the dialog asks for
+        @param picked   run once with the paths chosen, or none when cancelled */
+    void ChooseFiles(const FileRequest &request, std::function<void(const std::vector<std::string> &)> picked) override
+    {
+        View::ChooseFiles(request, std::move(picked));
+    }
+
     /** The window's clipboard, read through the host this view lives in: a paste into a view of the content.
         @return  the clipboard's text; empty in no window */
     std::string ClipboardText() override

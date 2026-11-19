@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -100,7 +101,12 @@ class MacPlatform;
         of one size. */
     std::function<reckless::gfx::PointF(reckless::gfx::PointF)> constrain;
     std::function<void(int, int)> resized; ///< told the content's size, in points, after each resize; may be empty.
-    bool                          dialog;  ///< a dialog: Escape closes it.
+    /** told the content's size in points after each resize, as `resized` is - macOS's design pixels are points; may be
+        empty. */
+    std::function<void(int, int)> resized_in_units;
+    /** Inside SetContentSizeInUnits: the resize AppKit tells is the app's own, and is told to no one. */
+    bool is_setting_units;
+    bool dialog; ///< a dialog: Escape closes it.
     /** A key that reached the window - its own, or one no view took, up the responder chain - offered to the menu
         bar's shortcuts: true when it was one. May be empty. */
     std::function<bool(NSEvent *)> shortcut;
@@ -170,11 +176,25 @@ class MacPlatform;
 - (void)windowDidResize:(NSNotification *)notification
 {
     (void)notification;
-    if (resized)
+    if (is_setting_units)
+    {
+        return; // the app's own size, which it knows
+    }
+    if (resized || resized_in_units)
     {
         const NSRect content = [self contentRectForFrameRect:self.frame];
-        const auto   f       = resized;
-        f(static_cast<int>(std::lround(content.size.width)), static_cast<int>(std::lround(content.size.height)));
+        const int    width   = static_cast<int>(std::lround(content.size.width));
+        const int    height  = static_cast<int>(std::lround(content.size.height));
+        if (resized)
+        {
+            const auto f = resized;
+            f(width, height);
+        }
+        if (resized_in_units)
+        {
+            const auto f = resized_in_units;
+            f(width, height);
+        }
     }
 }
 
@@ -563,6 +583,8 @@ class MacWindow final : public AppWindow
         window_->closing                = options.closing;
         window_->constrain              = options.constrain;
         window_->resized                = options.resized;
+        window_->resized_in_units       = options.resized_in_units;
+        window_->is_setting_units       = false;
         window_->dialog                 = options.dialog;
         window_->full_screen_changed    = options.full_screen_changed;
         window_->is_full_screen         = false;
@@ -616,6 +638,7 @@ class MacWindow final : public AppWindow
         window_->closing             = nullptr;
         window_->constrain           = nullptr;
         window_->resized             = nullptr;
+        window_->resized_in_units    = nullptr;
         window_->shortcut            = nullptr;
         window_->is_shortcut         = nullptr;
         window_->full_screen_changed = nullptr;
@@ -712,6 +735,47 @@ class MacWindow final : public AppWindow
             frame.origin.y         = MainScreenHeight() - moved.y() - NSHeight(frame);
         }
         [window_ setFrame:frame display:YES];
+    }
+
+    gfx::PointI ContentSizeInUnits() const override
+    {
+        const NSRect content = [window_ contentRectForFrameRect:window_.frame];
+        return {static_cast<int>(std::lround(content.size.width)), static_cast<int>(std::lround(content.size.height))};
+    }
+
+    void SetContentSizeInUnits(int width, int height) override
+    {
+        window_->is_setting_units = true; // AppKit's windowDidResize, sent from inside setFrame, is told to no one
+        SetContentSize(width, height);
+        window_->is_setting_units = false;
+    }
+
+    bool SetUserResizable(bool is_resizable, gfx::PointI least, gfx::PointI most) override
+    {
+        if (IsFullScreen())
+        {
+            return false;
+        }
+        if (is_resizable)
+        {
+            // Held to the limits, in points, by the constraint windowWillResize and the zoom already read; none is one
+            // point at the least and what the screen takes at the most.
+            window_->constrain = [least, most](gfx::PointF proposed) {
+                const float low_x = least.x > 0 ? static_cast<float>(least.x) : 1.0f;
+                const float low_y = least.y > 0 ? static_cast<float>(least.y) : 1.0f;
+                const float top_x = most.x > 0 ? static_cast<float>(most.x) : 1.0e5f;
+                const float top_y = most.y > 0 ? static_cast<float>(most.y) : 1.0e5f;
+                return gfx::PointF{std::clamp(proposed.x, low_x, std::max(low_x, top_x)),
+                                   std::clamp(proposed.y, low_y, std::max(low_y, top_y))};
+            };
+            window_.styleMask |= NSWindowStyleMaskResizable;
+        }
+        else
+        {
+            window_->constrain = nullptr;
+            window_.styleMask &= ~NSWindowStyleMaskResizable;
+        }
+        return true;
     }
 
     gfx::PointI LargestContent() const override
@@ -905,7 +969,7 @@ class MacPlatform final : public AppPlatform
     ~MacPlatform() override
     {
         posts_->Close();
-        for (NSTimer *timer : timers_)
+        for (const auto &[token, timer] : timers_)
         {
             [timer invalidate];
         }
@@ -975,14 +1039,32 @@ class MacPlatform final : public AppPlatform
 
     void StartTimer(int milliseconds, std::function<void()> tick) override
     {
+        AddTimer(milliseconds, std::move(tick));
+    }
+
+    int AddTimer(int milliseconds, std::function<void()> tick) override
+    {
         auto     shared = std::make_shared<std::function<void()>>(std::move(tick));
-        NSTimer *timer  = [NSTimer timerWithTimeInterval:milliseconds / 1000.0
+        NSTimer *timer  = [NSTimer timerWithTimeInterval:std::max(milliseconds, 1) / 1000.0
                                                  repeats:YES
                                                    block:^(NSTimer *) {
-                                                    (*shared)();
+                                                    const auto tick_now = *shared; // a copy: the tick may cancel it
+                                                    tick_now();
                                                    }];
         [[NSRunLoop currentRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
-        timers_.push_back(timer);
+        const int token = ++last_timer_token_;
+        timers_[token]  = timer;
+        return token;
+    }
+
+    void CancelTimer(int token) override
+    {
+        const auto it = timers_.find(token);
+        if (it != timers_.end())
+        {
+            [it->second invalidate];
+            timers_.erase(it);
+        }
     }
 
     void CallSoon(std::function<void()> call) override
@@ -1173,7 +1255,8 @@ class MacPlatform final : public AppPlatform
     RecklessMenuTarget *bar_target_{nil}; ///< the target of the menu bar's items (SetMenuBar), by command number.
     /** The menu bar, its choosing and its shortcuts, shared with every window's keyDown. */
     std::shared_ptr<MenuBarController> menu_{std::make_shared<MenuBarController>()};
-    std::vector<NSTimer *>             timers_; ///< the timers StartTimer made, invalidated in the destructor.
+    std::map<int, NSTimer *>           timers_;              ///< the timers StartTimer and AddTimer made, by token.
+    int                                last_timer_token_{0}; ///< the last token AddTimer gave.
 };
 
 std::unique_ptr<AppPlatform> AppPlatform::Create(const std::string &name, std::span<const std::uint8_t>)

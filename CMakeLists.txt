@@ -776,8 +776,11 @@ inline constexpr EmbeddedFile kEmbeddedFiles[] = {
         # TIMEOUT: a window suite once hung for two hours with no bound (vst-plugins CI, 2026-11-16). Sized as twice the
         # slowest run measured over this repository's and vst-plugins' green CI on Linux, Windows and macOS (1.81 s,
         # app_platform on Linux; run 43642585588 and others), 3.62 s, rounded up to 5. clipboard and app_menu use the same.
+        # app_platform alone is 10: it gained the timer, size-in-units, resize, close and descriptor tests, which wait on
+        # a real loop (2.7 s on a Linux Mint 22 development machine under xvfb-run, 2026-11-19, against 1.8 s before) -
+        # twice the slowest green CI run to come, to be re-sized from one.
         add_test(NAME app_platform COMMAND reckless_app_platform_test)
-        set_tests_properties(app_platform PROPERTIES LABELS window RESOURCE_LOCK display TIMEOUT 5)
+        set_tests_properties(app_platform PROPERTIES LABELS window RESOURCE_LOCK display TIMEOUT 10)
 
         # The clipboard written and read back: the system's only where it is no person's (CI, or
         # RECKLESS_TEST_CLIPBOARD=1), a pasteboard of the suite's own on macOS, and on Linux the CLIPBOARD selection's
