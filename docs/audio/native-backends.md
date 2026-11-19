@@ -250,6 +250,33 @@ is held by the device suite (`tests/test_audio_devices.cpp`) in CI on the loopba
 machine that wrote it; the JACK split is the same arithmetic, run there by the same suite; CoreAudio's, Windows Audio's
 and ASIO's are compiled by CI and have never run - the sums are the lines they replace, split.
 
+## The channels' names
+
+`DeviceInfo::input_channel_names` and `output_channel_names` (2026-11-19, for a recording program's "Input 3: Mic/Line 3")
+carry what the API or the driver calls each channel, in UTF-8: **empty where the back end cannot tell, else exactly one
+per channel with a channel it has no name for left as ""**. Never made up - a product writes "Input 3" itself - and read
+from what each API lists, never by opening a stream: no back end opens anything for them that its enumeration did not
+open already. They are read once with the probe that already runs, so a repeated listing costs what it did.
+`InputChannelName(i)` and `OutputChannelName(i)` answer for one channel and give "" past the list. The arithmetic is
+`audio/ChannelNames.h`, held on every platform by `tests/test_channel_names.cpp`; each real API's list is checked for
+its shape by the device suite (`tests/test_audio_devices.cpp`, which prints them).
+
+| API | Names | Read from | Unrun here |
+|---|---|---|---|
+| ASIO | the driver's name for each channel | `ASIOGetChannelInfo`, on the driver the probe has already loaded, no buffers made; the driver's 8-bit text converted from the ANSI code page | compiled by CI only |
+| JACK | each port's own name without its client (`capture_1`, `playback_FL`) | the port list the device layer already reads, in the order it connects the ports | the arithmetic is tested; the live graph is the device suite's |
+| CoreAudio | the HAL's element name for each channel, what a driver or Audio MIDI Setup set | `kAudioObjectPropertyElementName` per scope and element (channel counted from 1 across the streams), a property read; a channel with none is "" | compiled by CI only |
+| ALSA | the speaker **position** the driver declares for each channel: `FL`, `FR`, `FC`, `AUX0` | `snd_pcm_query_chmaps_from_hw` on the card's control, no PCM opened; `hw:` PCMs only, the map of the PCM's channel count; unknown and not-applicable positions are "" | the device suite on CI's loopback card |
+| WASAPI | none | an endpoint has no per-channel name in the Core Audio interfaces; the lists stay empty | compiled by CI only |
+
+**ALSA's are positions, not labels, and the difference matters.** A UMC1820 (kernel 7.0, read from `amixer -c UMC1820
+contents` and `/proc/asound/UMC1820/stream0`, 2026-11-19) declares a *fixed* map of 12 playback channels, `FL FR FC LFE RL
+RR FLC FRC RC SL SR TC`, and of 10 capture channels, `FL FR FC LFE RL RR FLC FRC RC SL`: the speaker layout the
+USB driver gives any multichannel interface that does not describe its channels, and nothing of the front panel's
+"Mic/Line 3". The query cannot tell a default layout from a real one, so the layer reports what the driver declares and
+a product should show an ALSA name only as the position it is. Where a driver (a UAC2 interface with channel clusters)
+declares real positions they are the same names.
+
 ## Where each API ends up
 
 | Platform | Audio | MIDI |

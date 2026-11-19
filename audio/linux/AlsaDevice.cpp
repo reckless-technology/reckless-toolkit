@@ -25,6 +25,7 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 
+#include "ChannelNames.h"
 #include "RealtimeScheduling.h"
 #include "SampleEncodings.h"
 
@@ -118,11 +119,56 @@ bool ControlOpens(const char *id)
 /** What opening a PCM each way found: its channels, and the rates it takes. */
 struct Probed
 {
-    int              inputs{0};    ///< its capture channels, 0 where it has none or would not open for capture
-    int              outputs{0};   ///< its playback channels, 0 likewise
-    std::vector<int> rates;        ///< the rates it takes the way it has the more channels, playback on a tie
-    int              preferred{0}; ///< the highest of them up to 48 kHz, else the lowest, as RtAudio preferred
+    int                      inputs{0};    ///< its capture channels, 0 where it has none or would not open for capture
+    int                      outputs{0};   ///< its playback channels, 0 likewise
+    std::vector<int>         rates;        ///< the rates it takes the way it has the more channels, playback on a tie
+    int                      preferred{0}; ///< the highest of them up to 48 kHz, else the lowest, as RtAudio preferred
+    std::vector<std::string> input_names;  ///< its capture channels' names (ChannelNames.h); empty where it has none
+    std::vector<std::string> output_names; ///< its playback channels' names, likewise
 };
+
+/** The channel names of a hardware PCM's one way, from the channel map its driver declares: the position of each
+    channel - "FL", "FR", "AUX0" - read through the card's control interface (snd_pcm_query_chmaps_from_hw), which
+    opens no PCM and no stream. A channel whose position is unknown or not applicable is left unnamed, and so is every
+    channel of a PCM whose driver declares no map of the PCM's channel count. These are speaker positions, not
+    labels: a driver with nothing better to say about a multichannel interface declares the default layout, so
+    channel 3 of a USB interface reads "FC" whatever the panel calls it (DeviceInfo::input_channel_names).
+    @param card      the card's number
+    @param device    the PCM device's number on the card
+    @param stream    playback or capture
+    @param channels  the PCM's channels that way; the map used is the one with this many
+    @return          the names, empty or `channels` long (ChannelNamesFor) */
+std::vector<std::string> ChmapNames(int card, int device, snd_pcm_stream_t stream, int channels)
+{
+    if (channels <= 0)
+    {
+        return {};
+    }
+    snd_pcm_chmap_query_t **maps = snd_pcm_query_chmaps_from_hw(card, device, 0, stream);
+    if (maps == nullptr)
+    {
+        return {};
+    }
+    std::vector<std::string> names;
+    for (snd_pcm_chmap_query_t *const *map = maps; *map != nullptr; ++map)
+    {
+        if ((*map)->map.channels != static_cast<unsigned int>(channels))
+        {
+            continue;
+        }
+        for (unsigned int c = 0; c < (*map)->map.channels; ++c)
+        {
+            const unsigned int position = (*map)->map.pos[c];
+            const char        *name = (position & SND_CHMAP_DRIVER_SPEC) != 0 || (position & 0xffffu) <= SND_CHMAP_NA
+                                          ? nullptr
+                                          : snd_pcm_chmap_name(static_cast<snd_pcm_chmap_position>(position & 0xffffu));
+            names.emplace_back(name != nullptr ? name : "");
+        }
+        break;
+    }
+    snd_pcm_free_chmaps(maps);
+    return ChannelNamesFor(names, channels);
+}
 
 /** PCM `id` opened `stream`'s way for a moment: its channels and the rates it takes, or nothing where it will not
     open, takes no encoding a stream can open it in, or offers neither interleaved access.
@@ -218,16 +264,26 @@ struct Listed
     @return  the devices, in that order */
 std::vector<Listed> Enumerate()
 {
-    std::vector<std::pair<std::string, std::string>> pcms; // PCM name, listed name
-    std::string                                      default_name;
+    /** One PCM to probe: its name, how it is listed, and where it sits on a card (-1 for a plugin PCM, which has none,
+        and so has no channel map to read). */
+    struct Candidate
+    {
+        std::string id;
+        std::string name;
+        int         card{-1};
+        int         device{-1};
+    };
+
+    std::vector<Candidate> pcms;
+    std::string            default_name;
     if (ControlOpens("default"))
     {
-        pcms.emplace_back("default", kDefaultName);
+        pcms.push_back({"default", kDefaultName, -1, -1});
         default_name = kDefaultName;
     }
     if (Defines("ctl.pulse") && ControlOpens("pulse"))
     {
-        pcms.emplace_back("pulse", "PulseAudio Sound Server");
+        pcms.push_back({"pulse", "PulseAudio Sound Server", -1, -1});
     }
     snd_ctl_card_info_t *card_info = nullptr;
     snd_pcm_info_t      *pcm_info  = nullptr;
@@ -267,9 +323,8 @@ std::vector<Listed> Enumerate()
                 {
                     default_name = name;
                 }
-                pcms.emplace_back("hw:" + std::string(snd_ctl_card_info_get_id(card_info)) + "," +
-                                      std::to_string(device),
-                                  std::move(name));
+                pcms.push_back({"hw:" + std::string(snd_ctl_card_info_get_id(card_info)) + "," + std::to_string(device),
+                                std::move(name), card, device});
             }
         }
         snd_ctl_close(control);
@@ -277,10 +332,12 @@ std::vector<Listed> Enumerate()
 
     std::vector<Listed> listed;
     ProbeCache         &cache = Probes();
-    for (auto &[id, name] : pcms)
+    for (const Candidate &pcm : pcms)
     {
-        const std::string key = id + '\n' + name;
-        Probed            probed;
+        const std::string &id   = pcm.id;
+        const std::string &name = pcm.name;
+        const std::string  key  = id + '\n' + name;
+        Probed             probed;
         {
             const std::lock_guard lock(cache.mutex);
             const auto            known = cache.probed.find(key);
@@ -297,6 +354,12 @@ std::vector<Listed> Enumerate()
                 continue; // will not open either way: in use since before the program started, or no PCM after all
             }
             probed = *found;
+            if (pcm.card >= 0)
+            {
+                // Once, with the probe, so listing again costs what it did: a control read, no PCM opened.
+                probed.input_names  = ChmapNames(pcm.card, pcm.device, SND_PCM_STREAM_CAPTURE, probed.inputs);
+                probed.output_names = ChmapNames(pcm.card, pcm.device, SND_PCM_STREAM_PLAYBACK, probed.outputs);
+            }
             const std::lock_guard lock(cache.mutex);
             cache.probed[key] = probed;
         }
@@ -310,6 +373,8 @@ std::vector<Listed> Enumerate()
         device.info.is_default_output     = name == default_name && probed.outputs > 0;
         device.info.sample_rates          = probed.rates;
         device.info.preferred_sample_rate = probed.preferred;
+        device.info.input_channel_names   = probed.input_names;
+        device.info.output_channel_names  = probed.output_names;
         listed.push_back(std::move(device));
     }
 

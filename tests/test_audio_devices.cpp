@@ -16,6 +16,7 @@
 // wherever their headers are), so a build that silently loses one fails here.
 #include "devices/DeviceSuite.h"
 
+#include "ChannelNames.h"
 #include "RealtimeThreadScope.h"
 
 #if defined(RECKLESS_AUDIO_TEST_ALSA_SEQ)
@@ -77,6 +78,8 @@ TEST_P(AudioDevices, ProbesTheDevicesEachUnderANameOfItsOwn)
                               (d.is_default_output ? ", default out" : "") + ", rates " + Rates(d.sample_rates) +
                               ", current " + Str(d.current_sample_rate) + ", preferred " +
                               Str(d.preferred_sample_rate));
+        table.Row("  channel names",
+                  "in [" + JoinList(d.input_channel_names) + "] out [" + JoinList(d.output_channel_names) + "]");
     }
     if (devices.empty())
     {
@@ -111,11 +114,34 @@ TEST_P(AudioDevices, ProbesTheDevicesEachUnderANameOfItsOwn)
         EXPECT_TRUE(reckless::gfx::IsValidUtf8(d.name)) << "a name that is not UTF-8 on " << api_ << ": " << d.name;
     }
 
+    // Channel names are the API's own or none: a list is empty or one name a channel, each UTF-8 and with no control
+    // character, and never a name the layer made up. Nothing says what a back end must name - ALSA's are the driver's
+    // speaker positions, WASAPI has none - so only the shape is held, and the table above is where to read them.
+    for (const DeviceInfo &d : devices)
+    {
+        EXPECT_TRUE(d.input_channel_names.empty() ||
+                    d.input_channel_names.size() == static_cast<std::size_t>(d.input_channels))
+            << d.name << " on " << api_;
+        EXPECT_TRUE(d.output_channel_names.empty() ||
+                    d.output_channel_names.size() == static_cast<std::size_t>(d.output_channels))
+            << d.name << " on " << api_;
+        for (const auto *names : {&d.input_channel_names, &d.output_channel_names})
+        {
+            for (const std::string &name : *names)
+            {
+                EXPECT_TRUE(reckless::gfx::IsValidUtf8(name)) << d.name << " on " << api_;
+                EXPECT_EQ(name, reckless::audio::CleanChannelName(name)) << d.name << " on " << api_;
+            }
+        }
+    }
+
     // A second probe lists the same devices.
     const std::vector<DeviceInfo> again = system_->Devices();
     ASSERT_EQ(again.size(), devices.size());
     for (std::size_t i = 0; i < devices.size(); ++i)
     {
+        EXPECT_EQ(again[i].input_channel_names, devices[i].input_channel_names) << devices[i].name;
+        EXPECT_EQ(again[i].output_channel_names, devices[i].output_channel_names) << devices[i].name;
         EXPECT_EQ(again[i].name, devices[i].name);
         EXPECT_EQ(again[i].input_channels, devices[i].input_channels) << devices[i].name;
         EXPECT_EQ(again[i].output_channels, devices[i].output_channels) << devices[i].name;

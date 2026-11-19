@@ -303,6 +303,8 @@ class WasapiSystem final : public AudioSystem
             device.current_sample_rate   = endpoint.mix_rate;
             device.preferred_sample_rate = endpoint.mix_rate;
             device.sample_rates          = RatesOf(endpoint);
+            // No channel names: an endpoint is a mix of channels with no per-channel name in the Core Audio
+            // interfaces (its speaker mask says positions, not labels), so DeviceInfo's lists stay empty here.
             devices.push_back(std::move(device));
         }
         return devices;
