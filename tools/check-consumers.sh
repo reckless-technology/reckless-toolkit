@@ -51,7 +51,7 @@ products=(
     "knect4|main|CONSUMER_KNECT4_DEPLOY_KEY|public|-DCMAKE_BUILD_TYPE=Release -DKNECT4_BUILD_TESTS=ON|knect4_gui"
     "sudoku|main|CONSUMER_SUDOKU_DEPLOY_KEY|public|-DCMAKE_BUILD_TYPE=Release -DSUDOKU_BUILD_TESTS=ON|sudoku_gui"
     "sentinel|main|CONSUMER_SENTINEL_DEPLOY_KEY|private|-DCMAKE_BUILD_TYPE=Release|Sentinel|reckless-arcade:ARCADE_READ_KEY:SENTINEL_ARCADE_DIR:cmake/arcade.cmake:SENTINEL_ARCADE_COMMIT"
-    "reckless-studio|main|CONSUMER_STUDIO_DEPLOY_KEY|private|-DCMAKE_BUILD_TYPE=Release|studio_app studio_engine|vst-plugins:CONSUMER_VST_PLUGINS_DEPLOY_KEY:STUDIO_SUITE_DIR:cmake/suite.cmake:STUDIO_SUITE_COMMIT"
+    "reckless-studio|main|CONSUMER_STUDIO_DEPLOY_KEY|private|-DCMAKE_BUILD_TYPE=Release|studio_app_shell studio_engine|vst-plugins:CONSUMER_VST_PLUGINS_DEPLOY_KEY:STUDIO_SUITE_DIR:cmake/suite.cmake:STUDIO_SUITE_COMMIT"
 )
 
 key_dir=$(mktemp -d)
