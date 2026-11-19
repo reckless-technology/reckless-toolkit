@@ -6,7 +6,7 @@ functions and suites; this file is how work here is done.
 ## What this is
 
 The Reckless Technology toolkit: the C++20 library the company's products share (all of it in the
-namespace `reckless`): JSON, text and the user's files (`core/`, with the CPU topology and thread pinning, `CpuTopology.h`), the drawing layer (`gfx/`) and the series' look
+namespace `reckless`): JSON, text and the user's files (`core/`; `WriteWhole` is atomic and durable - fsync the temporary, rename, fsync the folder, F_FULLFSYNC on macOS, FlushFileBuffers and write-through replace on Windows - and `tests/check_write_order.cmake` reads that order from strace on Linux; with the CPU topology and thread pinning, `CpuTopology.h`), the drawing layer (`gfx/`) and the series' look
 (`look/`), the views (`view/`) and the series' panel (`panel/`), the child window on Skia (`window/`, `skia/`) - drawn with Skia's CPU
 raster, or on the GPU where a product asks and links `reckless_window_gpu` (Ganesh on WGL on Windows, on Metal on macOS and on EGL on Linux, on the shared seam:
 [docs/window/gpu-drawing.md](docs/window/gpu-drawing.md)) - an app's

@@ -82,7 +82,9 @@ in any case, not a hidden one, sorted by name ignoring case. Presets are documen
 machines; the settings folder the Cab and the Space keep their last-opened folder in (`reckless-technology/<name>.json`)
 is for settings nobody looks at. The plugin's folder is where the plate lists from and where its file dialog opens; a
 file loaded from anywhere else is checked by its `plugin` field, not its folder. A file is written whole or not at all,
-to a hidden temporary beside it and renamed over it. Tests point the root at a scratch folder
+to a hidden temporary beside it and renamed over it, and durably: the temporary's data is flushed to the device before the
+rename and the folder after it (`WriteWhole`, `JsonFile.h`), so a power cut leaves the old file or the new one, never an
+empty one. Tests point the root at a scratch folder
 (`presets::SetRootForTests`) so a run never touches the user's presets.
 
 ### Factory presets

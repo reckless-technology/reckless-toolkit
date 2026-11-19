@@ -1,0 +1,37 @@
+# Runs the toolkit's core test's OrderMarker under strace and checks WriteWhole's calls come in the order: the temporary
+# opened, flushed (fsync or fdatasync on its descriptor), renamed, then its folder opened as a directory and flushed.
+# Skipped (CTest's SKIP_REGULAR_EXPRESSION) when strace cannot trace here (ptrace refused, as in some containers).
+#   cmake -DSTRACE=<strace> -DTEST_EXE=<reckless_core_test> -DLOG=<file> -P check_write_order.cmake
+execute_process(COMMAND ${STRACE} -f -o ${LOG} -e trace=openat,open,fsync,fdatasync,rename,renameat,renameat2
+                        ${TEST_EXE} --gtest_filter=CoreDurableWrite.OrderMarker
+                RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE err)
+if(NOT EXISTS ${LOG})
+    message(STATUS "strace could not trace: ${err}")
+    return()
+endif()
+file(STRINGS ${LOG} lines)
+set(step 0)
+set(temporary_fd "")
+set(folder_fd "")
+set(index 0)
+foreach(line IN LISTS lines)
+    math(EXPR index "${index} + 1")
+    if(step EQUAL 0 AND line MATCHES "openat?\\(.*\\.durable-order-marker\\.bin\\.[0-9a-f]+\\.tmp\".*O_WRONLY.*\\) = ([0-9]+)")
+        set(temporary_fd ${CMAKE_MATCH_1})
+        set(step 1)
+    elseif(step EQUAL 1 AND line MATCHES "^[0-9]+ +fd?(sync|atasync)\\(${temporary_fd}\\)")
+        set(step 2)
+    elseif(step EQUAL 2 AND line MATCHES "rename(at2?)?\\(.*\\.durable-order-marker\\.bin\\.[0-9a-f]+\\.tmp\".*/durable-order-marker\\.bin\".*\\) = 0")
+        set(step 3)
+    elseif(step EQUAL 3 AND line MATCHES "openat?\\(.*O_RDONLY.*O_DIRECTORY.*\\) = ([0-9]+)")
+        set(folder_fd ${CMAKE_MATCH_1})
+        set(step 4)
+    elseif(step EQUAL 4 AND line MATCHES "fsync\\(${folder_fd}\\) += 0")
+        set(step 5)
+    endif()
+endforeach()
+if(NOT step EQUAL 5)
+    file(READ ${LOG} text)
+    message(FATAL_ERROR "WriteWhole's calls were not file flush, rename, folder flush (stopped at step ${step} of 5):\n${text}")
+endif()
+message(STATUS "order confirmed: open temporary, flush it, rename, flush the folder")
