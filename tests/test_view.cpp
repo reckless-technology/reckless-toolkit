@@ -646,6 +646,103 @@ TEST(View, AMiddlePressReachesOnlyAViewThatAskedForTheMiddleButtonAndIsNothingTo
     EXPECT_EQ(inner.log, (std::vector<std::string>{"down left", "up left", "down right", "up right"}));
 }
 
+/** Two views side by side under a root, each a ButtonProbe, and a router: the scene of the second-button tests. */
+struct TwoButtonScene
+{
+    ButtonProbe       root;
+    ButtonProbe       first;
+    ButtonProbe       second;
+    view::MouseRouter router{root};
+
+    TwoButtonScene()
+    {
+        root.SetBounds({200, 100});
+        first.SetBounds({10, 10, 80, 80});
+        second.SetBounds({110, 10, 80, 80});
+        root.AddChild(first);
+        root.AddChild(second);
+    }
+};
+
+TEST(View, ASecondButtonPressedOverAnotherViewEndsTheFirstViewsPressBeforeItBeginsTheNext)
+{
+    // Before, the router replaced its pressed view and button, so the first view never heard its drag end: it got no
+    // release, and whatever it began - a fader drag, an undo group - stayed open. The held press now ends as the
+    // release of its own button at the last place the pointer was told of, and the second press begins after it.
+    TwoButtonScene s;
+    s.router.Down({20.0f, 20.0f}, 1, false, {});
+    s.router.Drag({30.0f, 25.0f}, {});
+    s.router.Down({120.0f, 20.0f}, 1, true, {}); // the right button, over the other view
+    EXPECT_EQ(s.first.log, (std::vector<std::string>{"down left", "drag left", "up left"}))
+        << "ended at once, as a left release, and once only";
+    EXPECT_EQ(s.second.log, (std::vector<std::string>{"down right"}));
+    EXPECT_EQ(s.router.pressed(), &s.second);
+    // The platforms do not say which button was released: the next release of either ends the press then held, and
+    // the other button's release, in either order, finds none and is nothing.
+    s.router.Up({125.0f, 25.0f}, {});
+    s.router.Up({125.0f, 25.0f}, {});
+    EXPECT_EQ(s.first.log.size(), 3u) << "no further word after its release";
+    EXPECT_EQ(s.second.log, (std::vector<std::string>{"down right", "up right"}));
+    EXPECT_FALSE(s.router.HasPress());
+}
+
+TEST(View, ASecondButtonOnTheSameViewEndsTheFirstPressAndBeginsTheSecondInOrder)
+{
+    TwoButtonScene s;
+    s.router.Down({20.0f, 20.0f}, 1, false, {});
+    s.router.Down({25.0f, 25.0f}, 1, true, {});
+    s.router.Drag({30.0f, 30.0f}, {});
+    s.router.Up({30.0f, 30.0f}, {});
+    s.router.Up({30.0f, 30.0f}, {});
+    EXPECT_EQ(s.first.log, (std::vector<std::string>{"down left", "up left", "down right", "drag right", "up right"}))
+        << "every press is ended exactly once and never overlaps the next";
+}
+
+TEST(View, AMiddlePressNoViewAskedForLeavesTheHeldPressAloneAndOneThatWasAskedForEndsIt)
+{
+    TwoButtonScene s;
+    s.second.takes_middle_button = true;
+    s.router.Down({20.0f, 20.0f}, 1, false, {});
+    s.router.Down({120.0f, 20.0f}, 1, view::MouseButton::kMiddle, {}); // over the second, which asked: ends the first
+    EXPECT_EQ(s.first.log, (std::vector<std::string>{"down left", "up left"}));
+    EXPECT_EQ(s.second.log, (std::vector<std::string>{"down middle"}));
+    s.router.Up({120.0f, 20.0f}, {});
+
+    s.first.log.clear();
+    s.router.Down({20.0f, 20.0f}, 1, false, {});
+    s.router.Down({150.0f, 90.0f}, 1, view::MouseButton::kMiddle, {}); // over the root, which did not ask: nothing
+    EXPECT_TRUE(s.router.HasPress());
+    EXPECT_EQ(s.router.pressed(), &s.first);
+    s.router.Drag({30.0f, 30.0f}, {});
+    s.router.Up({30.0f, 30.0f}, {});
+    EXPECT_EQ(s.first.log, (std::vector<std::string>{"down left", "drag left", "up left"}));
+}
+
+TEST(View, ASecondPressCancelsTheFirstViewsDoubleClick)
+{
+    class DoubleClickProbe final : public view::View
+    {
+      public:
+        int double_clicks{0};
+
+        void MouseDoubleClick(const view::MouseEvent &) override
+        {
+            ++double_clicks;
+        }
+    };
+
+    ButtonProbe      root;
+    DoubleClickProbe first;
+    root.SetBounds({200, 100});
+    first.SetBounds({10, 10, 80, 80});
+    root.AddChild(first);
+    view::MouseRouter router(root);
+    router.Down({20.0f, 20.0f}, 2, false, {});
+    router.Down({25.0f, 25.0f}, 1, true, {}); // ends the second click's press before its release
+    router.Up({25.0f, 25.0f}, {});
+    EXPECT_EQ(first.double_clicks, 0) << "a press cut short by another is no double click";
+}
+
 TEST(View, TheWheelCarriesTheModifiersAndTheControlKeyIsToldFromCommand)
 {
     // Control+wheel zooms and Shift+wheel scrolls sideways: the wheel's event says which keys were held, and the
