@@ -3,6 +3,7 @@
 #include "JackNames.h"
 
 #include "JackDevice.h"
+#include "RealtimeScheduling.h"
 
 #include <algorithm>
 #include <atomic>
@@ -19,6 +20,7 @@
 #include <vector>
 
 #include <jack/jack.h>
+#include <jack/thread.h>
 
 namespace reckless::audio
 {
@@ -451,6 +453,62 @@ class JackSystem final : public AudioSystem
             format.block_size = block_.load(std::memory_order_acquire); // the server's block, which it may change
         }
         return format;
+    }
+
+    /** A consumer's thread at the standing of the server's callback thread: libjack's own call, at the priority the
+        server gives its clients (`jack_client_real_time_priority`; PipeWire's libjack answers it from its own
+        configuration). Where libjack lacks either call - an old or odd build - or the call fails, the round-robin route
+        the ALSA back end takes, and the result says it fell back. Where the server is not running in real time the
+        callback has no such standing either, so the thread is refused, with that reason.
+        @param membership  receives what puts the thread's own policy back
+        @return            what was achieved, or why not */
+    RealtimeThreadResult JoinAudioThread(RealtimeThreadMembership &membership) const override
+    {
+        RealtimeThreadResult result;
+        if (!open_ || client_ == nullptr)
+        {
+            result.refused = "no stream is open, so there is no callback thread whose standing to give";
+            return result;
+        }
+        std::string fallback_reason;
+        if (reckless_jack_has_real_time_calls() == 0)
+        {
+            fallback_reason = "libjack lacks jack_acquire_real_time_scheduling or jack_client_real_time_priority";
+        }
+        else
+        {
+            const int priority = jack_client_real_time_priority(client_);
+            if (priority <= 0)
+            {
+                result.refused = "the JACK server is not running with realtime scheduling, so its callback has none "
+                                 "either";
+                return result;
+            }
+            int         policy = SCHED_OTHER;
+            sched_param before{};
+            pthread_getschedparam(pthread_self(), &policy, &before);
+            if (jack_acquire_real_time_scheduling(pthread_self(), priority) == 0)
+            {
+                membership.SetUndo([policy, before] {
+                    sched_param restored = before;
+                    pthread_setschedparam(pthread_self(), policy, &restored);
+                });
+                result.is_joined = true;
+                result.achieved  = "JACK realtime scheduling at priority " + std::to_string(priority);
+                return result;
+            }
+            fallback_reason = "jack_acquire_real_time_scheduling refused priority " + std::to_string(priority);
+        }
+        result = linux_realtime::JoinRoundRobin(membership);
+        if (result.is_joined)
+        {
+            result.achieved += " (the ALSA route: " + fallback_reason + ")";
+        }
+        else
+        {
+            result.refused += " (after " + fallback_reason + ")";
+        }
+        return result;
     }
 
     std::string LastError() const override

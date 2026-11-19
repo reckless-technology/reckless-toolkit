@@ -249,6 +249,45 @@ period and buffer size, and `snd_pcm_mmap_begin`/`commit` on `SND_PCM_ACCESS_MMA
 itself. JACK is for coexisting with a desktop that owns the card, and one JACK client covers PipeWire too, since
 pipewire-jack implements the JACK API.
 
+## Threads of a consumer's own
+
+A DAW renders its mix on many threads: a few **realtime workers** that work beside the device's callback inside its
+deadline, and a pool of lower-urgency render-ahead threads. The back ends raise their own callback threads (below) and,
+since this section, hand a consumer the same standing for its realtime workers - never for the render-ahead pool,
+which is meant to be preempted.
+
+```cpp
+void WorkerMain(const reckless::audio::AudioSystem &system)
+{
+    const reckless::audio::RealtimeThreadScope standing(system); // first thing in the thread; given back at its end
+    ShowInSettings(standing.Result().Describe());               // "round-robin realtime priority 70", or why not
+    ...
+}
+```
+
+`AudioSystem::JoinAudioThread(RealtimeThreadMembership &)` is the virtual (`audio/AudioDevice.h`) and
+`RealtimeThreadScope` (`audio/RealtimeThreadScope.h`) the RAII that calls it. It is made **by the thread itself**,
+once at its start and once at its end, so it may allocate and ask the kernel - it is never made on an audio thread in
+steady state. A refusal is a **result with its reason** (`RealtimeThreadResult::refused`), never an abort and never
+silent, and the thread runs as it was. With **no stream open** the join is refused ("no stream is open ..."). The caller
+joins its workers after `Open()` and lets them leave before `Close()`.
+
+| API | What the callback thread has today (read 2026-11-19) | What a consumer's thread is given |
+|---|---|---|
+| ALSA | `SCHED_RR` at 70 or the system's maximum, the stream thread's first act, a refusal ignored (`audio/linux/AlsaDevice.cpp`, `Run`) | the same, from the one `audio/linux/RealtimeScheduling.h` (`kStreamThreadPriority`, the constant the stream thread now reads too); refused with `RLIMIT_RTPRIO` named where the user has none - `ulimit -r` is 0 on a stock desktop |
+| JACK (and PipeWire's libjack) | the server's: libjack's own thread, at the server's priority | `jack_client_real_time_priority` and `jack_acquire_real_time_scheduling`, looked up by the run-time loader (`audio/linux/JackLoader.cpp`). A libjack without either, or a refused acquire, falls back to the ALSA route and the result says so; a server not running in realtime refuses, since its callback has none either |
+| Windows Audio (WASAPI, both modes) | MMCSS class `"Pro Audio"` (`AvSetMmThreadCharacteristicsW`), `THREAD_PRIORITY_TIME_CRITICAL` where MMCSS refuses (`audio/win/WasapiDevice.cpp`, `Run`) | the same, from `audio/win/MmcssThread.h`, reverted on leave |
+| ASIO | the driver's own thread, the driver's business | MMCSS `"Pro Audio"` as WASAPI's, on our threads |
+| CoreAudio | the HAL's IOProc thread, in the device's audio workgroup | the device's workgroup joined (`kAudioDevicePropertyIOThreadOSWorkgroup`, macOS 11, then `os_workgroup_join`; left with `os_workgroup_leave`), after a time-constraint policy whose period is the stream's block, as Apple's "Understanding Audio Workgroups" says for parallel realtime threads. Without the workgroup Apple silicon schedules a helper on an efficiency core |
+
+What it does **not** do, deliberately: start a workgroup interval (the HAL's thread owns the cycle), lock memory, or
+touch a thread it was not called on. The time-constraint policy's computation is half the period, within the whole
+period, preemptible; what the HAL's own thread has is not published, so that is a choice to be measured against a real
+Mac (see the pull request that added this).
+
+The machine's cores - which logical processors share a core, which are performance and which efficiency - and the
+pinning of the calling thread to one are in `core/CpuTopology.h`, documented in [../core/cpu-topology.md](../core/cpu-topology.md).
+
 ## Why neither library
 
 The goals were a clean low-cost abstraction, the lowest latency on all three platforms, as much control over buffer

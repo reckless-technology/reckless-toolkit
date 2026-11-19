@@ -9,8 +9,12 @@
 // one jack/jack.h declares weak (jack_port_get_latency_range among them), which a missed rename would leave null: so
 // the loader is the only place a JACK symbol is looked up, and a call is never made but through a name defined here.
 
+/// libjack's `jack_acquire_real_time_scheduling`, under the loader's name.
+#define jack_acquire_real_time_scheduling reckless_jack_acquire_real_time_scheduling
 /// libjack's `jack_activate`, under the loader's name.
 #define jack_activate reckless_jack_activate
+/// libjack's `jack_client_real_time_priority`, under the loader's name.
+#define jack_client_real_time_priority reckless_jack_client_real_time_priority
 /// libjack's `jack_client_close`, under the loader's name.
 #define jack_client_close reckless_jack_client_close
 /// libjack's `jack_client_open`, under the loader's name.
@@ -55,3 +59,8 @@
 /** The loader's own answer, no libjack function: whether the libjack it loaded is PipeWire's (JackLoader.cpp).
     @return  1 for PipeWire's libjack; 0 for JACK's own, or none */
 extern "C" int reckless_jack_is_pipewire(void);
+
+/** The loader's own answer, no libjack function: whether the libjack it loaded has both of the calls that give a thread
+    the server's real-time scheduling, `jack_client_real_time_priority` and `jack_acquire_real_time_scheduling`.
+    @return  1 when both are there; 0 when either, or the library, is missing */
+extern "C" int reckless_jack_has_real_time_calls(void);

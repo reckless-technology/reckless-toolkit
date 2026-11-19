@@ -312,6 +312,16 @@ if(WIN32)
     target_link_libraries(reckless_core_preset_files PUBLIC shell32)
 endif()
 
+# The machine's processors (core/CpuTopology.h): their physical cores, SMT siblings and performance classes, and the pinning
+# of the calling thread to one. The reader of Linux's sysfs is header-only and pure; the platform's calls - Windows'
+# GetLogicalProcessorInformationEx and SetThreadGroupAffinity, macOS' sysctl, Linux's sched_getaffinity - are
+# core/CpuTopology.cpp, a static library of plain C++ beside the header-only core.
+find_package(Threads REQUIRED)
+add_library(reckless_core_cpu STATIC core/CpuTopology.cpp)
+target_link_libraries(reckless_core_cpu PUBLIC reckless_common_core PRIVATE Threads::Threads reckless_warnings)
+set_target_properties(reckless_core_cpu PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_VISIBILITY_PRESET hidden
+                                                   VISIBILITY_INLINES_HIDDEN ON)
+
 # Audio files (core/AudioFiles.h): six formats decoded from a file's bytes, and a WAV writer. Compiled, not header only:
 # the codecs are the vendored decoders fetched above, whose implementations compile once, as C, with their own warnings
 # off, in reckless_audio_decoders (core/AudioDecoders.c); their configuration is defined on that target and handed to
@@ -623,8 +633,9 @@ endif()
 if(RECKLESS_TOOLKIT_BUILD_TESTS)
     # Core: JSON, decimal text, the preset files and folders, audio files and the interface's preferences.
     add_executable(reckless_core_test tests/test_json.cpp tests/test_decimal_text.cpp tests/test_preset_files.cpp
-                                      tests/test_audio_files.cpp tests/test_interface_settings.cpp)
-    target_link_libraries(reckless_core_test PRIVATE reckless_common_core reckless_core_preset_files
+                                      tests/test_audio_files.cpp tests/test_interface_settings.cpp
+                                      tests/test_cpu_topology.cpp)
+    target_link_libraries(reckless_core_test PRIVATE reckless_common_core reckless_core_preset_files reckless_core_cpu
                                                      reckless_common_audio_files reckless_warnings
                                                      reckless_toolkit_test_support GTest::gtest_main)
     target_compile_definitions(reckless_core_test PRIVATE
@@ -707,9 +718,12 @@ inline constexpr EmbeddedFile kEmbeddedFiles[] = {
     # formats, periods and capture ring, which need no Windows.
     add_executable(reckless_audio_test tests/test_audio_settings.cpp tests/test_wasapi_formats.cpp
                                        tests/test_asio_formats.cpp tests/test_win_midi_formats.cpp
-                                       tests/test_core_midi_formats.cpp)
+                                       tests/test_core_midi_formats.cpp tests/test_realtime_threads.cpp)
     target_link_libraries(reckless_audio_test PRIVATE reckless_common_audio reckless_toolkit_test_support
                                                       reckless_warnings GTest::gtest_main)
+    if(WIN32)
+        target_link_libraries(reckless_audio_test PRIVATE avrt) # the multimedia scheduler, which the join test calls
+    endif()
     add_test(NAME audio COMMAND reckless_audio_test)
 
     # The controller layer with no controller: names, the controls a device has said are down, an axis's halves and

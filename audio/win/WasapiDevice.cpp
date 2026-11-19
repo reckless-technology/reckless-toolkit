@@ -32,6 +32,8 @@
 #include <propidl.h>
 #include <wrl/client.h>
 
+#include "MmcssThread.h"
+
 namespace reckless::audio
 {
 namespace
@@ -462,6 +464,21 @@ class WasapiSystem final : public AudioSystem
     StreamFormat Format() const override
     {
         return format_;
+    }
+
+    /** A consumer's thread at the standing of the stream's own: the multimedia scheduler's Pro Audio class, falling
+        back to the time-critical thread priority as the stream's thread does (audio/win/MmcssThread.h).
+        @param membership  receives what reverts the thread
+        @return            what was achieved, or why not */
+    RealtimeThreadResult JoinAudioThread(RealtimeThreadMembership &membership) const override
+    {
+        if (!open_)
+        {
+            RealtimeThreadResult result;
+            result.refused = "no stream is open, so there is no callback thread whose standing to give";
+            return result;
+        }
+        return windows_realtime::JoinProAudio(membership);
     }
 
     std::string LastError() const override

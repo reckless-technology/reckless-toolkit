@@ -11,15 +11,20 @@
 
 #include <dlfcn.h>
 #include <jack/jack.h>
+#include <jack/thread.h>
 
 namespace
 {
 /** libjack's functions as the toolkit calls them, each null where the library or the symbol is missing. */
 struct Jack
 {
-    decltype(&reckless_jack_activate)               activate               = nullptr; ///< `jack_activate`
-    decltype(&reckless_jack_client_close)           client_close           = nullptr; ///< `jack_client_close`
-    decltype(&reckless_jack_client_open)            client_open            = nullptr; ///< `jack_client_open`
+    decltype(&reckless_jack_acquire_real_time_scheduling) acquire_real_time_scheduling =
+        nullptr;                                                               ///< `jack_acquire_real_time_scheduling`
+    decltype(&reckless_jack_activate)                  activate     = nullptr; ///< `jack_activate`
+    decltype(&reckless_jack_client_close)              client_close = nullptr; ///< `jack_client_close`
+    decltype(&reckless_jack_client_open)               client_open  = nullptr; ///< `jack_client_open`
+    decltype(&reckless_jack_client_real_time_priority) client_real_time_priority =
+        nullptr; ///< `jack_client_real_time_priority`
     decltype(&reckless_jack_connect)                connect                = nullptr; ///< `jack_connect`
     decltype(&reckless_jack_deactivate)             deactivate             = nullptr; ///< `jack_deactivate`
     decltype(&reckless_jack_free)                   free                   = nullptr; ///< `jack_free`
@@ -64,9 +69,11 @@ Jack Load()
         library = dlopen("libjack.so", RTLD_NOW | RTLD_LOCAL);
     }
     Jack jack;
+    Find(library, "jack_acquire_real_time_scheduling", jack.acquire_real_time_scheduling);
     Find(library, "jack_activate", jack.activate);
     Find(library, "jack_client_close", jack.client_close);
     Find(library, "jack_client_open", jack.client_open);
+    Find(library, "jack_client_real_time_priority", jack.client_real_time_priority);
     Find(library, "jack_connect", jack.connect);
     Find(library, "jack_deactivate", jack.deactivate);
     Find(library, "jack_free", jack.free);
@@ -102,6 +109,33 @@ const Jack &Library()
 
 extern "C"
 {
+    /** libjack's `jack_acquire_real_time_scheduling`: a thread given real-time scheduling at a priority.
+        @param thread    the thread, `pthread_self()` for the caller
+        @param priority  the priority, from jack_client_real_time_priority
+        @return          0 on success; -1 with no library or on failure */
+    int reckless_jack_acquire_real_time_scheduling(jack_native_thread_t thread, int priority)
+    {
+        const auto function = Library().acquire_real_time_scheduling;
+        return function != nullptr ? function(thread, priority) : -1;
+    }
+
+    /** libjack's `jack_client_real_time_priority`: the priority the server runs its clients' real-time threads at.
+        @param client  the client
+        @return        the priority; -1 with no library, or when the server does not run in real time */
+    int reckless_jack_client_real_time_priority(jack_client_t *client)
+    {
+        const auto function = Library().client_real_time_priority;
+        return function != nullptr ? function(client) : -1;
+    }
+
+    /** The loader's own answer: whether libjack has the two real-time scheduling calls above.
+        @return  1 when it has both; 0 when either is missing */
+    int reckless_jack_has_real_time_calls(void)
+    {
+        const Jack &jack = Library();
+        return jack.acquire_real_time_scheduling != nullptr && jack.client_real_time_priority != nullptr ? 1 : 0;
+    }
+
     /** libjack's `jack_activate`: the client's process callback starts to run.
         @param client  the client
         @return  0 on success; -1 with no library or on failure */

@@ -6,6 +6,8 @@
 #include <string_view>
 #include <vector>
 
+#include "RealtimeThread.h"
+
 namespace reckless::audio
 {
 /**
@@ -202,6 +204,28 @@ class AudioSystem
     /** The last error or warning the API reported, for a person to read.
         @return  the text, empty when there is none */
     virtual std::string LastError() const = 0;
+
+    /** The calling thread - one of the consumer's own, a worker that renders beside the callback inside its deadline -
+        given the standing the open stream's callback thread has: the scheduling policy and priority, the multimedia
+        scheduler's class or the audio workgroup, whichever the platform and API give (docs/audio/native-backends.md,
+        "Threads of a consumer's own"). Called by the thread itself, once at its start, and undone by `membership` at
+        its end - RealtimeThreadScope does both. Any thread, but not while the stream is being opened or closed: the
+        caller joins its workers after Open() and lets them leave before Close().
+
+        Not realtime-safe, on purpose: it may allocate and ask the kernel, since a thread does it once, never in steady
+        state. A refusal - Linux with no `rtprio` limit, no stream open - is a result with its reason, never an error
+        or an abort; the thread then runs as it was. This default refuses with a stream not open or an API that gives
+        a consumer's thread nothing; a back end that can overrides it.
+        @param membership  receives what undoes the join, when one was made
+        @return            what was achieved and what was refused, and why */
+    virtual RealtimeThreadResult JoinAudioThread(RealtimeThreadMembership &membership) const
+    {
+        static_cast<void>(membership);
+        RealtimeThreadResult result;
+        result.refused = IsOpen() ? "this audio API gives a consumer's own threads no realtime standing"
+                                  : "no stream is open, so there is no callback thread whose standing to give";
+        return result;
+    }
 };
 
 /** Where MIDI input lands. */
