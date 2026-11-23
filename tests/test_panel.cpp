@@ -531,8 +531,9 @@ constexpr Color kInk{0xffe8dcc8};
 
 panel::Chrome TestChrome()
 {
-    return {"RECKLESS TEST", look::Palette::Series(kPanelColour, Color{0xff334455}), Color{0xff102030},
-            look::kHeaderInset, "background.png"};
+    return {"RECKLESS TEST",   look::Palette::Series(kPanelColour, Color{0xff334455}),
+            Color{0xff102030}, look::kHeaderInset,
+            "background.png",  ""};
 }
 
 /** The Octave's arrangement: four knobs in a row under the chrome, 648 x 238. */
