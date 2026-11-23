@@ -41,7 +41,8 @@ namespace reckless::window
     @return      the absolute path, or nothing where it is not an existing regular file */
 inline std::optional<std::filesystem::path> ExistingRegularFile(const std::filesystem::path &path)
 {
-    if (path.empty() || path.native().find('\0') != std::filesystem::path::string_type::npos)
+    if (path.empty() ||
+        path.native().find(std::filesystem::path::value_type{}) != std::filesystem::path::string_type::npos)
     {
         return std::nullopt;
     }

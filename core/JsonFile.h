@@ -22,6 +22,7 @@
 #if defined(_WIN32)
 #include <fcntl.h>
 #include <io.h>
+#include <share.h>
 #include <sys/stat.h>
 // MoveFileExW alone is wanted from <windows.h>, which defines ReplaceFile, MoveFile, CopyFile, DeleteFile and more as
 // macros and min and max besides; so it is declared here, as the SDK does, rather than the header pulled into every
@@ -44,7 +45,15 @@ namespace durable
     @return      its descriptor, or -1 */
 inline int OpenForWrite(const std::filesystem::path &file)
 {
-    return ::_wopen(file.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _S_IREAD | _S_IWRITE);
+    // _wsopen_s, not _wopen, which MSVC deprecates (C4996) in every file that includes this header. _SH_DENYNO is the
+    // sharing std::ofstream gives.
+    int descriptor = -1;
+    if (::_wsopen_s(&descriptor, file.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _SH_DENYNO,
+                    _S_IREAD | _S_IWRITE) != 0)
+    {
+        return -1;
+    }
+    return descriptor;
 }
 
 /** One write of up to `count` bytes (the CRT's takes an unsigned int).
