@@ -87,6 +87,8 @@ using reckless::gfx::Color;
 constexpr Color kQuarterColors[4] = {Color::FromRgb(230, 20, 30), Color::FromRgb(20, 210, 40),
                                      Color::FromRgb(30, 40, 220), Color::FromRgb(240, 230, 20)};
 
+// Only AreTheKnownFrame calls this, and that is guarded below, so it goes the same way.
+#if defined(_WIN32) || defined(__linux__)
 /** Whether `pixel`, 0xAARRGGBB, is `expected` within a few levels a channel: what a compositor that leaves the colour
     alone gives back, with room for one that dithers.
     @param pixel     the pixel read
@@ -99,6 +101,7 @@ bool IsColor(std::uint32_t pixel, Color expected)
            is_close(static_cast<int>((pixel >> 8) & 0xFFu), expected.green()) &&
            is_close(static_cast<int>(pixel & 0xFFu), expected.blue());
 }
+#endif
 
 /** The known frame: a quarter of each colour, with what it learnt of the canvas it was painted on as it was - whether
     the canvas is on the GPU, whether its pixels can be written by hand, and the middle of each quarter read back off it
@@ -154,6 +157,13 @@ class KnownFrame final : public reckless::view::View
     int           losses_to_cause{0};          ///< paints still to abandon the GPU's context after.
 };
 
+// **The helpers below belong to this file's own tests, and this file has none on macOS.** Its cases are
+// guarded `#if defined(_WIN32)` / `#elif defined(__linux__)`, because the Mac's half of this suite is
+// tests/test_gpu_window_mac.mm - Objective-C++, to reach the Metal layer - which carries its own copies.
+// Compiled on macOS they are three functions nothing calls, which is a warning, and the warning is right:
+// they are dead there. So they are built for the platforms whose cases this file carries, and not for the
+// one whose cases live next door.
+#if defined(_WIN32) || defined(__linux__)
 /** Whether every quarter read is the colour drawn there.
     @param quarters  the four pixels read, 0xAARRGGBB
     @return          true when each is its quarter's colour */
@@ -188,6 +198,7 @@ std::string Described(const DrawingState &state)
            reckless::window::TextOf(state.why) + "), " + (state.renderer.empty() ? "no GL" : state.renderer) + ", " +
            std::to_string(state.contexts_lost) + " lost";
 }
+#endif
 } // namespace
 
 #if defined(_WIN32)
