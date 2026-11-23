@@ -375,9 +375,10 @@ jobs:
   # decision of the back ends in the headers instead), look/, view/, net/, update/ and licence/ - from an instrumented, unoptimised gcc build with nothing windowed, every suite run but the
   # device suite (whose test devices are the linux job's), and gcovr reading the counters, red under the floor. CMake's
   # instrumented compiler-identification stubs (CMakeFiles/<version>/CompilerId*), which have no source and stop gcov,
-  # and the fetched dependencies' objects are left out of gcovr's search. The floor, 89 %, is a little under
-  # what the suites reach - 90.6 % of lines under gcc here, 91.9 % under llvm-cov on Windows, each platform compiling its
-  # own transport - so a suite that stops reaching code fails the pull request. tools/coverage-windows.ps1 is the
+  # and the fetched dependencies' objects are left out of gcovr's search. The floor, 90 % (Jonny, 2026-11-22), is
+  # a little under what the suites reach - 92.3 % of lines under gcc here and 92.7 % under clang-20 on jonny-legion
+  # (both 2026-11-22), 91.9 % under llvm-cov on Windows when last measured, each platform compiling its own transport -
+  # so a suite that stops reaching code fails the pull request. tools/coverage-windows.ps1 is the
   # same on Windows, reading the floor from here.
   coverage:
     name: Coverage (gcov)
@@ -421,13 +422,13 @@ jobs:
         run: cmake --build build/ci-toolkit-cov -j ${{ steps.cpp.outputs.jobs }}
       - name: Test
         run: ctest --test-dir build/ci-toolkit-cov --output-on-failure -j "$(nproc)" -E '^audio_devices$'
-      - name: Coverage, 89 % of lines or red
+      - name: Coverage, 90 % of lines or red
         run: >
           gcovr --root . --object-directory build/ci-toolkit-cov --filter '(core|gfx|input|look|view|net|update|licence)/'
           --exclude 'gfx/skia/' --exclude 'input/linux/EvdevSystemPort[.]cpp' --exclude 'input/(win|mac)/.*[.]cpp'
           --exclude '.*/tests/' --gcov-ignore-parse-errors=suspicious_hits.warn
           --gcov-exclude-directories '.*/CMakeFiles/[0-9][^/]*/.*' --gcov-exclude-directories '.*/_deps/.*'
-          --txt --print-summary --fail-under-line 89 build/ci-toolkit-cov
+          --txt --print-summary --fail-under-line 90 build/ci-toolkit-cov
 
   # ---- Checked whatever changed ----------------------------------------------------------------------------------
 
