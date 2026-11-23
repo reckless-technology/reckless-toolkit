@@ -29,6 +29,10 @@ using reckless::app::MenuBar;
 using reckless::app::MenuEntry;
 using reckless::app::Shortcut;
 
+// **CountingBar belongs to this file's own cases, and this file has none on macOS.** They are guarded
+// `#if defined(_WIN32)` / `#if defined(__linux__)`, the Mac's half being tests/test_app_menu_mac.mm. Built
+// on macOS it is a function nothing calls.
+#if defined(_WIN32) || defined(__linux__)
 /** A bar of File (New Game, Ctrl+N; a disabled item) and View (Flip Board, F, ticked), each counted as chosen. */
 MenuBar CountingBar(int &new_games, int &flips, int &copies)
 {
@@ -44,6 +48,7 @@ MenuBar CountingBar(int &new_games, int &flips, int &copies)
     bar.menus.push_back(MenuEntry::Menu("View", {flip}));
     return bar;
 }
+#endif
 } // namespace
 
 #if defined(_WIN32)
