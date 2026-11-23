@@ -82,7 +82,7 @@ struct Chrome
         and as many frames tall as it holds, rendered by assets/knobs/render_knob.py or render_pointer_knob.py to the
         geometry look::kKnobMargin fixes; the look layer reads the frame count from its height, so a strip of any
         count draws without telling it. */
-    std::string knob;
+    std::string knob{};
 };
 
 /** The knob bank's sizes on every panel of the series: the look's own numbers (LookMetrics.h), so a change to them
