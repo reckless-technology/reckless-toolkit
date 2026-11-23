@@ -112,6 +112,12 @@ class Color
     {
         const float scale = 1.0f / (1.0f + amount);
         const auto  lift  = [scale](std::uint8_t c) {
+// clang's default contracts `255 - scale * x` into a fused multiply-add, which its constant folder evaluates exactly
+// but a target with no FMA (the x86-64 baseline) evaluates in two roundings, so one colour came out a step apart
+// whether it was folded or computed; GCC never contracts here. Contraction off makes both agree on both compilers.
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#endif
             return static_cast<std::uint8_t>(255.0f - scale * static_cast<float>(255 - c));
         };
         return FromArgb(alpha(), lift(red()), lift(green()), lift(blue()));
