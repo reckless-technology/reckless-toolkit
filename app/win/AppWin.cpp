@@ -460,10 +460,11 @@ class WinWindow final : public AppWindow
     WinWindow(const WindowOptions &options, WindowHooks hooks)
         : closing_(options.closing), rescaled_(options.rescaled), constrain_(options.constrain),
           resized_(options.resized), resized_in_units_(options.resized_in_units),
-          full_screen_changed_(options.full_screen_changed), session_ending_(std::move(hooks.session_ending)),
-          shortcut_(std::move(hooks.shortcut)), command_(std::move(hooks.command)), gone_(std::move(hooks.gone)),
-          dialog_(options.dialog), design_width_(options.width), design_height_(options.height),
-          style_(StyleOf(options)), ex_style_(ExStyleOf(options)), has_menu_(hooks.menu != nullptr),
+          session_ending_(std::move(hooks.session_ending)), shortcut_(std::move(hooks.shortcut)),
+          command_(std::move(hooks.command)), gone_(std::move(hooks.gone)), dialog_(options.dialog),
+          design_width_(options.width), design_height_(options.height), style_(StyleOf(options)),
+          ex_style_(ExStyleOf(options)), has_menu_(hooks.menu != nullptr),
+          full_screen_changed_(options.full_screen_changed),
           may_go_full_screen_(options.may_go_full_screen && !options.dialog)
     {
         HWND owner = nullptr;
