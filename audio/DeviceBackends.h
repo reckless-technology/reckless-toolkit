@@ -58,7 +58,7 @@ struct MidiBackend
         @return  the text */
     std::string (*Library)();
 
-    /** The machine's MIDI inputs on the platform's API.
+    /** The machine's MIDI inputs and outputs on the platform's API.
         @param client_name  the name its ports carry, a Standalone's plugin name
         @return             the system, owned by the caller */
     std::unique_ptr<MidiSystem> (*Make)(const std::string &client_name);
@@ -80,8 +80,8 @@ std::string DefaultAudioApi();
     @return      the system, owned by the caller; nullptr for a name this machine cannot open */
 std::unique_ptr<AudioSystem> MakeAudioSystem(const std::string &name);
 
-/** The machine's MIDI inputs on the platform's MIDI API, each port it opens named after `client_name` (a Standalone's
-    plugin name), each message stamped on the clock audio callbacks are stamped with.
+/** The machine's MIDI inputs and outputs on the platform's MIDI API, each port it opens named after `client_name` (a
+    Standalone's plugin name), each message stamped on the clock audio callbacks are stamped with.
     @param client_name  the name its ports carry, a Standalone's plugin name
     @return             the system, owned by the caller */
 std::unique_ptr<MidiSystem> MakeMidiSystem(const std::string &client_name);
