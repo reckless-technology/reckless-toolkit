@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <random>
@@ -67,7 +68,7 @@ TEST(MidiOutputMessages, AreWholeChannelOrRealTimeMessagesOfTheirStatusesLength)
     EXPECT_TRUE(IsSendableMidiMessage(bend, 3));
     EXPECT_TRUE(IsSendableMidiMessage(program, 2));
     EXPECT_TRUE(IsSendableMidiMessage(pressure, 2));
-    for (const std::uint8_t real_time : {0xF8, 0xFA, 0xFB, 0xFC, 0xFE, 0xFF})
+    for (const std::uint8_t real_time : std::initializer_list<std::uint8_t>{0xF8, 0xFA, 0xFB, 0xFC, 0xFE, 0xFF})
     {
         const std::uint8_t message[] = {real_time};
         EXPECT_TRUE(IsSendableMidiMessage(message, 1)) << int{real_time};
@@ -91,7 +92,8 @@ TEST(MidiOutputMessages, AreWholeChannelOrRealTimeMessagesOfTheirStatusesLength)
     const std::uint8_t sysex[] = {0xF0, 0x7D, 0xF7};
     EXPECT_FALSE(IsSendableMidiMessage(sysex, 3)) << "system exclusive is not sent";
     EXPECT_FALSE(IsSendableMidiMessage(sysex, 1));
-    for (const std::uint8_t common : {0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF9, 0xFD})
+    for (const std::uint8_t common :
+         std::initializer_list<std::uint8_t>{0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF9, 0xFD})
     {
         for (int size = 1; size <= 3; ++size)
         {
