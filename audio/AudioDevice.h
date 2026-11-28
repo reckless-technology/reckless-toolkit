@@ -13,14 +13,14 @@ namespace reckless::audio
 {
 /**
     The machine's audio and MIDI as a Standalone sees them, written against no library: an audio API's devices and the
-    one stream it opens on them (AudioSystem), the stream's callback (AudioCallback), and the MIDI input ports
-    (MidiSystem) whose messages land in a sink (MidiSink). The implementations are the toolkit's own back ends on each
-    platform's API (DeviceBackends.h); a suite's is a fake that runs the callback itself. The engine between them and a
-   plugin's core is StandaloneEngine.
+    one stream it opens on them (AudioSystem), the stream's callback (AudioCallback), and the MIDI ports (MidiSystem):
+    inputs whose messages land in a sink (MidiSink), and outputs that send what any thread queues, at its time. The
+   implementations are the toolkit's own back ends on each platform's API (DeviceBackends.h); a suite's is a fake that
+   runs the callback itself. The engine between them and a plugin's core is StandaloneEngine.
 
-    Threads: everything on AudioSystem and MidiSystem is the message thread's; AudioCallback::Process runs on the
-    API's audio thread and MidiSink::Arrived on a MIDI port's thread, and StreamFailed on whichever thread the API
-    reports from.
+    Threads: everything on AudioSystem and MidiSystem is the message thread's but MidiSystem::Send, which is any
+    thread's; AudioCallback::Process runs on the API's audio thread and MidiSink::Arrived on a MIDI port's thread, and
+    StreamFailed on whichever thread the API reports from.
 */
 
 /** The clock every device and port stamps its events with, in nanoseconds: the steady clock, the one a MIDI message's
@@ -292,7 +292,28 @@ class MidiSink
     virtual void Arrived(int port, std::int64_t time, const std::uint8_t *bytes, int size) noexcept = 0;
 };
 
-/** The machine's MIDI inputs. Message thread throughout. */
+/** How many MIDI outputs can be open at once, and so the port numbers MidiSystem::OpenOutput takes: 0 to 63. A table
+    of fixed size is what lets Send find a port's queue without a lock or a search. */
+inline constexpr int kMidiOutputPorts = 64;
+
+/** The machine's MIDI inputs and outputs.
+
+    Threads: Inputs, Open, Outputs, OpenOutput, CloseAll and LastError are the owner's - the message thread, or
+    whichever one thread owns the system. Send is for any thread, an audio callback among them, and for several at
+    once on one port: it is wait-free, takes no lock, allocates nothing and calls nothing of the system's.
+
+    Output: each output opened has a queue of its own (kMidiOutputQueueCapacity messages) and is served by the back
+    end's sender, an ordinary thread that is never a realtime one and that no Send waits for. A message is queued with
+    the time it is to leave on NowNanoseconds' clock, and leaves then - or at once when that time has passed when the
+    sender reaches it - in the order of the times; two of one time leave in the order one thread sent them. System
+    exclusive is not sent, nor running status, nor the system common messages: Send takes one whole channel message or
+    one system real-time message (IsSendableMidiMessage in MidiOutputQueue.h).
+
+    Lifetime: a Send racing CloseAll, or racing an OpenOutput that reopens its port, either returns false or has its
+    message dropped; it never touches an output that has been closed, and once CloseAll returns nothing is sent. What
+    was queued and not yet sent when an output closes is dropped, including what a back end had handed its platform
+    ahead of the time. A device that goes away while open is not reported - the interface has no notice of a port
+    going for inputs either - and its messages go nowhere until it is opened again. */
 class MidiSystem
 {
   public:
@@ -310,7 +331,33 @@ class MidiSystem
         @return      true when the port opened */
     virtual bool Open(const std::string &name, int port, MidiSink &sink) = 0;
 
-    /** Every open port closed: when this returns, the sink is not called again. */
+    /** The outputs it offers now, by name. The owner's thread.
+        @return  the output names, in the API's order */
+    virtual std::vector<std::string> Outputs() = 0;
+
+    /** Output `name` opened as port `port`, the number Send names it by; false, with LastError(), when there is no such
+        output, `port` is outside 0 to kMidiOutputPorts - 1, or the output will not open. An output already open as
+        `port` is closed first, what it had queued dropped. Several outputs may be open at once, each as its own port.
+        The owner's thread.
+        @param name  the output's name, as Outputs() lists it; found as Open finds an input's
+        @param port  the number Send names it by, 0 to kMidiOutputPorts - 1
+        @return      true when the output opened */
+    virtual bool OpenOutput(const std::string &name, int port) = 0;
+
+    /** Any thread, wait-free: a message queued to the output open as `port`, to leave at `time_nanoseconds` on
+        NowNanoseconds' clock, or at once if that time has passed (the class says how the messages are ordered). False,
+        with nothing queued, when the port is not open, its queue is full, or the message is not one whole channel
+        message or system real-time message of the length its status asks (IsSendableMidiMessage). Sets no LastError,
+        which is the owner's.
+        @param port              the port the output was opened as
+        @param time_nanoseconds  when the message is to leave, in nanoseconds on NowNanoseconds' clock
+        @param bytes             the message's bytes, the status first; read during the call only
+        @param size              its length, 1 to 3
+        @return                  true when it was queued */
+    virtual bool Send(int port, std::int64_t time_nanoseconds, const std::uint8_t *bytes, int size) noexcept = 0;
+
+    /** Every open input and output closed: when this returns, no sink is called again and nothing more is sent - what
+        an output had queued and not yet sent is dropped, and its sender has stopped. The owner's thread. */
     virtual void CloseAll() = 0;
 
     /** The last error the system reported, for a person to read.
