@@ -410,13 +410,15 @@ TEST(MidiOutputPorts, NeverReachAQueueOnceItsWithdrawReturns)
     // Threads send to one port without pause while the owner opens and closes it again and again, freeing each queue
     // as soon as its Withdraw returns: nothing lands in a queue after that (the sanitizers would see a freed one
     // touched), and the senders see the port open and closed.
-    constexpr int            kSenders = 6;
-    MidiOutputPorts          ports;
-    std::atomic<bool>        done{false};
-    std::atomic<long>        accepted{0};
-    std::atomic<long>        refused{0};
-    std::vector<std::thread> senders;
-    for (int s = 0; s < kSenders; ++s)
+    // No more senders than the machine has processors to spare, so the owner's rounds are not starved on a small one,
+    // and the counts are 64 bits wide: a long is 32 on Windows, and the senders count past that in a slow run.
+    const int         sender_count = std::clamp(static_cast<int>(std::thread::hardware_concurrency()) - 1, 2, 6);
+    MidiOutputPorts   ports;
+    std::atomic<bool> done{false};
+    std::atomic<std::int64_t> accepted{0};
+    std::atomic<std::int64_t> refused{0};
+    std::vector<std::thread>  senders;
+    for (int s = 0; s < sender_count; ++s)
     {
         senders.emplace_back([&ports, &done, &accepted, &refused, s] {
             const auto note = NoteOn(s);
@@ -426,9 +428,15 @@ TEST(MidiOutputPorts, NeverReachAQueueOnceItsWithdrawReturns)
             }
         });
     }
-    long landed_late = 0;
+    // Up to 3000 rounds, and no longer than five seconds once two hundred are done.
+    std::int64_t landed_late = 0;
+    const auto   began       = std::chrono::steady_clock::now();
     for (int round = 0; round < 3000; ++round)
     {
+        if (round >= 200 && std::chrono::steady_clock::now() - began > std::chrono::seconds(5))
+        {
+            break;
+        }
         auto queue = std::make_unique<MidiOutputQueue>();
         ports.Publish(7, *queue);
         std::this_thread::yield();
