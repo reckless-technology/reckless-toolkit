@@ -10,8 +10,8 @@ namespace reckless::audio::winmm
 /**
     The arithmetic of the suite's Windows MIDI back end (win/WinMidi.cpp) that needs no Windows to hold: an input's name
     as RtMidi listed it, finding the input a settings file's name means, and the bytes of a short message WinMM hands
-    over packed in one word. Header only and platform-neutral, so the audio suite holds it on every platform
-    (tests/test_win_midi_formats.cpp).
+    over packed in one word, and the word a message to send is packed into. Header only and platform-neutral, so the
+   audio suite holds it on every platform (tests/test_win_midi_formats.cpp).
 */
 
 /** An input's name as RtMidi listed it, so a settings file written then still finds it: the device's own name with its
@@ -117,5 +117,20 @@ inline int ShortMessage(std::uint32_t packed, std::uint8_t bytes[3]) noexcept
         bytes[i] = static_cast<std::uint8_t>((packed >> (8 * i)) & 0xFF);
     }
     return length;
+}
+
+/** A message packed into the one word midiOutShortMsg takes, the status in the low byte and the data bytes above it,
+    a byte the message lacks as zero: the other way of ShortMessage. The message is one MidiSystem::Send takes.
+    @param bytes  the message's bytes, the status first
+    @param size   its length, 1 to 3
+    @return       the packed word */
+constexpr std::uint32_t PackShortMessage(const std::uint8_t *bytes, int size) noexcept
+{
+    std::uint32_t packed = 0;
+    for (int i = 0; i < size && i < 3; ++i)
+    {
+        packed |= static_cast<std::uint32_t>(bytes[i]) << (8 * i);
+    }
+    return packed;
 }
 } // namespace reckless::audio::winmm
