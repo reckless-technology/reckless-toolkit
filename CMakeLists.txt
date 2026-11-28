@@ -732,12 +732,13 @@ inline constexpr EmbeddedFile kEmbeddedFiles[] = {
         add_test(NAME embedded_${table} COMMAND reckless_embedded_test_${table})
     endforeach()
 
-    # The audio device layer on the offline device and its arithmetic: the settings an app keeps, and Windows Audio's
-    # formats, periods and capture ring, which need no Windows.
+    # The audio device layer on the offline device and its arithmetic: the settings an app keeps, Windows Audio's
+    # formats, periods and capture ring, which need no Windows, and MIDI output's queue, schedule and sender.
     add_executable(reckless_audio_test tests/test_audio_settings.cpp tests/test_wasapi_formats.cpp
                                        tests/test_asio_formats.cpp tests/test_win_midi_formats.cpp
                                        tests/test_core_midi_formats.cpp tests/test_realtime_threads.cpp
-                                       tests/test_stream_format.cpp tests/test_channel_names.cpp)
+                                       tests/test_stream_format.cpp tests/test_channel_names.cpp
+                                       tests/test_midi_output.cpp)
     target_link_libraries(reckless_audio_test PRIVATE reckless_common_audio reckless_toolkit_test_support
                                                       reckless_warnings GTest::gtest_main)
     if(WIN32)
