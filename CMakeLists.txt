@@ -508,8 +508,10 @@ target_link_libraries(reckless_app_shell
 # ---------------------------------------------------------------------------------------------------------------
 # The audio device layer: header only but for the devices, namespace reckless::audio, included by bare name - the
 # device and MIDI interfaces (AudioDevice.h), the settings an app keeps (AudioSettings.h: reckless-technology/<name>/
-# audio.json) and an offline device for the suites (OfflineDevice.h). The devices themselves are reckless_audio_devices,
-# with the toolkit's own back ends on each platform's API (audio/mac/, audio/win/, audio/linux/).
+# audio.json), what every back end's MIDI output is built from (MidiOutputQueue.h, MidiOutputPorts.h and
+# MidiOutputSender.h) and an offline device for the suites (OfflineDevice.h). The devices themselves are
+# reckless_audio_devices, with the toolkit's own back ends on each platform's API (audio/mac/, audio/win/,
+# audio/linux/).
 # ---------------------------------------------------------------------------------------------------------------
 add_library(reckless_common_audio INTERFACE)
 target_include_directories(reckless_common_audio INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/audio")

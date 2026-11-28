@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "AudioDevice.h"
+#include "MidiOutputPorts.h"
 
 namespace reckless::audio
 {
@@ -243,16 +245,38 @@ class OfflineAudioSystem final : public AudioSystem
     bool                    refuse_start_{false}; ///< whether Start() refuses
 };
 
-/** MIDI inputs with nothing behind them: the names it was made with, each opened onto the sink the engine gives, and
-    a message delivered when the owner sends one - on the owner's thread, at the owner's time. */
+/** One message an OfflineMidiSystem was sent: the port it was sent to, the time it was to leave and its bytes. */
+struct SentMidiMessage
+{
+    int                       port{0}; ///< the port the output was opened as
+    std::int64_t              time{0}; ///< when it was to leave, in nanoseconds on NowNanoseconds' clock
+    std::vector<std::uint8_t> bytes;   ///< its bytes, the status first
+};
+
+/** MIDI with nothing behind it. Inputs: the names it was made with, each opened onto the sink the engine gives, and a
+    message delivered when the owner sends one - on the owner's thread, at the owner's time. Outputs: the names it was
+    made with, each opened as a port Send queues to exactly as a back end's does - from any thread, wait-free, through
+    the same queue and port table (MidiOutputPorts.h) - with no sender and no clock behind it: what Send accepted is
+    recorded, in the order of the times, and read back with Sent(), for a suite of a consumer that sends. */
 class OfflineMidiSystem final : public MidiSystem
 {
   public:
-    /** Inputs made to order.
-        @param inputs  the names Inputs() offers */
-    explicit OfflineMidiSystem(std::vector<std::string> inputs) : inputs_(std::move(inputs))
+    /** Inputs and outputs made to order.
+        @param inputs   the names Inputs() offers
+        @param outputs  the names Outputs() offers */
+    explicit OfflineMidiSystem(std::vector<std::string> inputs, std::vector<std::string> outputs = {})
+        : inputs_(std::move(inputs)), outputs_(std::move(outputs))
     {
     }
+
+    /** Every output closed, what it held recorded. */
+    ~OfflineMidiSystem() override
+    {
+        CloseAll();
+    }
+
+    OfflineMidiSystem(const OfflineMidiSystem &)            = delete;
+    OfflineMidiSystem &operator=(const OfflineMidiSystem &) = delete;
 
     std::vector<std::string> Inputs() override
     {
@@ -272,9 +296,45 @@ class OfflineMidiSystem final : public MidiSystem
         return true;
     }
 
+    std::vector<std::string> Outputs() override
+    {
+        return outputs_;
+    }
+
+    bool OpenOutput(const std::string &name, int port) override
+    {
+        if (std::find(outputs_.begin(), outputs_.end(), name) == outputs_.end())
+        {
+            error_ = "no MIDI output named '" + name + "'";
+            return false;
+        }
+        if (!MidiOutputPorts::IsPortNumber(port))
+        {
+            error_ = "the MIDI output '" + name + "' cannot be port " + std::to_string(port) + ": ports are 0 to " +
+                     std::to_string(kMidiOutputPorts - 1);
+            return false;
+        }
+        CloseOutput(port);
+        OpenOutputPort output;
+        output.port  = port;
+        output.queue = std::make_unique<MidiOutputQueue>();
+        ports_.Publish(port, *output.queue);
+        outputs_open_.push_back(std::move(output));
+        return true;
+    }
+
+    bool Send(int port, std::int64_t time_nanoseconds, const std::uint8_t *bytes, int size) noexcept override
+    {
+        return ports_.Send(port, time_nanoseconds, bytes, size);
+    }
+
     void CloseAll() override
     {
         open_.clear();
+        while (!outputs_open_.empty())
+        {
+            CloseOutput(outputs_open_.back().port);
+        }
     }
 
     std::string LastError() const override
@@ -300,11 +360,39 @@ class OfflineMidiSystem final : public MidiSystem
         return false;
     }
 
+    /** The owner's thread: every message Send has accepted since the last ClearSent, on every output, whether or not
+        it is still open, in the order of their times - two of one time in the order they were queued on one port, and
+        port by port in the order the ports were opened. Not to be called while another thread may Send to an output
+        that closes meanwhile: the owner's thread is the queues' one reader.
+        @return  the messages */
+    const std::vector<SentMidiMessage> &Sent()
+    {
+        for (OpenOutputPort &output : outputs_open_)
+        {
+            Record(output);
+        }
+        return sent_;
+    }
+
+    /** The owner's thread: the record emptied, what the queues held with it. */
+    void ClearSent()
+    {
+        Sent();
+        sent_.clear();
+    }
+
     /** How many inputs are open.
         @return  the open inputs */
     int open_count() const noexcept
     {
         return static_cast<int>(open_.size());
+    }
+
+    /** How many outputs are open.
+        @return  the open outputs */
+    int open_output_count() const noexcept
+    {
+        return static_cast<int>(outputs_open_.size());
     }
 
   private:
@@ -316,8 +404,53 @@ class OfflineMidiSystem final : public MidiSystem
         MidiSink   *sink{nullptr}; ///< where they land; not owned
     };
 
-    std::vector<std::string> inputs_; ///< the names offered
-    std::vector<OpenInput>   open_;   ///< the inputs open
-    std::string              error_;  ///< the last error's text
+    /** An output that is open: its port and the queue Send fills. */
+    struct OpenOutputPort
+    {
+        int                              port{0}; ///< the port it was opened as
+        std::unique_ptr<MidiOutputQueue> queue;   ///< what Send fills; at one address while open
+    };
+
+    /** What `output`'s queue holds moved into the record, which stays in the order of the times.
+        @param output  the output */
+    void Record(OpenOutputPort &output)
+    {
+        const std::size_t before = sent_.size();
+        MidiOutputMessage message;
+        while (output.queue->TryPop(message))
+        {
+            sent_.push_back(SentMidiMessage{
+                output.port, message.time,
+                std::vector<std::uint8_t>(message.bytes.begin(), message.bytes.begin() + message.size)});
+        }
+        if (sent_.size() != before)
+        {
+            std::stable_sort(sent_.begin(), sent_.end(),
+                             [](const SentMidiMessage &a, const SentMidiMessage &b) { return a.time < b.time; });
+        }
+    }
+
+    /** The output open as `port` closed, if there is one: withdrawn from Send, and what it held recorded.
+        @param port  the port */
+    void CloseOutput(int port)
+    {
+        const auto at = std::find_if(outputs_open_.begin(), outputs_open_.end(),
+                                     [port](const OpenOutputPort &output) { return output.port == port; });
+        if (at == outputs_open_.end())
+        {
+            return;
+        }
+        ports_.Withdraw(port);
+        Record(*at);
+        outputs_open_.erase(at);
+    }
+
+    std::vector<std::string>     inputs_;       ///< the input names offered
+    std::vector<std::string>     outputs_;      ///< the output names offered
+    std::vector<OpenInput>       open_;         ///< the inputs open
+    std::vector<OpenOutputPort>  outputs_open_; ///< the outputs open
+    MidiOutputPorts              ports_;        ///< the open outputs' queues, as Send finds them
+    std::vector<SentMidiMessage> sent_;         ///< what Send accepted, in the order of the times
+    std::string                  error_;        ///< the last error's text
 };
 } // namespace reckless::audio

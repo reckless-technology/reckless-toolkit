@@ -225,6 +225,22 @@ class AlsaMidiSystem final : public MidiSystem
         return true;
     }
 
+    std::vector<std::string> Outputs() override
+    {
+        return {};
+    }
+
+    bool OpenOutput(const std::string &name, int) override
+    {
+        Keep("no MIDI output named '" + name + "': this back end sends no MIDI yet");
+        return false;
+    }
+
+    bool Send(int, std::int64_t, const std::uint8_t *, int) noexcept override
+    {
+        return false;
+    }
+
     void CloseAll() override
     {
         StopThread();

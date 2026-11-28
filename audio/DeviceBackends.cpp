@@ -95,7 +95,7 @@ std::string NoMidiLibrary()
     return "no MIDI (built without ALSA)";
 }
 
-/** No MIDI inputs at all. */
+/** No MIDI inputs or outputs at all. */
 class NoMidiSystem final : public MidiSystem
 {
   public:
@@ -107,6 +107,22 @@ class NoMidiSystem final : public MidiSystem
     bool Open(const std::string &name, int, MidiSink &) override
     {
         error_ = "no MIDI input named '" + name + "': this build has no MIDI back end (it was built without ALSA)";
+        return false;
+    }
+
+    std::vector<std::string> Outputs() override
+    {
+        return {};
+    }
+
+    bool OpenOutput(const std::string &name, int) override
+    {
+        error_ = "no MIDI output named '" + name + "': this build has no MIDI back end (it was built without ALSA)";
+        return false;
+    }
+
+    bool Send(int, std::int64_t, const std::uint8_t *, int) noexcept override
+    {
         return false;
     }
 

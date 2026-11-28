@@ -1,17 +1,26 @@
-// MIDI output beneath every back end (audio/MidiOutputQueue.h), held on every platform: which messages a Send carries,
-// the queue from many sending threads to one sender - every message accepted comes out once, whole, each thread's in
-// the order it sent them, and a full queue says so and keeps what it holds - and the schedule that hands them on
-// earliest first.
+// MIDI output beneath every back end (audio/MidiOutputQueue.h, MidiOutputPorts.h, MidiOutputSender.h), held on every
+// platform: which messages a Send carries; the queue from many sending threads to one sender - every message accepted
+// comes out once, whole, each thread's in the order it sent them, and a full queue says so and keeps what it holds;
+// the schedule that hands them on earliest first; the port table a Send finds its queue in, never touching one once
+// it is withdrawn; the sender, in the order of the times and silent once stopped; and the offline system's record.
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
+#include <memory>
 #include <random>
+#include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
+#include "MidiOutputPorts.h"
 #include "MidiOutputQueue.h"
+#include "MidiOutputSender.h"
+#include "OfflineDevice.h"
 
 #include <gtest/gtest.h>
 
@@ -293,4 +302,337 @@ TEST(MidiOutputSchedules, HandOnTheEarliestFirstAndTiesInTheOrderAdded)
     EXPECT_EQ(schedule.EarliestTime(), 1);
     schedule.Clear();
     EXPECT_TRUE(schedule.empty());
+}
+
+// ---- The port table, the sender and the offline system ------------------------------------------------------------
+
+namespace
+{
+using reckless::audio::kMidiOutputPorts;
+using reckless::audio::MidiOutputPorts;
+using reckless::audio::MidiOutputSender;
+using reckless::audio::MidiOutputStream;
+using reckless::audio::NowNanoseconds;
+using reckless::audio::OfflineMidiSystem;
+
+/** An output that keeps what its sender hands it, and when, into storage made up front - and counts any message handed
+    to it once the test has said the sender is stopped. */
+class KeptStream final : public MidiOutputStream
+{
+  public:
+    static constexpr std::size_t kMost = 20000; ///< the deliveries kept
+
+    KeptStream()
+    {
+        delivered_.reserve(kMost);
+    }
+
+    /** The test's word that the sender's Stop has returned. */
+    void SayStopped() noexcept
+    {
+        is_stopped_.store(true);
+    }
+
+    long after_stop() const noexcept
+    {
+        return after_stop_.load();
+    }
+
+    long count() const noexcept
+    {
+        return count_.load();
+    }
+
+    /** What was delivered: each message and when; read once the sender has stopped. */
+    const std::vector<std::pair<MidiOutputMessage, std::int64_t>> &delivered() const noexcept
+    {
+        return delivered_;
+    }
+
+  protected:
+    bool Deliver(const MidiOutputMessage &message) noexcept override
+    {
+        if (is_stopped_.load())
+        {
+            after_stop_.fetch_add(1);
+        }
+        if (delivered_.size() < kMost)
+        {
+            delivered_.emplace_back(message, NowNanoseconds());
+        }
+        count_.fetch_add(1);
+        return true;
+    }
+
+  private:
+    std::vector<std::pair<MidiOutputMessage, std::int64_t>> delivered_;
+    std::atomic<bool>                                       is_stopped_{false};
+    std::atomic<long>                                       after_stop_{0};
+    std::atomic<long>                                       count_{0};
+};
+
+/** A note on of `key` as bytes. */
+std::array<std::uint8_t, 3> NoteOn(int key)
+{
+    return {0x90, static_cast<std::uint8_t>(key & 0x7F), 100};
+}
+} // namespace
+
+TEST(MidiOutputPorts, RefuseAPortNotOpenOrOutOfRangeAndAMessageSendDoesNotCarry)
+{
+    MidiOutputPorts ports;
+    MidiOutputQueue queue;
+    const auto      note = NoteOn(60);
+    EXPECT_FALSE(ports.Send(0, 0, note.data(), 3)) << "not open";
+    ports.Publish(5, queue);
+    EXPECT_FALSE(ports.Send(0, 0, note.data(), 3)) << "another port";
+    EXPECT_FALSE(ports.Send(-1, 0, note.data(), 3));
+    EXPECT_FALSE(ports.Send(kMidiOutputPorts, 0, note.data(), 3));
+    EXPECT_FALSE(ports.Send(5, 0, note.data(), 2)) << "a three-byte message with two bytes";
+    const std::uint8_t sysex[] = {0xF0, 0x7D, 0xF7};
+    EXPECT_FALSE(ports.Send(5, 0, sysex, 3));
+    EXPECT_TRUE(ports.Send(5, 1234, note.data(), 3));
+    MidiOutputMessage message;
+    ASSERT_TRUE(queue.TryPop(message));
+    EXPECT_EQ(message.time, 1234);
+    EXPECT_EQ(message.size, 3);
+    EXPECT_EQ(message.bytes, note);
+    EXPECT_FALSE(queue.TryPop(message)) << "only what was accepted";
+    ports.Withdraw(5);
+    EXPECT_FALSE(ports.Send(5, 0, note.data(), 3)) << "withdrawn";
+    ports.Withdraw(5); // twice is nothing
+}
+
+TEST(MidiOutputPorts, NeverReachAQueueOnceItsWithdrawReturns)
+{
+    // Threads send to one port without pause while the owner opens and closes it again and again, freeing each queue
+    // as soon as its Withdraw returns: nothing lands in a queue after that (the sanitizers would see a freed one
+    // touched), and the senders see the port open and closed.
+    constexpr int            kSenders = 6;
+    MidiOutputPorts          ports;
+    std::atomic<bool>        done{false};
+    std::atomic<long>        accepted{0};
+    std::atomic<long>        refused{0};
+    std::vector<std::thread> senders;
+    for (int s = 0; s < kSenders; ++s)
+    {
+        senders.emplace_back([&ports, &done, &accepted, &refused, s] {
+            const auto note = NoteOn(s);
+            while (!done.load())
+            {
+                (ports.Send(7, s, note.data(), 3) ? accepted : refused).fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+    long landed_late = 0;
+    for (int round = 0; round < 3000; ++round)
+    {
+        auto queue = std::make_unique<MidiOutputQueue>();
+        ports.Publish(7, *queue);
+        std::this_thread::yield();
+        ports.Withdraw(7);
+        MidiOutputMessage message;
+        while (queue->TryPop(message))
+        {
+        }
+        std::this_thread::yield();
+        if (queue->TryPop(message))
+        {
+            ++landed_late;
+        }
+    }
+    done.store(true);
+    for (std::thread &sender : senders)
+    {
+        sender.join();
+    }
+    EXPECT_EQ(landed_late, 0) << "a Send reached a queue after its Withdraw returned";
+    EXPECT_GT(accepted.load(), 0);
+    EXPECT_GT(refused.load(), 0);
+}
+
+TEST(MidiOutputSenders, HandOnInTheOrderOfTheTimesNotTheOrderSent)
+{
+    KeptStream       stream;
+    MidiOutputSender sender(0);
+    sender.Start({&stream});
+    const std::int64_t start = NowNanoseconds() + 30'000'000;
+    // Sent latest first, in two threads' worth of interleaving: 40 messages over 40 ms, and two of one time.
+    std::vector<int> order(40);
+    for (int i = 0; i < 40; ++i)
+    {
+        order[static_cast<std::size_t>(i)] = 39 - i;
+    }
+    for (const int i : order)
+    {
+        const auto        note = NoteOn(i);
+        MidiOutputMessage message;
+        message.time  = start + static_cast<std::int64_t>(i) * 1'000'000;
+        message.bytes = note;
+        message.size  = 3;
+        ASSERT_TRUE(stream.queue().TryPush(message));
+    }
+    MidiOutputMessage tie;
+    tie.time  = start + 20'000'000;
+    tie.bytes = {0x80, 20, 0}; // a note off of key 20, sent after key 20's note on, for the same time
+    tie.size  = 3;
+    ASSERT_TRUE(stream.queue().TryPush(tie));
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (stream.count() < 41 && std::chrono::steady_clock::now() < until)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    sender.Stop();
+    const auto &delivered = stream.delivered();
+    ASSERT_EQ(delivered.size(), 41u);
+    std::int64_t worst = 0;
+    for (std::size_t i = 0; i < delivered.size(); ++i)
+    {
+        const auto &[message, at] = delivered[i];
+        if (i > 0)
+        {
+            EXPECT_GE(message.time, delivered[i - 1].first.time) << "out of the order of the times at " << i;
+        }
+        EXPECT_GE(at, message.time) << "handed on before its time, with no lead";
+        worst = std::max(worst, at - message.time);
+    }
+    EXPECT_EQ(delivered[20].first.bytes[0], 0x90);
+    EXPECT_EQ(delivered[21].first.bytes[0], 0x80) << "of one time, in the order sent";
+    std::printf("handed on at most %.3f ms after its time (an ordinary thread's sleep)\n",
+                static_cast<double>(worst) * 1e-6);
+}
+
+TEST(MidiOutputSenders, HandOnNothingOnceStopReturns)
+{
+    // A thread keeps the queue fed with messages due at once, so the sender is always delivering; Stop, then the test
+    // says stopped, and nothing more may reach Deliver.
+    for (int round = 0; round < 50; ++round)
+    {
+        KeptStream        stream;
+        MidiOutputSender  sender(0);
+        std::atomic<bool> done{false};
+        sender.Start({&stream});
+        std::thread feeder([&stream, &done] {
+            MidiOutputMessage message;
+            message.bytes = NoteOn(1);
+            message.size  = 3;
+            while (!done.load())
+            {
+                message.time = NowNanoseconds();
+                if (!stream.queue().TryPush(message))
+                {
+                    std::this_thread::yield();
+                }
+            }
+        });
+        while (stream.count() < 10)
+        {
+            std::this_thread::yield();
+        }
+        sender.Stop();
+        stream.SayStopped();
+        const long at_stop = stream.count();
+        std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        done.store(true);
+        feeder.join();
+        ASSERT_EQ(stream.after_stop(), 0) << "round " << round;
+        ASSERT_EQ(stream.count(), at_stop) << "round " << round;
+        EXPECT_FALSE(sender.running());
+    }
+}
+
+TEST(OfflineMidiOutputs, RecordWhatTheyAreSentInTheOrderOfTheTimes)
+{
+    OfflineMidiSystem midi({"Keys"}, {"Synth", "Drums"});
+    EXPECT_EQ(midi.Outputs(), (std::vector<std::string>{"Synth", "Drums"}));
+    EXPECT_FALSE(midi.OpenOutput("Nowhere", 0));
+    EXPECT_NE(midi.LastError().find("Nowhere"), std::string::npos) << midi.LastError();
+    EXPECT_FALSE(midi.OpenOutput("Synth", kMidiOutputPorts)) << "out of range";
+    EXPECT_FALSE(midi.OpenOutput("Synth", -1));
+    const auto note = NoteOn(60);
+    EXPECT_FALSE(midi.Send(0, 0, note.data(), 3)) << "not open";
+
+    ASSERT_TRUE(midi.OpenOutput("Synth", 0));
+    ASSERT_TRUE(midi.OpenOutput("Drums", 9));
+    EXPECT_EQ(midi.open_output_count(), 2);
+    const std::uint8_t later[]   = {0x90, 62, 90};
+    const std::uint8_t earlier[] = {0x99, 36, 127};
+    const std::uint8_t off[]     = {0x80, 62, 0};
+    const std::uint8_t clock[]   = {0xF8};
+    EXPECT_TRUE(midi.Send(0, 3000, later, 3));
+    EXPECT_TRUE(midi.Send(9, 1000, earlier, 3));
+    EXPECT_TRUE(midi.Send(0, 3000, off, 3));
+    EXPECT_TRUE(midi.Send(0, 2000, clock, 1));
+    EXPECT_FALSE(midi.Send(0, 2500, later, 2)) << "refused, and not recorded";
+    const std::uint8_t sysex[] = {0xF0, 0x7D, 0xF7};
+    EXPECT_FALSE(midi.Send(0, 2500, sysex, 3));
+
+    const auto &sent = midi.Sent();
+    ASSERT_EQ(sent.size(), 4u);
+    EXPECT_EQ(sent[0].port, 9);
+    EXPECT_EQ(sent[0].time, 1000);
+    EXPECT_EQ(sent[0].bytes, (std::vector<std::uint8_t>{0x99, 36, 127}));
+    EXPECT_EQ(sent[1].bytes, (std::vector<std::uint8_t>{0xF8}));
+    EXPECT_EQ(sent[2].bytes, (std::vector<std::uint8_t>{0x90, 62, 90}));
+    EXPECT_EQ(sent[3].bytes, (std::vector<std::uint8_t>{0x80, 62, 0})) << "of one time, in the order sent";
+    EXPECT_EQ(sent[3].port, 0);
+
+    EXPECT_TRUE(midi.Send(0, 500, clock, 1));
+    EXPECT_EQ(midi.Sent().size(), 5u) << "the record grows";
+    EXPECT_EQ(midi.Sent()[0].time, 500);
+    midi.ClearSent();
+    EXPECT_TRUE(midi.Sent().empty());
+
+    ASSERT_TRUE(midi.OpenOutput("Drums", 0)) << "a port reopened onto another output";
+    EXPECT_TRUE(midi.Send(0, 10, clock, 1));
+    midi.CloseAll();
+    EXPECT_EQ(midi.open_output_count(), 0);
+    EXPECT_FALSE(midi.Send(0, 20, clock, 1)) << "closed";
+    EXPECT_FALSE(midi.Send(9, 20, clock, 1));
+    ASSERT_EQ(midi.Sent().size(), 1u) << "what was accepted before the close is kept";
+    EXPECT_EQ(midi.Sent()[0].time, 10);
+}
+
+TEST(OfflineMidiOutputs, TakeSendsFromManyThreadsRacingCloseAll)
+{
+    // Threads send to two ports without pause while the owner opens and closes everything again and again: no Send
+    // crashes or lands after CloseAll returns, and every message recorded is one that was sent.
+    constexpr int            kSenders = 4;
+    OfflineMidiSystem        midi({}, {"A", "B"});
+    std::atomic<bool>        done{false};
+    std::vector<std::thread> senders;
+    for (int s = 0; s < kSenders; ++s)
+    {
+        senders.emplace_back([&midi, &done, s] {
+            const auto note = NoteOn(s);
+            while (!done.load())
+            {
+                midi.Send(s % 2, NowNanoseconds(), note.data(), 3);
+            }
+        });
+    }
+    long recorded = 0;
+    for (int round = 0; round < 2000; ++round)
+    {
+        ASSERT_TRUE(midi.OpenOutput("A", 0));
+        ASSERT_TRUE(midi.OpenOutput("B", 1));
+        std::this_thread::yield();
+        midi.CloseAll();
+        const std::size_t closed = midi.Sent().size();
+        std::this_thread::yield();
+        ASSERT_EQ(midi.Sent().size(), closed) << "a message landed after CloseAll returned";
+        for (const auto &message : midi.Sent())
+        {
+            ASSERT_EQ(message.bytes.size(), 3u);
+            ASSERT_LT(message.bytes[1], kSenders);
+        }
+        recorded += static_cast<long>(closed);
+        midi.ClearSent();
+    }
+    done.store(true);
+    for (std::thread &sender : senders)
+    {
+        sender.join();
+    }
+    std::printf("%ld messages recorded over 2000 opens and closes\n", recorded);
 }
