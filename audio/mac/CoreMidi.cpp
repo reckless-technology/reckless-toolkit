@@ -1,5 +1,5 @@
-// MIDI input on CoreMIDI (CoreMidi.h says what it does and why): the one translation unit that meets CoreMIDI. Its
-// headers bring the Carbon types into the global namespace, so nothing here names its own the same.
+// MIDI input and output on CoreMIDI (CoreMidi.h says what it does and why): the one translation unit that meets
+// CoreMIDI. Its headers bring the Carbon types into the global namespace, so nothing here names its own the same.
 #include "CoreMidi.h"
 
 #include <algorithm>
@@ -15,8 +15,11 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreMIDI/CoreMIDI.h>
+#include <mach/mach_time.h>
 
 #include "CoreMidiFormats.h"
+#include "MidiOutputPorts.h"
+#include "MidiOutputSender.h"
 
 namespace reckless::audio
 {
@@ -97,11 +100,11 @@ std::string EndpointName(MIDIEndpointRef endpoint, bool is_external)
     return coremidi::EndpointName(parts, is_external);
 }
 
-/** A source's name as RtMidi listed it: the names of the external endpoints it is connected to, joined; else its own
-    endpoint's (coremidi::JoinConnected).
-    @param source  the source
+/** An endpoint's name as RtMidi listed it, a source's or a destination's: the names of the external endpoints it is
+    connected to, joined; else its own endpoint's (coremidi::JoinConnected).
+    @param source  the source or destination
     @return        the name */
-std::string SourceName(MIDIEndpointRef source)
+std::string ListedName(MIDIEndpointRef source)
 {
     std::vector<std::string> connected;
     CFDataRef                connections = nullptr;
@@ -141,15 +144,71 @@ std::vector<std::pair<MIDIEndpointRef, std::string>> Sources()
         const MIDIEndpointRef source = MIDIGetSource(i);
         if (source != 0)
         {
-            sources.emplace_back(source, SourceName(source));
+            sources.emplace_back(source, ListedName(source));
         }
     }
     return sources;
 }
 
-/** CoreMIDI's sources as a MidiSystem: one client, an input port of its own for each source opened, each port's
-    events handed by CoreMIDI's receive block to the sink. Message thread throughout but for Received, which the receive
-    blocks run. */
+/** CoreMIDI's destinations now, as RtMidi listed them, CoreMIDI's notifications let in first so a destination plugged
+    in since is there.
+    @return  each destination and its name, in CoreMIDI's order */
+std::vector<std::pair<MIDIEndpointRef, std::string>> Destinations()
+{
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0, false);
+    std::vector<std::pair<MIDIEndpointRef, std::string>> destinations;
+    const ItemCount                                      count = MIDIGetNumberOfDestinations();
+    for (ItemCount i = 0; i < count; ++i)
+    {
+        const MIDIEndpointRef destination = MIDIGetDestination(i);
+        if (destination != 0)
+        {
+            destinations.emplace_back(destination, ListedName(destination));
+        }
+    }
+    return destinations;
+}
+
+/** How far ahead of its time the sender hands a message to CoreMIDI, stamped with that time, which CoreMIDI's own
+    scheduler sends it at: far enough that an ordinary thread's late wake does not make a message late, near enough
+    that little is scheduled when an output closes, which unschedules it. */
+constexpr std::int64_t kCoreMidiLeadNanoseconds = 20'000'000;
+
+/** One output open on CoreMIDI: an output port of ours and the destination it sends to. Its sender hands it each
+    message a lead ahead of its time, and Deliver sends it as one Universal MIDI Packet stamped with that time in host
+    ticks, so CoreMIDI's scheduler - not the sender's wake - decides when it leaves. */
+class CoreMidiOutput final : public MidiOutputStream
+{
+  public:
+    int                       index{0};       ///< the port number Send names it by
+    MIDIPortRef               port{0};        ///< our output port; 0 once shut
+    MIDIEndpointRef           destination{0}; ///< where it sends
+    mach_timebase_info_data_t timebase{};     ///< host ticks to nanoseconds, read at the open
+
+  protected:
+    bool Deliver(const MidiOutputMessage &message) noexcept override
+    {
+        const std::int64_t  now      = NowNanoseconds();
+        const std::uint64_t host_now = mach_absolute_time();
+        // CoreMIDI's scheduler sends each packet at its stamp, so a message handed on after one of a later time still
+        // leaves first; one sent for a time past is stamped now.
+        const std::uint64_t stamp = coremidi::HostTimeAt(message.time, now, host_now, timebase.numer, timebase.denom);
+        const std::uint32_t word  = coremidi::Midi1Packet(message.bytes.data(), message.size);
+        MIDIEventList       list{};
+        MIDIEventPacket    *packet = MIDIEventListInit(&list, kMIDIProtocol_1_0);
+        packet                     = MIDIEventListAdd(&list, sizeof list, packet, stamp, 1, &word);
+        if (packet != nullptr)
+        {
+            MIDISendEventList(port, destination, &list);
+        }
+        return true; // an error CoreMIDI reports is a destination gone, whose messages go nowhere
+    }
+};
+
+/** CoreMIDI's sources and destinations as a MidiSystem: one client, an input port of its own for each source opened,
+    each port's events handed by CoreMIDI's receive block to the sink, and an output port of its own for each
+    destination opened, fed by the sender. Message thread throughout but for Received, which the receive blocks run,
+    the sender's Deliver, and Send. */
 class CoreMidiSystem final : public MidiSystem
 {
   public:
@@ -222,18 +281,59 @@ class CoreMidiSystem final : public MidiSystem
 
     std::vector<std::string> Outputs() override
     {
-        return {};
+        std::vector<std::string> names;
+        for (auto &destination : Destinations())
+        {
+            names.push_back(std::move(destination.second));
+        }
+        return names;
     }
 
-    bool OpenOutput(const std::string &name, int) override
+    bool OpenOutput(const std::string &name, int port) override
     {
-        Keep("no MIDI output named '" + name + "': this back end sends no MIDI yet");
-        return false;
+        if (!MidiOutputPorts::IsPortNumber(port))
+        {
+            Keep("the MIDI output '" + name + "' cannot be port " + std::to_string(port) + ": ports are 0 to " +
+                 std::to_string(kMidiOutputPorts - 1));
+            return false;
+        }
+        if (!Connect())
+        {
+            return false;
+        }
+        const auto            destinations = Destinations();
+        const MIDIEndpointRef destination  = Find(destinations, name);
+        if (destination == 0)
+        {
+            Keep("no MIDI output named '" + name + "'");
+            return false;
+        }
+        ports_.Withdraw(port);
+        sender_.Stop();
+        CloseOutput(port);
+        auto output         = std::make_unique<CoreMidiOutput>();
+        output->index       = port;
+        output->destination = destination;
+        mach_timebase_info(&output->timebase);
+        CFStringRef    label  = MakeString(client_name_ + " MIDI out");
+        const OSStatus result = MIDIOutputPortCreate(client_, label, &output->port);
+        CFRelease(label);
+        if (result != noErr || output->timebase.numer == 0 || output->timebase.denom == 0)
+        {
+            ShutOutput(*output);
+            StartSender();
+            Keep("the MIDI output '" + name + "' would not open: CoreMIDI error " + std::to_string(result));
+            return false;
+        }
+        ports_.Publish(port, output->queue());
+        outputs_.push_back(std::move(output));
+        StartSender();
+        return true;
     }
 
-    bool Send(int, std::int64_t, const std::uint8_t *, int) noexcept override
+    bool Send(int port, std::int64_t time_nanoseconds, const std::uint8_t *bytes, int size) noexcept override
     {
-        return false;
+        return ports_.Send(port, time_nanoseconds, bytes, size);
     }
 
     void CloseAll() override
@@ -243,6 +343,16 @@ class CoreMidiSystem final : public MidiSystem
             Shut(*input);
         }
         inputs_.clear();
+        for (const std::unique_ptr<CoreMidiOutput> &output : outputs_)
+        {
+            ports_.Withdraw(output->index);
+        }
+        sender_.Stop();
+        for (const std::unique_ptr<CoreMidiOutput> &output : outputs_)
+        {
+            ShutOutput(*output);
+        }
+        outputs_.clear();
     }
 
     std::string LastError() const override
@@ -363,6 +473,45 @@ class CoreMidiSystem final : public MidiSystem
         in_flight_.fetch_sub(1);
     }
 
+    /** An output shut, the sender stopped already: what it had handed CoreMIDI ahead of its time unscheduled, its port
+        disposed of, and what it still held dropped.
+        @param output  the output */
+    static void ShutOutput(CoreMidiOutput &output) noexcept
+    {
+        if (output.port != 0)
+        {
+            MIDIFlushOutput(output.destination);
+            MIDIPortDispose(output.port);
+            output.port = 0;
+        }
+        output.Drop();
+    }
+
+    /** The output open as `port` closed, if there is one; withdrawn from Send and the sender stopped already.
+        @param port  the port */
+    void CloseOutput(int port)
+    {
+        const auto at =
+            std::find_if(outputs_.begin(), outputs_.end(),
+                         [port](const std::unique_ptr<CoreMidiOutput> &output) { return output->index == port; });
+        if (at != outputs_.end())
+        {
+            ShutOutput(**at);
+            outputs_.erase(at);
+        }
+    }
+
+    /** The sender started on every open output, where there is one. */
+    void StartSender()
+    {
+        std::vector<MidiOutputStream *> streams;
+        for (const std::unique_ptr<CoreMidiOutput> &output : outputs_)
+        {
+            streams.push_back(output.get());
+        }
+        sender_.Start(std::move(streams));
+    }
+
     /** `text` kept for LastError.
         @param text  the error's text */
     void Keep(const std::string &text)
@@ -371,12 +520,15 @@ class CoreMidiSystem final : public MidiSystem
         error_ = text;
     }
 
-    std::string                         client_name_;  ///< the name its client and ports carry
-    MIDIClientRef                       client_{0};    ///< the client, made on first use; 0 for none
-    std::vector<std::unique_ptr<Input>> inputs_;       ///< the open inputs
-    std::atomic<int>                    in_flight_{0}; ///< receive blocks under way
-    mutable std::mutex                  error_mutex_;  ///< guards `error_`
-    std::string                         error_;        ///< the last error, for a person to read
+    std::string                                  client_name_;  ///< the name its client and ports carry
+    MIDIClientRef                                client_{0};    ///< the client, made on first use; 0 for none
+    std::vector<std::unique_ptr<Input>>          inputs_;       ///< the open inputs
+    std::atomic<int>                             in_flight_{0}; ///< receive blocks under way
+    mutable std::mutex                           error_mutex_;  ///< guards `error_`
+    std::string                                  error_;        ///< the last error, for a person to read
+    std::vector<std::unique_ptr<CoreMidiOutput>> outputs_; ///< the open outputs; changed only with the sender stopped
+    MidiOutputPorts                              ports_;   ///< the open outputs' queues, as Send finds them
+    MidiOutputSender sender_{kCoreMidiLeadNanoseconds};    ///< hands the outputs' messages to CoreMIDI
 };
 
 /** The machine's MIDI inputs on CoreMIDI.
