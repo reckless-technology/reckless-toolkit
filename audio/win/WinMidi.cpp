@@ -107,6 +107,7 @@ class WinMidiOutput final : public MidiOutputStream
 class WinMidiSender final : public MidiOutputSender
 {
   public:
+    /** A sender not yet started, its timer and its event made: a high-resolution timer where Windows has one. */
     WinMidiSender()
         : MidiOutputSender(0),
           timer_(CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS)),

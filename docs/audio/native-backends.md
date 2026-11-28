@@ -227,8 +227,9 @@ on this machine, identical - and also finds a name whose client and port numbers
 do when it is plugged in again. A Linux build without ALSA's headers has no MIDI inputs at all, as it has no audio
 devices.
 
-Nothing above the seam has to change: `AudioDevice.h`'s `AudioSystem` (nine pure virtuals) and `MidiSystem` (four)
-were already written against no library, and no test names a back end.
+Nothing above the seam has to change: `AudioDevice.h`'s `AudioSystem` (nine pure virtuals) and `MidiSystem` (four
+then, seven since it sends as well: "MIDI output" below) were already written against no library, and no test names a
+back end.
 
 ## The latency, each side apart
 
@@ -335,6 +336,44 @@ Mac (see the pull request that added this).
 The machine's cores - which logical processors share a core, which are performance and which efficiency - and the
 pinning of the calling thread to one are in `core/CpuTopology.h`, documented in [../core/cpu-topology.md](../core/cpu-topology.md).
 
+## MIDI output
+
+Decided and built on 2026-11-28 (issue #102): `MidiSystem` sends as well as receives, on all three platforms.
+
+**The interface** (`audio/AudioDevice.h`). `Outputs()` lists the outputs by name, as `Inputs()` lists the inputs, and
+`OpenOutput(name, port)` opens one as a port number from 0 to `kMidiOutputPorts - 1` (63), finding the name as `Open`
+finds an input's; several are open at once. `Send(port, time_nanoseconds, bytes, size)` queues one message to leave
+at that time on `NowNanoseconds()`'s clock, or at once if the time has passed, and returns false when the port is not
+open, its queue is full, or the message is not one whole channel message or system real-time message of the length its
+status asks (`IsSendableMidiMessage`). **System exclusive is not sent**, nor running status, nor the system common
+messages. `CloseAll()` closes the outputs too, and nothing is sent after it returns: what was queued and not yet sent
+is dropped, what a back end had handed its platform ahead of the time with it, and the sender has stopped. `Send` is
+for any thread, an audio callback among them, and for several at once on one port; the rest is the owner's thread's. A
+device that goes away is not reported, as it is not for an input.
+
+**The queue** (`audio/MidiOutputQueue.h`): one per open output, bounded at 4,096 messages
+(`kMidiOutputQueueCapacity`), many producers and one consumer, fixed-size messages (a time, three bytes, a length).
+**A producer is wait-free**: a reservation counter apart from the ticket counter means one that finds the queue full
+gives its reservation back without taking a ticket - so the consumer never meets a hole - and one that reserves always
+finds its ticket's slot already free, so it never waits for the consumer. A slot's sequence number is published only
+after its message is written, so the consumer never reads a half-written one. The header carries both arguments. Send
+finds a port's queue in a fixed table (`audio/MidiOutputPorts.h`) whose epoch and two counters let `CloseAll` withdraw
+a queue and know no `Send` still holds it, with no lock on `Send`'s side: a `Send` racing a close returns false or has
+its message dropped, and never touches a closed output.
+
+**The sender** (`audio/MidiOutputSender.h`): one ordinary thread per system, never a realtime one, serving every open
+output. It moves each queue into that output's schedule - a heap on its own memory, earliest first and ties in the order
+queued, so two messages one thread sent for one time leave in the order it sent them - and hands each message on when
+it is due, or a lead ahead where the platform schedules by time. A `Send` cannot wake it (that would be a system call),
+so it looks at its queues at least every millisecond (`kMidiSenderPollNanoseconds`): a message sent for a time already
+past, or nearer than the lead, leaves up to that much late.
+
+| Platform | How a message leaves | Its timing |
+|---|---|---|
+| Linux | The ALSA sequencer: a port of ours on a client of its own, subscribed to by the output, with a sequencer queue of its own. The sender hands each message on 20 ms ahead, scheduled on that queue in real time, and **the kernel's timer sends it**. The queue's zero is measured against the steady clock once, at the open; its timer ticks at 4 kHz. Closing frees the queue and every event on it. | Measured through the sequencer's own loop on an x86-64 desktop (Linux 7.0, the high-resolution timer), 2026-11-28, 30 runs of 32 stamped messages: a median of 215 us after its time, at worst 369 us; one sent for a time past, at worst 1.33 ms. The two clocks moved 0.7 to 2.6 us apart over a minute. At the sequencer's default 1 kHz tick a message left up to a millisecond late, which is why the queue's timer is set finer. |
+| macOS | CoreMIDI: an output port of ours to the destination. The sender hands each message on 20 ms ahead as one Universal MIDI Packet on MIDI 1.0's protocol (`MIDISendEventList`), stamped with its time in host ticks, and **CoreMIDI's scheduler sends it**. The steady clock and `mach_absolute_time` are read together at each message and only the distance between them is converted (`coremidi::HostTimeAt`). Closing unschedules what was handed on (`MIDIFlushOutput`) before the port goes. | Not yet measured: written on Linux, held by CI's macOS job (`MidiOutputs.LeaveThroughCoreMidi...`, on a virtual destination of the suite's own). |
+| Windows | WinMM, whose short messages carry no time: **the sender sleeps until each message is due** on a high-resolution waitable timer (`CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`), or on an ordinary one with the multimedia timer's period held at a millisecond while an output is open, and sends it then (`midiOutShortMsg`). Closing closes WinMM's handle and sends no note off. | Not yet measured: no CI runner has a MIDI output to send to, so only the arithmetic and the refusals are tested there. |
+
 ## Why neither library
 
 The goals were a clean low-cost abstraction, the lowest latency on all three platforms, as much control over buffer
@@ -399,5 +438,5 @@ settings file reads as "Windows Audio" (`AudioSettings.h`), and asking for it by
 
 ## Open, not yet decided
 
-- Whether MIDI keeps to input only. `MidiSystem` has no outputs, and the suite has a `sequence` plugin that might
-  one day want them; adding them later changes the interface and all three implementations.
+- Nothing at present. Whether MIDI kept to input only was decided on 2026-11-28: it does not ("MIDI output",
+  above).
