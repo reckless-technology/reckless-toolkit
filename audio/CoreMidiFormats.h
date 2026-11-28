@@ -8,9 +8,9 @@ namespace reckless::audio::coremidi
 {
 /**
     The arithmetic of the suite's CoreMIDI back end (mac/CoreMidi.cpp) that needs no Mac to hold: a source's name as
-    RtMidi composed it from its endpoint, entity and device, and the MIDI 1.0 messages in the Universal MIDI Packets
-    CoreMIDI hands a port over. Header only and platform-neutral, so the audio suite holds it on every platform
-    (tests/test_core_midi_formats.cpp).
+    RtMidi composed it from its endpoint, entity and device, the MIDI 1.0 messages in the Universal MIDI Packets
+    CoreMIDI hands a port over, and for output the packet that carries a message and the host time it is stamped with.
+   Header only and platform-neutral, so the audio suite holds it on every platform (tests/test_core_midi_formats.cpp).
 */
 
 /** What an endpoint's name is composed of: its own name, and its entity's and device's where it has them. */
@@ -133,5 +133,48 @@ inline int Midi1Message(std::uint32_t first, std::uint8_t bytes[3]) noexcept
     bytes[1] = static_cast<std::uint8_t>((first >> 8) & 0x7F);
     bytes[2] = static_cast<std::uint8_t>(first & 0x7F);
     return length;
+}
+
+/** The Universal MIDI Packet that carries one MIDI 1.0 message on group 0, for MIDISendEventList on MIDI 1.0's
+    protocol: message type 2 for a channel voice message, type 1 for a system one, then the group, the status and the
+    two data bytes, a byte the message lacks as zero. The message is one MidiSystem::Send takes.
+    @param bytes  the message's bytes, the status first
+    @param size   its length, 1 to 3
+    @return       the packet's one word */
+constexpr std::uint32_t Midi1Packet(const std::uint8_t *bytes, int size) noexcept
+{
+    const std::uint32_t type = bytes[0] >= 0xF0 ? 1U : 2U;
+    std::uint32_t       word = (type << 28) | (static_cast<std::uint32_t>(bytes[0]) << 16);
+    if (size > 1)
+    {
+        word |= static_cast<std::uint32_t>(bytes[1]) << 8;
+    }
+    if (size > 2)
+    {
+        word |= static_cast<std::uint32_t>(bytes[2]);
+    }
+    return word;
+}
+
+/** A time on NowNanoseconds' clock as CoreMIDI's host time, the clock a packet's timestamp is on: the two clocks read
+    together (`now` and `host_now`), and the time's distance ahead of `now` turned into host ticks -
+   mach_timebase_info's ratio, nanoseconds = ticks * numerator / denominator, the other way up. Only the distance is
+   converted, and it is short (the sender's lead), so the two clocks' rates never part enough to matter. A time already
+   past is `host_now`: send at once.
+    @param time         when the message is to leave, in nanoseconds on NowNanoseconds' clock
+    @param now          NowNanoseconds' clock, read with `host_now`
+    @param host_now     mach_absolute_time(), read with `now`
+    @param numerator    mach_timebase_info's numer, at least 1
+    @param denominator  mach_timebase_info's denom, at least 1
+    @return             the host time to stamp the packet with */
+constexpr std::uint64_t HostTimeAt(std::int64_t time, std::int64_t now, std::uint64_t host_now, std::uint32_t numerator,
+                                   std::uint32_t denominator) noexcept
+{
+    if (time <= now || numerator == 0)
+    {
+        return host_now;
+    }
+    const auto ahead = static_cast<std::uint64_t>(time - now);
+    return host_now + ahead / numerator * denominator + ahead % numerator * denominator / numerator;
 }
 } // namespace reckless::audio::coremidi

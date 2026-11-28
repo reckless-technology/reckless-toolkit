@@ -5,7 +5,8 @@
 // the samples a loop carries back (bit for bit through ALSA's loopback card and a JACK client wired to itself,
 // correlated through WASAPI's loopback capture, the ASIO test driver's own sine and sawtooth exactly), an xrun the
 // device reports, and a device that is not there; and on Linux, MIDI from a sequencer port of the test's own through
-// ALSA's sequencer back end, and MIDI out to one, each message read back against the time it was sent for. Each API's
+// ALSA's sequencer back end, and MIDI out to one, each message read back against the time it was sent for; on macOS,
+// the same both ways through a CoreMIDI source and destination of the test's own. Each API's
 // test device is deterministic and set up by the suite or the CI job (devices/DeviceRig.h says which); the tables each
 // test judges are printed. The harness is devices/DeviceSuite.h, which a consumer's suite of an engine playing through
 // the same devices shares.
@@ -1212,6 +1213,118 @@ TEST(MidiInputs, CarryWhatASequencerPortSendsButWhatTheCoresIgnore)
 }
 #endif
 
+#if defined(RECKLESS_AUDIO_TEST_ALSA_SEQ) || defined(__APPLE__)
+namespace
+{
+/** What an output open as `port` on `midi` sends, read back by `arrived` as the test's own destination receives it:
+    thirty messages sent latest first for times ahead, two for one time and one for a time already past, each judged
+    against the time it was sent for; then messages for later and the output closed before their time, none of which
+    may arrive after CloseAll returns.
+    @param midi     the system, `port` open on it
+    @param port     the port the test's destination was opened as
+    @param arrived  what the destination receives, each message with the time it left
+    @param api      the API's name, for the tables */
+void SendAndReadBack(reckless::audio::MidiSystem &midi, int port, Collected &arrived, const std::string &api)
+{
+    const std::uint8_t note[] = {0x90, 60, 100};
+    // Thirty messages 7 ms apart from 60 ms ahead, sent latest first; a note off sent after a note on for one time;
+    // one message for a time already past.
+    constexpr int                                                   kAhead = 30;
+    const std::int64_t                                              first  = NowNanoseconds() + 60'000'000;
+    std::vector<std::pair<std::int64_t, std::vector<std::uint8_t>>> want;
+    for (int i = kAhead - 1; i >= 0; --i)
+    {
+        const std::int64_t time    = first + static_cast<std::int64_t>(i) * 7'000'000;
+        const std::uint8_t bytes[] = {static_cast<std::uint8_t>(0x90 | (i % 16)), static_cast<std::uint8_t>(30 + i),
+                                      100};
+        ASSERT_TRUE(midi.Send(port, time, bytes, 3)) << i;
+        want.emplace_back(time, std::vector<std::uint8_t>(bytes, bytes + 3));
+    }
+    const std::int64_t tie       = first + 100'000'000;
+    const std::uint8_t tie_on[]  = {0x92, 90, 64};
+    const std::uint8_t tie_off[] = {0x82, 90, 0};
+    ASSERT_TRUE(midi.Send(port, tie, tie_on, 3));
+    ASSERT_TRUE(midi.Send(port, tie, tie_off, 3));
+    want.emplace_back(tie, std::vector<std::uint8_t>(tie_on, tie_on + 3));
+    want.emplace_back(tie, std::vector<std::uint8_t>(tie_off, tie_off + 3));
+    const std::uint8_t sysex[] = {0xF0, 0x7D, 0xF7};
+    EXPECT_FALSE(midi.Send(port, tie, sysex, 3)) << "system exclusive is not sent";
+    const std::int64_t past_sent = NowNanoseconds();
+    const std::uint8_t past[]    = {0xB0, 7, 99};
+    ASSERT_TRUE(midi.Send(port, past_sent - 10'000'000, past, 3));
+    want.emplace_back(past_sent, std::vector<std::uint8_t>(past, past + 3)); // due when it was sent
+    std::stable_sort(want.begin(), want.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+
+    const bool came = arrived.AwaitCount(static_cast<int>(want.size()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const int counted = arrived.count();
+
+    // Messages for 80 to 89 ms ahead, and the output closed at 75 ms, once the sender has handed them to the platform
+    // a lead ahead and before their time: none of them arrives once CloseAll has returned.
+    const std::int64_t closing = NowNanoseconds();
+    for (int i = 0; i < 10; ++i)
+    {
+        const std::uint8_t later[] = {0x80, static_cast<std::uint8_t>(i), 0};
+        ASSERT_TRUE(midi.Send(port, closing + 80'000'000 + i * 1'000'000, later, 3));
+    }
+    std::this_thread::sleep_until(
+        std::chrono::steady_clock::time_point(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::nanoseconds(closing + 75'000'000))));
+    midi.CloseAll();
+    const int at_close = arrived.count();
+    EXPECT_FALSE(midi.Send(port, NowNanoseconds(), note, 3)) << "closed";
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    const int after_close = arrived.count() - at_close;
+
+    Table               result(api + ": what left, against its time");
+    std::vector<double> lateness;
+    for (int i = 0; i < std::min(counted, Collected::kMost); ++i)
+    {
+        std::string bytes;
+        for (const std::uint8_t b : arrived.message_at(i))
+        {
+            char hex[4];
+            std::snprintf(hex, sizeof hex, "%02X ", b);
+            bytes += hex;
+        }
+        std::string late = "-";
+        if (i < static_cast<int>(want.size()))
+        {
+            lateness.push_back(static_cast<double>(arrived.time_at(i) - want[static_cast<std::size_t>(i)].first) *
+                               1e-3);
+            late = Fixed(lateness.back(), 1) + " us after its time";
+        }
+        result.Row("message " + Str(i + 1), bytes + late);
+    }
+    std::vector<double> sorted = lateness;
+    std::sort(sorted.begin(), sorted.end());
+    if (!sorted.empty())
+    {
+        result.Row("lateness", "median " + Fixed(sorted[sorted.size() / 2], 1) + " us, earliest " +
+                                   Fixed(sorted.front(), 1) + " us, latest " + Fixed(sorted.back(), 1) + " us");
+    }
+    result.Row("after the output closed", Str(after_close) + " messages").Print();
+
+    ASSERT_TRUE(came) << "the messages did not all arrive";
+    ASSERT_EQ(counted, static_cast<int>(want.size())) << "every message sent, and nothing else";
+    // The one sent for a time already past waits for the sender's next look at its queue, since a Send cannot wake it:
+    // a poll period, then the platform's own scheduling.
+    const double past_bound = static_cast<double>(reckless::audio::kMidiSenderPollNanoseconds) * 1e-3 + 1000.0;
+    for (int i = 0; i < counted; ++i)
+    {
+        EXPECT_EQ(arrived.message_at(i), want[static_cast<std::size_t>(i)].second) << "message " << i + 1;
+        const bool is_past = want[static_cast<std::size_t>(i)].first == past_sent;
+        EXPECT_GE(lateness[static_cast<std::size_t>(i)], -1000.0) << "message " << i + 1 << " left early";
+        EXPECT_LE(lateness[static_cast<std::size_t>(i)], is_past ? past_bound : 1000.0)
+            << "message " << i + 1
+            << (is_past ? ", sent for a time past, did not leave at once"
+                        : " left more than a millisecond after its time");
+    }
+    EXPECT_EQ(after_close, 0) << "a message left after CloseAll";
+}
+} // namespace
+#endif
+
 #if defined(RECKLESS_AUDIO_TEST_ALSA_SEQ)
 namespace
 {
@@ -1374,99 +1487,7 @@ TEST(MidiOutputs, LeaveThroughTheSequencerWithinAMillisecondOfTheirTimesInTheirO
         EXPECT_EQ(input.find("Reckless MIDI test"), std::string::npos) << "the system's own port listed: " << input;
     }
 
-    // Thirty messages 7 ms apart from 60 ms ahead, sent latest first; a note off sent after a note on for one time;
-    // one message for a time already past.
-    constexpr int                                                   kAhead = 30;
-    const std::int64_t                                              first  = NowNanoseconds() + 60'000'000;
-    std::vector<std::pair<std::int64_t, std::vector<std::uint8_t>>> want;
-    for (int i = kAhead - 1; i >= 0; --i)
-    {
-        const std::int64_t time    = first + static_cast<std::int64_t>(i) * 7'000'000;
-        const std::uint8_t bytes[] = {static_cast<std::uint8_t>(0x90 | (i % 16)), static_cast<std::uint8_t>(30 + i),
-                                      100};
-        ASSERT_TRUE(midi->Send(5, time, bytes, 3)) << i;
-        want.emplace_back(time, std::vector<std::uint8_t>(bytes, bytes + 3));
-    }
-    const std::int64_t tie       = first + 100'000'000;
-    const std::uint8_t tie_on[]  = {0x92, 90, 64};
-    const std::uint8_t tie_off[] = {0x82, 90, 0};
-    ASSERT_TRUE(midi->Send(5, tie, tie_on, 3));
-    ASSERT_TRUE(midi->Send(5, tie, tie_off, 3));
-    want.emplace_back(tie, std::vector<std::uint8_t>(tie_on, tie_on + 3));
-    want.emplace_back(tie, std::vector<std::uint8_t>(tie_off, tie_off + 3));
-    const std::uint8_t sysex[] = {0xF0, 0x7D, 0xF7};
-    EXPECT_FALSE(midi->Send(5, tie, sysex, 3)) << "system exclusive is not sent";
-    const std::int64_t past_sent = NowNanoseconds();
-    const std::uint8_t past[]    = {0xB0, 7, 99};
-    ASSERT_TRUE(midi->Send(5, past_sent - 10'000'000, past, 3));
-    want.emplace_back(past_sent, std::vector<std::uint8_t>(past, past + 3)); // due when it was sent
-    std::stable_sort(want.begin(), want.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
-
-    const bool came = arrived.AwaitCount(static_cast<int>(want.size()));
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    const int counted = arrived.count();
-
-    // Messages for 80 to 89 ms ahead, and the output closed at 75 ms, once the sender has handed them to the kernel's
-    // queue a lead ahead and before their time: none of them arrives.
-    const std::int64_t closing = NowNanoseconds();
-    for (int i = 0; i < 10; ++i)
-    {
-        const std::uint8_t later[] = {0x80, static_cast<std::uint8_t>(i), 0};
-        ASSERT_TRUE(midi->Send(5, closing + 80'000'000 + i * 1'000'000, later, 3));
-    }
-    std::this_thread::sleep_until(
-        std::chrono::steady_clock::time_point(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-            std::chrono::nanoseconds(closing + 75'000'000))));
-    midi->CloseAll();
-    EXPECT_FALSE(midi->Send(5, NowNanoseconds(), note, 3)) << "closed";
-    std::this_thread::sleep_for(std::chrono::milliseconds(400));
-    const int after_close = arrived.count() - counted;
-
-    Table               result("ALSA sequencer: what left, against its time");
-    std::vector<double> lateness;
-    for (int i = 0; i < std::min(counted, Collected::kMost); ++i)
-    {
-        std::string bytes;
-        for (const std::uint8_t b : arrived.message_at(i))
-        {
-            char hex[4];
-            std::snprintf(hex, sizeof hex, "%02X ", b);
-            bytes += hex;
-        }
-        std::string late = "-";
-        if (i < static_cast<int>(want.size()))
-        {
-            lateness.push_back(static_cast<double>(arrived.time_at(i) - want[static_cast<std::size_t>(i)].first) *
-                               1e-3);
-            late = Fixed(lateness.back(), 1) + " us after its time";
-        }
-        result.Row("message " + Str(i + 1), bytes + late);
-    }
-    std::vector<double> sorted = lateness;
-    std::sort(sorted.begin(), sorted.end());
-    if (!sorted.empty())
-    {
-        result.Row("lateness", "median " + Fixed(sorted[sorted.size() / 2], 1) + " us, earliest " +
-                                   Fixed(sorted.front(), 1) + " us, latest " + Fixed(sorted.back(), 1) + " us");
-    }
-    result.Row("after the output closed", Str(after_close) + " messages").Print();
-
-    ASSERT_TRUE(came) << "the messages did not all arrive";
-    ASSERT_EQ(counted, static_cast<int>(want.size())) << "every message sent, and nothing else";
-    // The one sent for a time already past waits for the sender's next look at its queue, since a Send cannot wake it:
-    // a poll period, then the kernel's tick.
-    const double past_bound = static_cast<double>(reckless::audio::kMidiSenderPollNanoseconds) * 1e-3 + 1000.0;
-    for (int i = 0; i < counted; ++i)
-    {
-        EXPECT_EQ(arrived.message_at(i), want[static_cast<std::size_t>(i)].second) << "message " << i + 1;
-        const bool is_past = want[static_cast<std::size_t>(i)].first == past_sent;
-        EXPECT_GE(lateness[static_cast<std::size_t>(i)], -1000.0) << "message " << i + 1 << " left early";
-        EXPECT_LE(lateness[static_cast<std::size_t>(i)], is_past ? past_bound : 1000.0)
-            << "message " << i + 1
-            << (is_past ? ", sent for a time past, did not leave at once"
-                        : " left more than a millisecond after its time");
-    }
-    EXPECT_EQ(after_close, 0) << "a message left after CloseAll";
+    SendAndReadBack(*midi, 5, arrived, "ALSA sequencer");
 }
 
 TEST(MidiOutputs, TheSequencersQueueClockKeepsToTheSteadyClock)
@@ -1597,7 +1618,71 @@ TEST(MidiInputs, CarryWhatACoreMidiSourceSendsButWhatTheCoresIgnore)
     EXPECT_EQ(sink.count(), counted) << "a message reached the sink after CloseAll";
     EXPECT_EQ(nothing.count(), 0);
 }
+
+TEST(MidiOutputs, LeaveThroughCoreMidiWithinAMillisecondOfTheirTimesInTheirOrder)
+{
+    // A virtual destination of the test's own on MIDI 1.0's protocol: listed by its name, opened as an output, and sent
+    // stamped messages, each judged by the time it is due at the destination (DeviceRig.h, PrivateMidiDestination).
+    // Only the test's own destination is ever sent to.
+    const std::string                             name = "Reckless test destination";
+    Collected                                     arrived;
+    reckless::audio::test::PrivateMidiDestination destination(name, arrived);
+    if (!destination.made())
+    {
+        if (std::find(RequiredApis().begin(), RequiredApis().end(), "CoreAudio") != RequiredApis().end())
+        {
+            FAIL() << "CoreAudio is required and CoreMIDI would not make a destination: " << destination.why();
+        }
+        GTEST_SKIP() << "CoreMIDI would not make a destination: " << destination.why();
+    }
+    const auto               midi = reckless::audio::MakeMidiSystem("Reckless MIDI test");
+    std::vector<std::string> outputs;
+    for (int i = 0; i < 100 && std::find(outputs.begin(), outputs.end(), name) == outputs.end(); ++i)
+    {
+        outputs = midi->Outputs(); // a destination made is listed at once, but give CoreMIDI its moment
+        if (std::find(outputs.begin(), outputs.end(), name) == outputs.end())
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    }
+    Table table("CoreMIDI: the outputs");
+    for (const std::string &output : outputs)
+    {
+        table.Row(output, "");
+    }
+    table.Print();
+    ASSERT_NE(std::find(outputs.begin(), outputs.end(), name), outputs.end()) << "the test's destination, as " << name;
+    EXPECT_FALSE(midi->OpenOutput("Reckless: no such MIDI output", 0));
+    EXPECT_NE(midi->LastError().find("Reckless: no such MIDI output"), std::string::npos) << midi->LastError();
+    ASSERT_TRUE(midi->OpenOutput(name, 5)) << midi->LastError();
+    SendAndReadBack(*midi, 5, arrived, "CoreMIDI");
+}
 #endif
+
+TEST(MidiOutputs, RefuseANameThatIsNowhereAPortOutOfRangeAndAPortNotOpen)
+{
+    // On every platform's back end, with nothing opened: the outputs listed (never opened), a name that is nowhere
+    // refused with the error naming it, a port number past the table refused, and a Send to a port not open refused.
+    const auto midi = reckless::audio::MakeMidiSystem("Reckless MIDI test");
+    ASSERT_NE(midi, nullptr);
+    Table table("MIDI: the outputs");
+    for (const std::string &output : midi->Outputs())
+    {
+        table.Row(output, "");
+    }
+    table.Print();
+    EXPECT_FALSE(midi->OpenOutput("Reckless: no such MIDI output", 0));
+    EXPECT_NE(midi->LastError().find("Reckless: no such MIDI output"), std::string::npos) << midi->LastError();
+    EXPECT_FALSE(midi->OpenOutput("Reckless: no such MIDI output", reckless::audio::kMidiOutputPorts));
+    EXPECT_FALSE(midi->OpenOutput("Reckless: no such MIDI output", -1));
+    const std::uint8_t note[] = {0x90, 60, 100};
+    for (int port = 0; port < reckless::audio::kMidiOutputPorts; ++port)
+    {
+        EXPECT_FALSE(midi->Send(port, NowNanoseconds(), note, 3)) << "port " << port << " is not open";
+    }
+    EXPECT_FALSE(midi->Send(-1, NowNanoseconds(), note, 3));
+    midi->CloseAll();
+}
 
 TEST(MidiInputs, CarryWhatAPersonPlaysOnAKeyboard)
 {

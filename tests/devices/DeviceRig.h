@@ -279,5 +279,35 @@ class PrivateMidiSource
     std::uint32_t source_{0}; ///< the MIDIEndpointRef; 0 for none
     std::string   why_;
 };
+
+/** A CoreMIDI destination of the test's own (MidiSourceMac.cpp): a virtual destination on MIDI 1.0's protocol, under
+    the name it is made with, listed while the object lives, which hands each MIDI 1.0 message that reaches it to a sink
+    with the time it is due on NowNanoseconds' clock - the later of its arrival and the host time its packet is stamped
+    for, so a message CoreMIDI hands a virtual destination ahead of its stamp is judged by the stamp. */
+class PrivateMidiDestination
+{
+  public:
+    PrivateMidiDestination(const std::string &name, MidiSink &sink);
+    ~PrivateMidiDestination();
+
+    PrivateMidiDestination(const PrivateMidiDestination &)            = delete;
+    PrivateMidiDestination &operator=(const PrivateMidiDestination &) = delete;
+
+    bool made() const noexcept
+    {
+        return destination_ != 0;
+    }
+
+    /** Why none was made. */
+    const std::string &why() const noexcept
+    {
+        return why_;
+    }
+
+  private:
+    std::uint32_t client_{0};      ///< the MIDIClientRef the destination is made on; 0 for none
+    std::uint32_t destination_{0}; ///< the MIDIEndpointRef; 0 for none
+    std::string   why_;
+};
 #endif
 } // namespace reckless::audio::test

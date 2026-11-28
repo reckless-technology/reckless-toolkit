@@ -1,6 +1,7 @@
 // The arithmetic of the suite's CoreMIDI back end (audio/CoreMidiFormats.h), held on every platform: a source's name as
 // RtMidi composed it from its endpoint, entity and device and the external endpoints it is connected to, and the MIDI
-// 1.0 messages among the Universal MIDI Packets CoreMIDI hands a port, with what the cores do not read left out.
+// 1.0 messages among the Universal MIDI Packets CoreMIDI hands a port, with what the cores do not read left out; and
+// for output, the packet a message goes out as and the host time it is stamped with.
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -77,4 +78,41 @@ TEST(CoreMidiFormats, AUniversalPacketCarriesItsMidi1Message)
     EXPECT_EQ(coremidi::UmpWords(0x30037D01u), 2);
     EXPECT_EQ(coremidi::UmpWords(0x40903C00u), 2);
     EXPECT_EQ(coremidi::UmpWords(0x50000000u), 4);
+}
+
+TEST(CoreMidiFormats, AMessageSentGoesOutAsTheUniversalPacketThatCarriesIt)
+{
+    const std::uint8_t note_on[] = {0x93, 60, 100};
+    const std::uint8_t program[] = {0xC1, 5};
+    const std::uint8_t bend[]    = {0xEF, 0x00, 0x40};
+    const std::uint8_t clock[]   = {0xF8};
+    const std::uint8_t stop[]    = {0xFC};
+    EXPECT_EQ(coremidi::Midi1Packet(note_on, 3), 0x20933C64U);
+    EXPECT_EQ(coremidi::Midi1Packet(program, 2), 0x20C10500U);
+    EXPECT_EQ(coremidi::Midi1Packet(bend, 3), 0x20EF0040U);
+    EXPECT_EQ(coremidi::Midi1Packet(clock, 1), 0x10F80000U) << "a system message is type 1";
+    EXPECT_EQ(coremidi::Midi1Packet(stop, 1), 0x10FC0000U);
+    // And read back as the input side reads a packet, the same bytes.
+    std::uint8_t bytes[3] = {};
+    ASSERT_EQ(coremidi::Midi1Message(coremidi::Midi1Packet(note_on, 3), bytes), 3);
+    EXPECT_EQ(bytes[0], 0x93);
+    EXPECT_EQ(bytes[1], 60);
+    EXPECT_EQ(bytes[2], 100);
+    ASSERT_EQ(coremidi::Midi1Message(coremidi::Midi1Packet(program, 2), bytes), 2);
+    EXPECT_EQ(bytes[0], 0xC1);
+    EXPECT_EQ(bytes[1], 5);
+}
+
+TEST(CoreMidiFormats, AMessagesTimeIsStampedInHostTicks)
+{
+    // An Intel Mac's timebase is 1/1 (a tick a nanosecond); Apple silicon's 125/3 (24 MHz ticks).
+    EXPECT_EQ(coremidi::HostTimeAt(1'005'000, 1'000'000, 777, 1, 1), 777U + 5'000U);
+    EXPECT_EQ(coremidi::HostTimeAt(1'000'000 + 20'000'000, 1'000'000, 1'000'000'000, 125, 3), 1'000'000'000U + 480'000U)
+        << "20 ms ahead is 480,000 ticks at 24 MHz";
+    EXPECT_EQ(coremidi::HostTimeAt(1'000'000 + 1'000, 1'000'000, 50, 125, 3), 50U + 24U) << "1 us, rounded down";
+    EXPECT_EQ(coremidi::HostTimeAt(999'999, 1'000'000, 4242, 125, 3), 4242U) << "a time past: at once";
+    EXPECT_EQ(coremidi::HostTimeAt(1'000'000, 1'000'000, 4242, 125, 3), 4242U) << "now: at once";
+    EXPECT_EQ(coremidi::HostTimeAt(0x7FFFFFFFFFFF, 0, 0, 125, 3),
+              0x7FFFFFFFFFFFULL / 125 * 3 + 0x7FFFFFFFFFFFULL % 125 * 3 / 125)
+        << "far ahead without overflowing";
 }
