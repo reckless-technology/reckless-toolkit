@@ -1,14 +1,16 @@
-// MIDI input on ALSA's sequencer (AlsaMidi.h says what it does and why): the one translation unit that meets the
-// sequencer.
+// MIDI input and output on ALSA's sequencer (AlsaMidi.h says what it does and why): the one translation unit that
+// meets the sequencer.
 #include "AlsaMidi.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -21,6 +23,9 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 
+#include "MidiOutputPorts.h"
+#include "MidiOutputSender.h"
+
 namespace reckless::audio
 {
 namespace
@@ -29,18 +34,26 @@ namespace
     out. */
 constexpr std::size_t kMessageBytes = 64;
 
-/** One sequencer port another client offers for reading: where it is, and the name the series lists it under. */
+/** One sequencer port another client offers: where it is, and the name the series lists it under. */
 struct Source
 {
     snd_seq_addr_t address{}; ///< its client and port numbers
     std::string    name;      ///< "<client>:<port> <client number>:<port number>", RtMidi's
 };
 
-/** Every port `seq` can read from and subscribe to that is a MIDI, synth or application port, client by client and
-    port by port, client 0 (the sequencer's own) left out - the ports RtMidi listed, in its order, under its names.
-    @param seq  a sequencer handle
-    @return     the ports */
-std::vector<Source> Sources(snd_seq_t *seq)
+/** What a port offers to be read from (an input of ours) or written to (an output of ours), and subscribed to. */
+constexpr unsigned int kReadable = SND_SEQ_PORT_CAP_READ | SND_SEQ_PORT_CAP_SUBS_READ;
+constexpr unsigned int kWritable = SND_SEQ_PORT_CAP_WRITE | SND_SEQ_PORT_CAP_SUBS_WRITE; ///< see kReadable
+
+/** Every port `seq` can reach with `capabilities` that is a MIDI, synth or application port, client by client and port
+    by port, client 0 (the sequencer's own) and the system's own clients left out - for inputs, the ports RtMidi listed,
+    in its order, under its names; for outputs, the same of the ports that can be written to.
+    @param seq           a sequencer handle
+    @param capabilities  kReadable for the inputs, kWritable for the outputs
+    @param own           the system's own clients, left out; -1 for none
+    @param own_too       another of them; -1 for none
+    @return              the ports */
+std::vector<Source> Sources(snd_seq_t *seq, unsigned int capabilities, int own, int own_too)
 {
     std::vector<Source>    sources;
     snd_seq_client_info_t *client = nullptr;
@@ -51,7 +64,7 @@ std::vector<Source> Sources(snd_seq_t *seq)
     while (snd_seq_query_next_client(seq, client) >= 0)
     {
         const int number = snd_seq_client_info_get_client(client);
-        if (number == 0)
+        if (number == 0 || number == own || number == own_too)
         {
             continue;
         }
@@ -65,8 +78,7 @@ std::vector<Source> Sources(snd_seq_t *seq)
             {
                 continue;
             }
-            constexpr unsigned int kReadable = SND_SEQ_PORT_CAP_READ | SND_SEQ_PORT_CAP_SUBS_READ;
-            if ((snd_seq_port_info_get_capability(port) & kReadable) != kReadable)
+            if ((snd_seq_port_info_get_capability(port) & capabilities) != capabilities)
             {
                 continue;
             }
@@ -136,6 +148,118 @@ const Source *Find(const std::vector<Source> &sources, const std::string &name)
     return nullptr;
 }
 
+/** How far ahead of its time the sender hands a message to the sequencer, which holds it on the output's queue and
+    sends it at its time on the kernel's timer: far enough that an ordinary thread's late wake does not make a message
+    late, near enough that little is in the kernel when an output closes, which drops it. */
+constexpr std::int64_t kSequencerLeadNanoseconds = 20'000'000;
+
+/** A sequencer handle's client number.
+    @param seq  the handle; may be null
+    @return     the client, or -1 for none */
+int ClientOf(snd_seq_t *seq)
+{
+    return seq != nullptr ? snd_seq_client_id(seq) : -1;
+}
+
+/** How often a queue's timer ticks, in hertz: the kernel sends an event at the first tick at or after its time, so this
+    is how late, at most, the kernel's own part makes it. The sequencer's default is 1,000, which puts a message up to
+    a millisecond late; 4,000 puts it up to a quarter, at four thousand of the timer's wakes a second for each output
+    open (the kernel takes at most 6,250). */
+constexpr unsigned int kQueueTicksPerSecond = 4000;
+
+/** A queue's timer set to tick kQueueTicksPerSecond times a second, on the timer the sequencer chose for it. Before the
+    queue starts.
+    @param seq    the handle that owns the queue
+    @param queue  the queue
+    @return       0, or the sequencer's negative error */
+int TickFinely(snd_seq_t *seq, int queue)
+{
+    snd_seq_queue_timer_t *timer = nullptr;
+    snd_seq_queue_timer_alloca(&timer);
+    const int result = snd_seq_get_queue_timer(seq, queue, timer);
+    if (result < 0)
+    {
+        return result;
+    }
+    snd_seq_queue_timer_set_resolution(timer, kQueueTicksPerSecond);
+    return snd_seq_set_queue_timer(seq, queue, timer);
+}
+
+/** Where a queue's real-time clock stands on NowNanoseconds' clock, as the steady clock's reading at the queue's zero,
+    measured once when an output opens. The queue's time is read between two readings of the steady clock, eight times
+    a fifth of a millisecond apart, and the least of the zeros they give is kept: a read now and then finds the queue's
+    time some 50 microseconds behind (an x86-64 desktop, the high-resolution timer, 2026-11-28), which would put the
+    zero late. Measured so against the steady clock over a minute, the two clocks moved apart by 2.6 microseconds,
+    which is why it is measured once and not again while the output is open.
+    @param seq    the handle that owns the queue
+    @param queue  the queue, started
+    @return       the steady clock at the queue's zero, in nanoseconds; 0 when the queue would not say */
+std::int64_t QueueZero(snd_seq_t *seq, int queue)
+{
+    snd_seq_queue_status_t *status = nullptr;
+    snd_seq_queue_status_alloca(&status);
+    std::int64_t zero = std::numeric_limits<std::int64_t>::max();
+    for (int i = 0; i < 8; ++i)
+    {
+        if (i > 0)
+        {
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+        }
+        const std::int64_t before = NowNanoseconds();
+        if (snd_seq_get_queue_status(seq, queue, status) < 0)
+        {
+            continue;
+        }
+        const std::int64_t         after      = NowNanoseconds();
+        const snd_seq_real_time_t *real       = snd_seq_queue_status_get_real_time(status);
+        const std::int64_t         queue_time = static_cast<std::int64_t>(real->tv_sec) * 1'000'000'000 + real->tv_nsec;
+        zero                                  = std::min(zero, before + (after - before) / 2 - queue_time);
+    }
+    return zero == std::numeric_limits<std::int64_t>::max() ? 0 : zero;
+}
+
+/** One output open on the sequencer: a port of ours subscribed to by the output, a queue of its own whose real-time
+    clock the kernel sends the port's events on, and the encoder that turns a message's bytes into an event. Its sender
+    hands it each message a lead ahead of its time, and Deliver schedules it on the queue at that time, so the kernel's
+    timer - not the sender's wake - decides when it leaves. */
+class SequencerOutput final : public MidiOutputStream
+{
+  public:
+    int               index{0};            ///< the port number Send names it by
+    snd_seq_t        *seq{nullptr};        ///< the output client; not owned
+    int               port{-1};            ///< our port, subscribed to by the output; -1 for none
+    int               sequencer_queue{-1}; ///< the sequencer queue its events are scheduled on; -1 for none
+    snd_midi_event_t *coder{nullptr};      ///< the encoder from bytes to events
+    std::int64_t      zero{0};             ///< the steady clock at the queue's zero, in nanoseconds (QueueZero)
+
+  protected:
+    bool Deliver(const MidiOutputMessage &message) noexcept override
+    {
+        snd_seq_event_t event;
+        snd_seq_ev_clear(&event);
+        snd_midi_event_reset_encode(coder);
+        const long used = snd_midi_event_encode(coder, message.bytes.data(), message.size, &event);
+        if (used != message.size || event.type == SND_SEQ_EVENT_NONE)
+        {
+            return true; // a message the encoder will not make an event of; none Send takes
+        }
+        // On the queue's clock; a time already past leaves at once, after any of the queue's still to go.
+        const std::int64_t  stamp = std::max(message.time - zero, std::int64_t{0});
+        snd_seq_real_time_t real;
+        real.tv_sec  = static_cast<unsigned int>(stamp / 1'000'000'000);
+        real.tv_nsec = static_cast<unsigned int>(stamp % 1'000'000'000);
+        snd_seq_ev_set_source(&event, static_cast<unsigned char>(port));
+        snd_seq_ev_set_subs(&event);
+        snd_seq_ev_schedule_real(&event, sequencer_queue, 0, &real);
+        const int result = snd_seq_event_output_direct(seq, &event);
+        if (result == -EAGAIN)
+        {
+            return false; // the client's pool in the kernel is full: offered again on the next round
+        }
+        return true;
+    }
+};
+
 /** ALSA's sequencer as a MidiSystem: a listing client, and an input client whose ports each carry one opened input to
     its sink on the input thread. Message thread throughout but for Run, the input thread. */
 class AlsaMidiSystem final : public MidiSystem
@@ -151,7 +275,7 @@ class AlsaMidiSystem final : public MidiSystem
     ~AlsaMidiSystem() override
     {
         CloseAll();
-        for (snd_seq_t *seq : {listing_, input_})
+        for (snd_seq_t *seq : {listing_, input_, output_})
         {
             if (seq != nullptr)
             {
@@ -174,7 +298,7 @@ class AlsaMidiSystem final : public MidiSystem
         {
             return names;
         }
-        for (Source &source : Sources(listing_))
+        for (Source &source : Sources(listing_, kReadable, ClientOf(output_), -1))
         {
             names.push_back(std::move(source.name));
         }
@@ -187,7 +311,7 @@ class AlsaMidiSystem final : public MidiSystem
         {
             return false;
         }
-        const std::vector<Source> sources = Sources(listing_);
+        const std::vector<Source> sources = Sources(listing_, kReadable, ClientOf(output_), -1);
         const Source             *source  = Find(sources, name);
         if (source == nullptr)
         {
@@ -227,18 +351,89 @@ class AlsaMidiSystem final : public MidiSystem
 
     std::vector<std::string> Outputs() override
     {
-        return {};
+        std::vector<std::string> names;
+        if (!Connect())
+        {
+            return names;
+        }
+        for (Source &destination : Sources(listing_, kWritable, ClientOf(input_), ClientOf(output_)))
+        {
+            names.push_back(std::move(destination.name));
+        }
+        return names;
     }
 
-    bool OpenOutput(const std::string &name, int) override
+    bool OpenOutput(const std::string &name, int port) override
     {
-        Keep("no MIDI output named '" + name + "': this back end sends no MIDI yet");
-        return false;
+        if (!MidiOutputPorts::IsPortNumber(port))
+        {
+            Keep("the MIDI output '" + name + "' cannot be port " + std::to_string(port) + ": ports are 0 to " +
+                 std::to_string(kMidiOutputPorts - 1));
+            return false;
+        }
+        if (!Connect() || !ConnectOutput())
+        {
+            return false;
+        }
+        const std::vector<Source> destinations = Sources(listing_, kWritable, ClientOf(input_), ClientOf(output_));
+        const Source             *destination  = Find(destinations, name);
+        if (destination == nullptr)
+        {
+            Keep("no MIDI output named '" + name + "'");
+            return false;
+        }
+        ports_.Withdraw(port);
+        sender_.Stop();
+        CloseOutput(port);
+        auto output                 = std::make_unique<SequencerOutput>();
+        output->index               = port;
+        output->seq                 = output_;
+        const std::string port_name = client_name_ + " MIDI out";
+        output->port = snd_seq_create_simple_port(output_, port_name.c_str(), kReadable,
+                                                  SND_SEQ_PORT_TYPE_MIDI_GENERIC | SND_SEQ_PORT_TYPE_APPLICATION);
+        int result   = output->port;
+        if (result >= 0)
+        {
+            result = snd_seq_connect_to(output_, output->port, destination->address.client, destination->address.port);
+        }
+        if (result >= 0)
+        {
+            result                  = snd_seq_alloc_queue(output_);
+            output->sequencer_queue = result;
+        }
+        if (result >= 0)
+        {
+            result = TickFinely(output_, output->sequencer_queue);
+        }
+        if (result >= 0)
+        {
+            result = snd_seq_start_queue(output_, output->sequencer_queue, nullptr);
+        }
+        if (result >= 0)
+        {
+            result = snd_seq_drain_output(output_);
+        }
+        if (result >= 0)
+        {
+            result = snd_midi_event_new(kMessageBytes, &output->coder);
+        }
+        if (result < 0)
+        {
+            ReleaseOutput(*output);
+            StartSender();
+            Keep("the MIDI output '" + name + "' would not open: " + snd_strerror(result));
+            return false;
+        }
+        output->zero = QueueZero(output_, output->sequencer_queue);
+        ports_.Publish(port, output->queue());
+        outputs_.push_back(std::move(output));
+        StartSender();
+        return true;
     }
 
-    bool Send(int, std::int64_t, const std::uint8_t *, int) noexcept override
+    bool Send(int port, std::int64_t time_nanoseconds, const std::uint8_t *bytes, int size) noexcept override
     {
-        return false;
+        return ports_.Send(port, time_nanoseconds, bytes, size);
     }
 
     void CloseAll() override
@@ -249,6 +444,16 @@ class AlsaMidiSystem final : public MidiSystem
             Release(input);
         }
         inputs_.clear();
+        for (const std::unique_ptr<SequencerOutput> &output : outputs_)
+        {
+            ports_.Withdraw(output->index);
+        }
+        sender_.Stop();
+        for (const std::unique_ptr<SequencerOutput> &output : outputs_)
+        {
+            ReleaseOutput(*output);
+        }
+        outputs_.clear();
     }
 
     std::string LastError() const override
@@ -332,6 +537,75 @@ class AlsaMidiSystem final : public MidiSystem
             snd_midi_event_free(input.coder);
             input.coder = nullptr;
         }
+    }
+
+    /** The output client, made on first use: apart from the input client, since its handle is the sender's.
+        @return  true when the sequencer answered */
+    bool ConnectOutput()
+    {
+        if (output_ != nullptr)
+        {
+            return true;
+        }
+        snd_seq_t *output = nullptr;
+        const int  result = snd_seq_open(&output, "default", SND_SEQ_OPEN_OUTPUT, SND_SEQ_NONBLOCK);
+        if (result < 0)
+        {
+            Keep(std::string("ALSA's sequencer would not open for output: ") + snd_strerror(result));
+            return false;
+        }
+        snd_seq_set_client_name(output, (client_name_ + " out").c_str());
+        output_ = output;
+        return true;
+    }
+
+    /** The output open as `port` closed, if there is one; withdrawn from Send and the sender stopped already.
+        @param port  the port */
+    void CloseOutput(int port)
+    {
+        const auto at =
+            std::find_if(outputs_.begin(), outputs_.end(),
+                         [port](const std::unique_ptr<SequencerOutput> &output) { return output->index == port; });
+        if (at != outputs_.end())
+        {
+            ReleaseOutput(**at);
+            outputs_.erase(at);
+        }
+    }
+
+    /** An output's queue freed - every event it held and had not yet sent with it - and its port deleted, its
+        subscription with it, and its encoder freed. The sender stopped already.
+        @param output  the output */
+    void ReleaseOutput(SequencerOutput &output)
+    {
+        if (output.sequencer_queue >= 0)
+        {
+            snd_seq_free_queue(output_, output.sequencer_queue);
+            output.sequencer_queue = -1;
+        }
+        snd_seq_drop_output(output_);
+        if (output.port >= 0)
+        {
+            snd_seq_delete_simple_port(output_, output.port);
+            output.port = -1;
+        }
+        if (output.coder != nullptr)
+        {
+            snd_midi_event_free(output.coder);
+            output.coder = nullptr;
+        }
+        output.Drop();
+    }
+
+    /** The sender started on every open output, where there is one. */
+    void StartSender()
+    {
+        std::vector<MidiOutputStream *> streams;
+        for (const std::unique_ptr<SequencerOutput> &output : outputs_)
+        {
+            streams.push_back(output.get());
+        }
+        sender_.Start(std::move(streams));
     }
 
     /** The input thread started, where there is an input for it to carry. */
@@ -442,14 +716,19 @@ class AlsaMidiSystem final : public MidiSystem
     }
 
     std::string        client_name_;      ///< the name its clients and ports carry
-    snd_seq_t         *listing_{nullptr}; ///< the client the inputs are listed through
+    snd_seq_t         *listing_{nullptr}; ///< the client the inputs and outputs are listed through
     snd_seq_t         *input_{nullptr};   ///< the client whose ports the opened inputs reach
+    snd_seq_t         *output_{nullptr};  ///< the client whose ports reach the opened outputs; the sender's
     int                wake_{-1};         ///< the eventfd StopThread wakes the input thread through
     std::vector<Input> inputs_;           ///< the opened inputs; changed only while the thread is stopped
     std::atomic<bool>  stop_{false};      ///< true tells the input thread to end
     std::thread        thread_;           ///< the input thread, while there is an input open
     mutable std::mutex error_mutex_;      ///< guards `error_`
     std::string        error_;            ///< the last error, for a person to read
+    std::vector<std::unique_ptr<SequencerOutput>>
+                     outputs_;                           ///< the opened outputs; changed only with the sender stopped
+    MidiOutputPorts  ports_;                             ///< the opened outputs' queues, as Send finds them
+    MidiOutputSender sender_{kSequencerLeadNanoseconds}; ///< hands the outputs' messages to the sequencer
 };
 
 /** The machine's MIDI inputs on ALSA's sequencer.
