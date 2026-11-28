@@ -194,9 +194,10 @@ class CoreMidiOutput final : public MidiOutputStream
         // CoreMIDI's scheduler sends each packet at its stamp, so a message handed on after one of a later time still
         // leaves first; one sent for a time past is stamped now.
         std::uint64_t stamp = coremidi::HostTimeAt(message.time, now, host_now, timebase.numer, timebase.denom);
-        // CoreMIDI orders packets of one stamp by a rule of its own (a note off before a note on), so two messages of
-        // one time would not leave in the order they were sent. A message that is no earlier than the latest one
-        // delivered is stamped at least a tick after it; one for an earlier time keeps its own stamp and leaves first.
+        // CoreMIDI sends packets of one stamp in an order of its own (the suite saw a note off put before a note on
+        // sent ahead of it), so two messages of one time would not leave in the order they were sent. A message that
+        // is no earlier than the latest one delivered is stamped at least a tick after it; one for an earlier time
+        // keeps its own stamp and leaves first.
         if (message.time >= latest_time_)
         {
             if (stamp <= latest_stamp_)
