@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -192,8 +193,20 @@ class CoreMidiOutput final : public MidiOutputStream
         const std::uint64_t host_now = mach_absolute_time();
         // CoreMIDI's scheduler sends each packet at its stamp, so a message handed on after one of a later time still
         // leaves first; one sent for a time past is stamped now.
-        const std::uint64_t stamp = coremidi::HostTimeAt(message.time, now, host_now, timebase.numer, timebase.denom);
-        const std::uint32_t word  = coremidi::Midi1Packet(message.bytes.data(), message.size);
+        std::uint64_t stamp = coremidi::HostTimeAt(message.time, now, host_now, timebase.numer, timebase.denom);
+        // CoreMIDI orders packets of one stamp by a rule of its own (a note off before a note on), so two messages of
+        // one time would not leave in the order they were sent. A message that is no earlier than the latest one
+        // delivered is stamped at least a tick after it; one for an earlier time keeps its own stamp and leaves first.
+        if (message.time >= latest_time_)
+        {
+            if (stamp <= latest_stamp_)
+            {
+                stamp = latest_stamp_ + 1;
+            }
+            latest_time_  = message.time;
+            latest_stamp_ = stamp;
+        }
+        const std::uint32_t word = coremidi::Midi1Packet(message.bytes.data(), message.size);
         MIDIEventList       list{};
         MIDIEventPacket    *packet = MIDIEventListInit(&list, kMIDIProtocol_1_0);
         packet                     = MIDIEventListAdd(&list, sizeof list, packet, stamp, 1, &word);
@@ -203,6 +216,10 @@ class CoreMidiOutput final : public MidiOutputStream
         }
         return true; // an error CoreMIDI reports is a destination gone, whose messages go nowhere
     }
+
+  private:
+    std::int64_t  latest_time_{std::numeric_limits<std::int64_t>::min()}; ///< the latest time delivered; sender thread
+    std::uint64_t latest_stamp_{0};                                       ///< the stamp it was given; sender thread
 };
 
 /** CoreMIDI's sources and destinations as a MidiSystem: one client, an input port of its own for each source opened,
