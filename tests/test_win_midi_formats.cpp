@@ -1,6 +1,7 @@
 // The arithmetic of the suite's Windows MIDI back end (audio/WinMidiFormats.h), held on every platform: an input listed
 // under RtMidi's name for it, the input a settings file's name means - exactly, with its index moved, or by a shorter
-// name - and the bytes of a short message WinMM packs into one word, with what the cores do not read left out.
+// name - and the bytes of a short message WinMM packs into one word, with what the cores do not read left out; and a
+// message to send packed into the word midiOutShortMsg takes.
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -57,4 +58,21 @@ TEST(WinMidiFormats, AShortMessageCarriesTheBytesItsStatusAsks)
     {
         EXPECT_EQ(winmm::ShortMessage(packed, bytes), 0) << std::hex << packed;
     }
+}
+
+TEST(WinMidiFormats, AMessageSentIsPackedAsWinMMUnpacksIt)
+{
+    const std::uint8_t note_on[] = {0x93, 60, 100};
+    const std::uint8_t program[] = {0xC1, 5};
+    const std::uint8_t clock[]   = {0xF8};
+    EXPECT_EQ(winmm::PackShortMessage(note_on, 3), 0x00643C93U);
+    EXPECT_EQ(winmm::PackShortMessage(program, 2), 0x000005C1U);
+    EXPECT_EQ(winmm::PackShortMessage(clock, 1), 0x000000F8U);
+    std::uint8_t bytes[3] = {};
+    ASSERT_EQ(winmm::ShortMessage(winmm::PackShortMessage(note_on, 3), bytes), 3);
+    EXPECT_EQ(bytes[0], 0x93);
+    EXPECT_EQ(bytes[1], 60);
+    EXPECT_EQ(bytes[2], 100);
+    ASSERT_EQ(winmm::ShortMessage(winmm::PackShortMessage(program, 2), bytes), 2);
+    EXPECT_EQ(bytes[1], 5);
 }
